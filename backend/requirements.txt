@@ -1,0 +1,4 @@
+fastapi
+uvicorn[standard]
+# Add additional backend dependencies here (pydantic, SQLAlchemy, etc.)
+
