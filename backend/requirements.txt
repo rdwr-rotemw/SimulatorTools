@@ -1,4 +1,18 @@
 fastapi
 uvicorn[standard]
-# Add additional backend dependencies here (pydantic, SQLAlchemy, etc.)
 
+# ORM / SQL support
+sqlalchemy
+# Pydantic is used heavily by FastAPI but you can pin a version if desired
+pydantic
+pydantic-settings
+
+# Databases
+psycopg2-binary  # PostgreSQL driver
+pymongo           # MongoDB driver
+
+# Authentication / Security
+python-jose[cryptography]  # JWT handling
+passlib[bcrypt]            # Password hashing
+
+# Add other dependencies (e.g., email, async clients, monitoring) as needed

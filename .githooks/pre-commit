@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Simple local pre-commit hook to prevent forbidden imports in backend code
+python scripts/check_imports.py || {
+  echo "Import rules check failed. Fix forbidden imports before committing." >&2
+  exit 1
+}
+exit 0
+"""
+check_imports.py
+
+Scan the backend source for forbidden import patterns and exit non-zero
+if violations are found.
+
+Forbidden patterns:
+- relative imports: from .module import ...
+- ambiguous app-root imports: from app.something import ...
+
+Usage:
+    python scripts/check_imports.py
+
+Intended to be used in pre-commit or CI to enforce import rules.
+"""
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1] / "backend" / "app"
+
+forbidden = [
+    re.compile(r"^\s*from\s+\.", re.MULTILINE),
+    re.compile(r"^\s*from\s+app\.", re.MULTILINE),
+]
+
+violations = []
+for py in ROOT.rglob("*.py"):
+    text = py.read_text(encoding="utf-8")
+    for pat in forbidden:
+        for m in pat.finditer(text):
+            line_no = text.count("\n", 0, m.start()) + 1
+            violations.append((str(py), line_no, m.group(0).strip()))
+
+if violations:
+    print("Forbidden import patterns found:\n")
+    for p, ln, src in violations:
+        print(f"{p}:{ln}: {src}")
+    sys.exit(2)
+
+print("No forbidden imports found.")
+
