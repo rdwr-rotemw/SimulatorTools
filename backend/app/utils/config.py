@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     BACKEND_PORT: int = Field(8000, description="Backend port for local dev/routing")
     API_BASE_URL: str = Field("http://localhost:8000", description="Base URL of the API")
 
+    # Sapro integration settings
+    SAPRO_IP: str = Field("172.17.166.10", description="Sapro server IP (use localhost on production Sapro machine)")
+    SAPRO_PORT: int = Field(2100, description="Sapro server port")
+    SAPRO_MAP_DIR: str = Field("/opt/sapro/map/", description="Sapro maps directory path")
+
     # Logging
     LOG_LEVEL: str = Field("INFO", description="Logging level (DEBUG/INFO/WARNING/ERROR)")
 

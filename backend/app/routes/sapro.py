@@ -23,28 +23,42 @@ from backend.app.schemas.common import SuccessResponse
 from backend.app.models.simulator import Simulator
 from backend.app.utils.database import get_db
 from backend.app.utils.auth import get_current_user
+from backend.app.modules import get_sapro_handler
+
 
 router = APIRouter(prefix="/api", tags=["sapro"])
 
 
 @router.post("/simulators", response_model=SimulatorResponse, status_code=status.HTTP_201_CREATED)
-def create_simulator(payload: SimulatorCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)) -> SimulatorResponse:
-    """Create a new simulator in the database.
+def create_simulator(
+    payload: SimulatorCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    sapro_handler=Depends(get_sapro_handler),
+) -> SimulatorResponse:
+    """Create a new simulator both in Sapro and the DB.
 
-    Returns the created SimulatorResponse. Raises 409 if ip_address already exists,
-    400 for other DB errors.
+    Calls the Sapro handler to create the device, then persists the simulator
+    record on success. Returns 400/409/500 for various failure modes.
     """
-    # Check for existing simulator to provide a clear 409 response
+    # Conflict if already exists in DB
     existing = db.get(Simulator, payload.ip_address)
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Simulator with this IP already exists")
 
+    # Call Sapro to create device
+    success, message = sapro_handler.create_device(payload.ip_address, payload.type or "")
+    if not success:
+        # Sapro reported failure
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
+
+    # Persist to DB
     sim = Simulator(
         ip_address=payload.ip_address,
         type=payload.type,
         map=payload.map,
         cc_ip=payload.cc_ip,
-        status=payload.status or "unknown",
+        status=payload.status or "running",
     )
     try:
         db.add(sim)
@@ -52,19 +66,14 @@ def create_simulator(payload: SimulatorCreate, db: Session = Depends(get_db), cu
         db.refresh(sim)
     except IntegrityError:
         db.rollback()
+        # Shouldn't happen since we checked earlier, but handle race
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Simulator with this IP already exists")
     except SQLAlchemyError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
-    return SimulatorResponse(
-        ip_address=sim.ip_address,
-        type=sim.type,
-        map=sim.map,
-        cc_ip=sim.cc_ip,
-        status=sim.status,
-        created_at=sim.created_at,
-    )
+    # Use Pydantic v2 `model_validate` with `from_attributes=True` (schemas already configure this)
+    return SimulatorResponse.model_validate(sim)
 
 
 @router.get("/simulators/{simulator_ip}", response_model=SimulatorResponse)
@@ -73,35 +82,23 @@ def get_simulator(simulator_ip: str, db: Session = Depends(get_db)) -> Simulator
     sim = db.get(Simulator, simulator_ip)
     if not sim:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Simulator not found")
-    return SimulatorResponse(
-        ip_address=sim.ip_address,
-        type=sim.type,
-        map=sim.map,
-        cc_ip=sim.cc_ip,
-        status=sim.status,
-        created_at=sim.created_at,
-    )
+    return SimulatorResponse.model_validate(sim)
 
 
 @router.get("/simulators", response_model=List[SimulatorResponse])
 def list_simulators(db: Session = Depends(get_db)) -> List[SimulatorResponse]:
     """List all simulators."""
     sims = db.query(Simulator).all()
-    return [
-        SimulatorResponse(
-            ip_address=s.ip_address,
-            type=s.type,
-            map=s.map,
-            cc_ip=s.cc_ip,
-            status=s.status,
-            created_at=s.created_at,
-        )
-        for s in sims
-    ]
+    return [SimulatorResponse.model_validate(s) for s in sims]
 
 
 @router.put("/simulators/{simulator_ip}", response_model=SimulatorResponse)
-def update_simulator(simulator_ip: str, payload: SimulatorUpdate, db: Session = Depends(get_db), current_user=Depends(get_current_user)) -> SimulatorResponse:
+def update_simulator(
+    simulator_ip: str,
+    payload: SimulatorUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+) -> SimulatorResponse:
     """Update fields of an existing simulator."""
     sim = db.get(Simulator, simulator_ip)
     if not sim:
@@ -126,26 +123,33 @@ def update_simulator(simulator_ip: str, payload: SimulatorUpdate, db: Session = 
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
-    return SimulatorResponse(
-        ip_address=sim.ip_address,
-        type=sim.type,
-        map=sim.map,
-        cc_ip=sim.cc_ip,
-        status=sim.status,
-        created_at=sim.created_at,
-    )
+    return SimulatorResponse.model_validate(sim)
 
 
 @router.delete("/simulators/{simulator_ip}", response_model=SuccessResponse)
-def delete_simulator(simulator_ip: str, db: Session = Depends(get_db), current_user=Depends(get_current_user)) -> SuccessResponse:
-    """Delete a simulator by IP and return a success message."""
+def delete_simulator(
+    simulator_ip: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+    sapro_handler=Depends(get_sapro_handler),
+) -> SuccessResponse:
+    """Delete a simulator both from Sapro and the DB."""
     sim = db.get(Simulator, simulator_ip)
     if not sim:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Simulator not found")
+
+    # Attempt to delete from Sapro first
+    map_name = sim.map or ""
+    success, message = sapro_handler.delete_device(map_name, simulator_ip)
+    if not success:
+        # Sapro deletion failed
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
+
     try:
         db.delete(sim)
         db.commit()
     except SQLAlchemyError as exc:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
     return SuccessResponse(message="Simulator deleted successfully", data={"ip_address": simulator_ip})
