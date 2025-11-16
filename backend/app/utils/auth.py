@@ -22,10 +22,12 @@ from typing import Any, Dict, Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, ExpiredSignatureError, jwt
-from passlib.context import CryptContext
 import logging
 
 from backend.app.utils.config import settings
+from backend.app.utils.database import get_db
+from backend.app.models.user import User
+from sqlalchemy.orm import Session, joinedload
 
 logger = logging.getLogger("sim-tools.auth")
 
@@ -69,6 +71,8 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
+# TODO: Add refresh_token support here when going to production
+# Implement create_refresh_token() function for production OAuth2 flow
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token.
 
@@ -76,14 +80,24 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     claim identifying the subject). `expires_delta` may be provided to
     override the default expiry from settings.
     """
-    to_encode = data.copy()
+    # Build a minimal token payload containing only the subject (sub)
+    # and the expiration (exp) to keep the token compact.
     now = datetime.utcnow()
     if expires_delta:
         expire = now + expires_delta
     else:
         expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire, "iat": now})
-    token = jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
+
+    sub = data.get("sub") if isinstance(data, dict) else None
+    # It's recommended that callers include a "sub" claim; if missing,
+    # raise a ValueError to avoid issuing tokens without a subject.
+    if sub is None:
+        raise ValueError("create_access_token requires a 'sub' claim in data")
+
+    payload: Dict[str, Any] = {"sub": sub, "exp": expire}
+    # Debug: show the payload before encoding to help trace token creation
+    logger.debug("create_access_token: payload=%s", payload)
+    token = jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
     return token
 
 
@@ -100,13 +114,19 @@ def verify_token(token: str) -> Dict[str, Any]:
     )
     try:
         payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
+        # Debug: show decoded payload on successful decode
+        logger.debug("verify_token: decoded payload=%s", payload)
     except ExpiredSignatureError:
+        # Debug: log the expiration exception
+        logger.debug("verify_token: token expired; token=%s", token)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    except JWTError:
+    except JWTError as e:
+        # Debug: log the JWT error
+        logger.debug("verify_token: JWT decode error: %s; token=%s", e, token)
         raise credentials_exception
 
     if not isinstance(payload, dict) or "sub" not in payload:
@@ -122,8 +142,51 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(h
     from the DB using the `sub` claim if needed.
     """
     token = credentials.credentials
+    # Debug: log the raw token received
+    logger.debug("get_current_user: received token=%s", token)
     payload = verify_token(token)
+    # Debug: log the decoded payload returned from verify_token
+    logger.debug("get_current_user: payload=%s", payload)
     return payload
+
+
+async def require_sapro_access(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> User:
+    """FastAPI dependency that enforces Sapro access roles by querying
+    the database for the user's roles.
+
+    Returns the `User` instance when authorized. Raises HTTPException 401
+    when the user cannot be resolved from the token, and 403 when the
+    user lacks the required role.
+    """
+    if not current_user or not isinstance(current_user, dict):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
+
+    sub = current_user.get("sub")
+    if sub is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
+
+    # Token contains user_id as string; coerce to int when possible
+    try:
+        user_id = int(sub)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
+
+    # Load user from DB with roles eagerly loaded
+    user = db.query(User).options(joinedload(User.roles)).filter(User.user_id == user_id).one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
+    allowed = {"admin", "sapro_admin"}
+    roles = getattr(user, "roles", []) or []
+    for role in roles:
+        if getattr(role, "role_name", None) in allowed:
+            return user
+
+    # No allowed role found -> deny
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
 
 __all__ = [
@@ -133,4 +196,5 @@ __all__ = [
     "verify_token",
     "get_current_user",
     "http_bearer",
+    "require_sapro_access",
 ]

@@ -17,7 +17,11 @@ class Role(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     # relationships
+    # association to user_roles (association table)
     user_roles = relationship("UserRole", back_populates="role", cascade="all, delete-orphan")
+    # expose users via the user_roles secondary association
+    users = relationship("User", secondary="user_roles", back_populates="roles")
+
     # explicit association to RolePermission for easier management
     role_permissions = relationship("RolePermission", back_populates="role", cascade="all, delete-orphan")
     permissions = relationship("Permission", secondary="role_permissions", back_populates="roles")

@@ -1,13 +1,19 @@
+from typing import List
+from typing import Optional, Tuple
+
+from backend.app.modules.sapro.devices_templates import get_template_by_name
 from backend.app.modules.sapro.src import (
     saproCommunication,
     saproMapFunctions,
     saproDeviceFunctions,
     saproFileFunctions,
 )
-from backend.app.modules.sapro.src.returnTypes import DeviceTypes
+from backend.app.modules.sapro.src.returnTypes.enums import DeviceStatus
+from backend.app.modules.sapro.src.returnTypes.models import SaproDevice
+from backend.app.modules.sapro.src.saproDeviceFunctions import GetDeviceListOfMap, SendTclCmdToDevice
 from backend.app.modules.sapro.src.saproException import SaproException
+from backend.app.modules.sapro.src.saproMapFunctions import getMapListFromServer
 from backend.app.utils.config import settings
-from typing import Optional, Tuple
 
 
 class SaproCommunicationHandler:
@@ -81,6 +87,51 @@ class SaproCommunicationHandler:
         """
         return bool(self._is_connected)
 
+    def get_all_devices(self) -> List[SaproDevice]:
+        devices = []
+        all_maps = getMapListFromServer(self._sapro)
+
+        for sim_map in all_maps:
+            map_name = sim_map.mapName.split("/")[-1].replace(".map", "")
+            devices_from_map = GetDeviceListOfMap(self._sapro, sim_map.mapPort)
+
+            for device in devices_from_map:
+                # Get type/version via SNMP from device.devName (IP)
+                device_type, device_version = self.snmp_get_device_info(map_name, device.devName)
+
+                devices.append(SaproDevice(
+                    ip_address=device.devName,
+                    map=map_name,
+                    status=DeviceStatus.get_status(device.devStatus),
+                    type=device_type,
+                    version=device_version
+                ))
+        return devices
+
+    def snmp_get_device_info(self, device_map: str, device_ip: str) -> Tuple[Optional[str], Optional[str]]:
+        """Retrieve device type and version via SNMP.
+
+        Args:
+            device_map: Map name where the device is located.
+            device_ip: IP address of the device."""
+
+        device_type_response = SendTclCmdToDevice(self._sapro, device_map + ".map", device_ip, "SA_getvar { sysDescr.0 }")
+        device_type = ""
+        if "DefensePro" in device_type_response:
+            version_response = SendTclCmdToDevice(self._sapro, device_map + ".map", device_ip,
+                                                  "SA_getvar { rndApsoluteOSVersion.0 }")
+            version = version_response.split(":")[1][:-1]
+            device_type = "DefensePro"
+        elif "Application" in device_type_response:
+            version = SendTclCmdToDevice(self._sapro, device_map + ".map", device_ip,
+                                                  "SA_getvar { agSoftwareVersion.0 }")
+            device_type = "Alteon"
+        else:
+            device_type = None
+            version = None
+
+        return device_type, version
+
     def get_map_by_type(self, device_type: str) -> Optional[str]:
         """Return the map name for a given device type.
 
@@ -97,7 +148,7 @@ class SaproCommunicationHandler:
             return "IPv6"
         if "alteon" in t:
             return "Alteons"
-        if "dp" in t:
+        if "defensepro" in t:
             return "DefensePros"
         if "lp" in t:
             return "LinkProofs"
@@ -135,7 +186,7 @@ class SaproCommunicationHandler:
         except Exception as e:
             return False, f"Failed to start map {map_name}: {str(e)}"
 
-    def find_device(self, device_ip: str) -> Tuple[bool, str]:
+    def find_device(self, device_ip: str) -> bool:
         """Find a device in sapro by IP.
 
         Args:
@@ -146,22 +197,19 @@ class SaproCommunicationHandler:
         """
         try:
             dev = saproDeviceFunctions.FindDevice(self._sapro, device_ip)
-            return True, repr(dev)
+            return dev
         except SaproException as e:
             msg = getattr(e, "toString", lambda: str(e))()
-            return False, f"Find device failed for {device_ip}: {msg}"
-        except Exception as e:
-            return False, f"Find device failed for {device_ip}: {str(e)}"
+            raise f"Find device failed for {device_ip}: {msg}"
 
-    def set_new_device_file(self, device_ip: str, device_type: str) -> Tuple[bool, str]:
+    def set_new_device_file(self, device_ip: str, device_template: str) -> Tuple[bool, str]:
         """Generate device file content for the given device type and IP.
 
         Returns:
             (success, device_file_content)
         """
         try:
-            device_types = DeviceTypes.types_container
-            device_string = device_types.get_variable(device_type)
+            device_string = get_template_by_name(device_template)
             content = device_string.replace("<ip>", device_ip)
             return True, content
         except Exception as e:
@@ -245,11 +293,11 @@ class SaproCommunicationHandler:
         except Exception as e:
             return False, f"Failed to stop device(s) from map {map_name}: {str(e)}"
 
-    def create_device(self, device_ip: str, device_type: str) -> Tuple[bool, str]:
+    def create_device(self, device_ip: str, device_type: str, template: str, sim_map=None) -> Tuple[bool, str]:
         """Create (or start existing) simulator device on the sapro server.
 
         Workflow:
-        - Resolve map name by device type
+        - Resolve map name by device type or get map from user
         - Ensure map is started
         - If device exists: start it
         - Otherwise: create device file, upload it, and add it to the map
@@ -258,9 +306,9 @@ class SaproCommunicationHandler:
             (success, message)
         """
         try:
-            map_name = self.get_map_by_type(device_type)
+            map_name = self.get_map_by_type(device_type) if not sim_map else sim_map
             if not map_name:
-                return False, f"Unknown device type: {device_type}"
+                return False, f"Map: {map_name} not found"
             map_path = self.get_full_map_path(map_name)
 
             started_ok, start_msg = self.start_map(map_path)
@@ -269,7 +317,7 @@ class SaproCommunicationHandler:
                 if "already running" not in start_msg:
                     return False, start_msg
 
-            found, info = self.find_device(device_ip)
+            found = self.find_device(device_ip)
             if found:
                 # start the device
                 devices_list = [device_ip]
@@ -280,7 +328,7 @@ class SaproCommunicationHandler:
 
             # create device file path and content
             new_device_file_path = f"{self.map_directory}{map_name}/{device_ip}.map"
-            ok, content_or_msg = self.set_new_device_file(device_ip, device_type)
+            ok, content_or_msg = self.set_new_device_file(device_ip, template)
             if not ok:
                 return False, content_or_msg
 
@@ -291,6 +339,10 @@ class SaproCommunicationHandler:
             ok, msg = self.add_new_device(map_path, new_device_file_path)
             if not ok:
                 return False, msg
+
+            ok, msg = self.start_devices_from_map(map_path, [device_ip])
+            if not ok:
+                return False, f"Device {device_ip} added but failed to start: {msg}"
 
             return True, f"Device {device_ip} created and added to map {map_path}"
         except SaproException as e:

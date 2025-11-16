@@ -19,6 +19,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.app.utils.config import settings
+from backend.app.utils.database import Base, engine, SessionLocal
+from backend.app.db.seed_roles import seed_roles
+from backend.app.db.seed_users import seed_test_user
+from backend.app.db.verify_setup import verify_setup
 
 # Import route modules directly and mount under /api
 from backend.app.routes.sapro import router as sapro_router
@@ -29,10 +33,6 @@ from backend.app.routes.role import router as role_router
 from backend.app.routes.permission import router as permission_router
 from backend.app.routes.sapro import router as simulator_router  # simulator routes live in sapro.py
 from backend.app.routes.cc_credentials import router as cc_credentials_router
-
-# Import DB base and engine to create tables on startup
-from backend.app.utils.database import Base, engine
-
 
 logger = logging.getLogger("sim-tools")
 logging.basicConfig(level=logging.INFO)
@@ -84,6 +84,29 @@ async def on_startup():
         # Create SQL tables from ORM models if they do not exist
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables ensured (create_all executed)")
+
+        # Seed roles using a short-lived session
+        try:
+            db = SessionLocal()
+            try:
+                seed_roles(db)
+                logger.info("Role seeding completed on startup")
+                # Seed the test user after roles
+                try:
+                    seed_test_user(db)
+                    logger.info("Test user seeding completed on startup")
+                    # Verify the seeded setup
+                    try:
+                        verify_setup(db)
+                        logger.info("Startup verification completed")
+                    except Exception:
+                        logger.exception("Failed to verify setup on startup")
+                except Exception:
+                    logger.exception("Failed to seed test user on startup")
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.exception("Failed to seed roles on startup: %s", exc)
     except Exception as exc:
         logger.exception("Failed to create database tables on startup: %s", exc)
     # TODO: initialize other resources (HTTP clients, caches, telemetry)

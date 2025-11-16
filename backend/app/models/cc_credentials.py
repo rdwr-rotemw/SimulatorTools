@@ -3,7 +3,6 @@ CyberController Credentials ORM model.
 """
 from datetime import datetime
 from sqlalchemy import Column, String, Integer, DateTime
-from sqlalchemy.orm import relationship
 
 from backend.app.utils.database import Base
 
@@ -20,9 +19,5 @@ class CCCredentials(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
-    # relationship to simulators
-    simulators = relationship("Simulator", back_populates="cc_credentials", cascade="all, delete-orphan")
-
     def __repr__(self) -> str:  # pragma: no cover - trivial
         return f"<CCCredentials cc_ip={self.cc_ip} user={self.username}>"
-

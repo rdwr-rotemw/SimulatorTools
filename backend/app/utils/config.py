@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     ENV: str = Field("development", description="Runtime environment")
     DEBUG: bool = Field(False, description="Enable debug mode")
 
+    # Database type (postgresql or sqlite)
+    DATABASE_TYPE: str = Field(default="postgresql", description="Database type: postgresql or sqlite")
+
     # PostgreSQL settings
     PG_HOST: str = Field("localhost", description="Postgres host")
     PG_PORT: int = Field(5432, description="Postgres port")
@@ -38,7 +41,13 @@ class Settings(BaseSettings):
     # JWT / Auth
     JWT_SECRET_KEY: str = Field("CHANGE_ME_REPLACE_IN_PROD", description="JWT secret key")
     JWT_ALGORITHM: str = Field("HS256", description="JWT algorithm")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(60, description="Access token expiry in minutes")
+    # Access token expiration in minutes. Default 1440 (24h) for dev.
+    # For production, set to 15 min and implement refresh tokens in auth.py
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
+        1440,
+        env="ACCESS_TOKEN_EXPIRE_MINUTES",
+        description="Access token expiration in minutes (1440 = 24 hours for dev, use 15-60 for production)",
+    )
 
     # CORS origins: accept a comma-separated string or a list
     # Default includes localhost for dev and a placeholder for production
