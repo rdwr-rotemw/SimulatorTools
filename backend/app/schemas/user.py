@@ -20,3 +20,9 @@ class UserResponse(BaseModel):
 
     model_config = {"from_attributes": True}
 
+
+class UserUpdate(BaseModel):
+    """Schema for updating user information."""
+    username: Optional[str] = Field(None, min_length=3, max_length=150, description="New username (optional)")
+
+    model_config = {"from_attributes": True}

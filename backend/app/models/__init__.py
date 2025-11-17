@@ -13,7 +13,7 @@ from typing import List
 _MODEL_MAP = {
     "user": ["User"],
     "simulator": ["Simulator"],
-    "cc_credentials": ["CCCredentials"],
+    "cc_session": ["CCSession"],
     "audit_log": ["AuditLog"],
     "role": ["Role"],
     "permission": ["Permission"],

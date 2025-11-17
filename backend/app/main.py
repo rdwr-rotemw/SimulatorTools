@@ -21,18 +21,16 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from backend.app.utils.config import settings
 from backend.app.utils.database import Base, engine, SessionLocal
 from backend.app.db.seed_roles import seed_roles
-from backend.app.db.seed_users import seed_test_user
+from backend.app.db.seed_users import seed_test_user, seed_cc_admin_user
 from backend.app.db.verify_setup import verify_setup
 
 # Import route modules directly and mount under /api
 from backend.app.routes.sapro import router as sapro_router
 from backend.app.routes.cybercontroller import router as cc_router
-from backend.app.routes.reporter import router as reports_router
+from backend.app.routes.reporter import router as reporter_router
 from backend.app.routes.user import router as user_router
 from backend.app.routes.role import router as role_router
 from backend.app.routes.permission import router as permission_router
-from backend.app.routes.sapro import router as simulator_router  # simulator routes live in sapro.py
-from backend.app.routes.cc_credentials import router as cc_credentials_router
 
 logger = logging.getLogger("sim-tools")
 logging.basicConfig(level=logging.INFO)
@@ -58,16 +56,14 @@ app.add_middleware(
 )
 
 # Register routers under /api prefix
-app.include_router(sapro_router, prefix="/api")
-app.include_router(cc_router, prefix="/api")
-app.include_router(reports_router, prefix="/api")
+app.include_router(sapro_router)
+app.include_router(cc_router)
+app.include_router(reporter_router)
 # Register user router (it already has prefix "/api" inside; include at root as requested)
 app.include_router(user_router, prefix="", tags=["users"])
 # Register new routers
 app.include_router(role_router)
 app.include_router(permission_router)
-app.include_router(simulator_router)
-app.include_router(cc_credentials_router)
 
 
 @app.get("/health", tags=["meta"])
@@ -95,6 +91,12 @@ async def on_startup():
                 try:
                     seed_test_user(db)
                     logger.info("Test user seeding completed on startup")
+                    # Seed the CC admin user after test user
+                    try:
+                        seed_cc_admin_user(db)
+                        logger.info("CC admin user seeding completed on startup")
+                    except Exception:
+                        logger.exception("Failed to seed CC admin user on startup")
                     # Verify the seeded setup
                     try:
                         verify_setup(db)

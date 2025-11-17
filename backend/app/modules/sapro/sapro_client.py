@@ -14,6 +14,7 @@ from backend.app.modules.sapro.src.saproDeviceFunctions import GetDeviceListOfMa
 from backend.app.modules.sapro.src.saproException import SaproException
 from backend.app.modules.sapro.src.saproMapFunctions import getMapListFromServer
 from backend.app.utils.config import settings
+from backend.app.utils.snmp import SnmpClient
 
 
 class SaproCommunicationHandler:
@@ -97,7 +98,7 @@ class SaproCommunicationHandler:
 
             for device in devices_from_map:
                 # Get type/version via SNMP from device.devName (IP)
-                device_type, device_version = self.snmp_get_device_info(map_name, device.devName)
+                device_type, device_version = self.snmp_get_device_info(device.devName)
 
                 devices.append(SaproDevice(
                     ip_address=device.devName,
@@ -108,23 +109,43 @@ class SaproCommunicationHandler:
                 ))
         return devices
 
-    def snmp_get_device_info(self, device_map: str, device_ip: str) -> Tuple[Optional[str], Optional[str]]:
-        """Retrieve device type and version via SNMP.
+    # def snmp_get_device_info(self, device_map: str, device_ip: str) -> Tuple[Optional[str], Optional[str]]:
+    #     """Retrieve device type and version via SNMP.
+    #
+    #     Args:
+    #         device_map: Map name where the device is located.
+    #         device_ip: IP address of the device."""
+    #
+    #     device_type_response = SendTclCmdToDevice(self._sapro, device_map + ".map", device_ip, "SA_getvar { sysDescr.0 }")
+    #     device_type = ""
+    #     if "DefensePro" in device_type_response:
+    #         version_response = SendTclCmdToDevice(self._sapro, device_map + ".map", device_ip,
+    #                                               "SA_getvar { rndApsoluteOSVersion.0 }")
+    #         version = version_response.split(":")[1][:-1]
+    #         device_type = "DefensePro"
+    #     elif "Application" in device_type_response:
+    #         version = SendTclCmdToDevice(self._sapro, device_map + ".map", device_ip,
+    #                                               "SA_getvar { agSoftwareVersion.0 }")
+    #         device_type = "Alteon"
+    #     else:
+    #         device_type = None
+    #         version = None
+    #
+    #     return device_type, version
 
-        Args:
-            device_map: Map name where the device is located.
-            device_ip: IP address of the device."""
+    def snmp_get_device_info(self, device_ip: str) -> Tuple[Optional[str], Optional[str]]:
+        """Retrieve device type and version via SNMP."""
+        snmp_client = SnmpClient(device_ip)
 
-        device_type_response = SendTclCmdToDevice(self._sapro, device_map + ".map", device_ip, "SA_getvar { sysDescr.0 }")
-        device_type = ""
-        if "DefensePro" in device_type_response:
-            version_response = SendTclCmdToDevice(self._sapro, device_map + ".map", device_ip,
-                                                  "SA_getvar { rndApsoluteOSVersion.0 }")
-            version = version_response.split(":")[1][:-1]
+        device_type = snmp_client.get("1.3.6.1.2.1.1.1.0")
+
+        if device_type and "DefensePro" in device_type:
+            version = snmp_client.get("1.3.6.1.4.1.89.2.13.0")
+            if version and ":" in version:
+                version = version.split(":")[1].strip()
             device_type = "DefensePro"
-        elif "Application" in device_type_response:
-            version = SendTclCmdToDevice(self._sapro, device_map + ".map", device_ip,
-                                                  "SA_getvar { agSoftwareVersion.0 }")
+        elif device_type and "Application" in device_type:
+            version = snmp_client.get("1.3.6.1.4.1.1872.2.5.1.1.1.10.0")
             device_type = "Alteon"
         else:
             device_type = None

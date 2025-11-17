@@ -16,7 +16,7 @@ Notes:
 - Replace `settings.JWT_SECRET_KEY` with a strong secret in production.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import Depends, HTTPException, status
@@ -82,7 +82,7 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     """
     # Build a minimal token payload containing only the subject (sub)
     # and the expiration (exp) to keep the token compact.
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     if expires_delta:
         expire = now + expires_delta
     else:
@@ -183,9 +183,44 @@ async def require_sapro_access(
     roles = getattr(user, "roles", []) or []
     for role in roles:
         if getattr(role, "role_name", None) in allowed:
-            return user
+            return user  # type: ignore[return-value]
 
     # No allowed role found -> deny
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
+
+
+async def require_cc_access(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> User:
+    """FastAPI dependency enforcing CyberController access roles.
+
+    Authorizes users having one of the roles: 'admin' or 'cc_admin'.
+    Mirrors the logic of `require_sapro_access` but with a different
+    allowed role set.
+    """
+    if not current_user or not isinstance(current_user, dict):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
+
+    sub = current_user.get("sub")
+    if sub is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
+
+    try:
+        user_id = int(sub)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Could not validate credentials")
+
+    user = db.query(User).options(joinedload(User.roles)).filter(User.user_id == user_id).one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
+    allowed = {"admin", "cc_admin"}
+    roles = getattr(user, "roles", []) or []
+    for role in roles:
+        if getattr(role, "role_name", None) in allowed:
+            return user  # type: ignore[return-value]
+
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
 
@@ -197,4 +232,5 @@ __all__ = [
     "get_current_user",
     "http_bearer",
     "require_sapro_access",
+    "require_cc_access",
 ]

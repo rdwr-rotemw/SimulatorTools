@@ -11,6 +11,7 @@ def seed_roles(db: Session) -> None:
 
     - Creates the "admin" role if missing
     - Creates the "sapro_admin" role if missing
+    - Creates the "cc_admin" role if missing
 
     The function commits its changes and prints a short summary. It
     handles database errors and performs a rollback on failure.
@@ -18,6 +19,7 @@ def seed_roles(db: Session) -> None:
     required: List[dict] = [
         {"role_name": "admin", "description": "Administrator with all privileges"},
         {"role_name": "sapro_admin", "description": "Sapro administrator - Sapro only, no CyberController"},
+        {"role_name": "cc_admin", "description": "CyberController administrator - CyberController only, no Sapro"},
     ]
 
     created = []

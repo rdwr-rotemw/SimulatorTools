@@ -1,9 +1,11 @@
 """
-User management routes (create, get, login).
+User management routes (create, get, list, update, login).
 
 Endpoints:
 - POST /api/users -> create_user
+- GET  /api/users -> get_all_users (protected)
 - GET  /api/users/{user_id} -> get_user (protected)
+- PUT  /api/users/{user_id} -> update_user (protected)
 - POST /api/login -> login
 
 This module implements DB operations using SQLAlchemy sessions from
@@ -15,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from backend.app.schemas.user import UserCreate, UserResponse
+from backend.app.schemas.user import UserCreate, UserResponse, UserUpdate
 from backend.app.schemas.auth import LoginRequest, LoginResponse
 from backend.app.schemas.common import ErrorResponse
 from backend.app.models.user import User
@@ -55,7 +57,7 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)) -> UserRespo
 
 
 @router.get("/users/{user_id}", response_model=UserResponse, responses={404: {"model": ErrorResponse}})
-def get_user(user_id: int, db: Session = Depends(get_db), current_user: Any = Depends(get_current_user)) -> UserResponse:
+def get_user(user_id: int, db: Session = Depends(get_db), _current_user: Any = Depends(get_current_user)) -> UserResponse:
     """Retrieve a user by ID (protected).
 
     Requires authentication (via `get_current_user`).
@@ -63,6 +65,58 @@ def get_user(user_id: int, db: Session = Depends(get_db), current_user: Any = De
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return UserResponse(
+        user_id=user.user_id,
+        username=user.username,
+        created_at=user.created_at,
+        updated_at=getattr(user, "updated_at", None),
+    )
+
+
+@router.get("/users", response_model=list[UserResponse], status_code=status.HTTP_200_OK)
+def get_all_users(db: Session = Depends(get_db), _current_user: Any = Depends(get_current_user)) -> list[UserResponse]:
+    """Retrieve all users (protected).
+
+    Requires authentication (via `get_current_user`).
+    """
+    users = db.query(User).all()
+    return [
+        UserResponse(
+            user_id=user.user_id,
+            username=user.username,
+            created_at=user.created_at,
+            updated_at=getattr(user, "updated_at", None),
+        )
+        for user in users
+    ]
+
+
+@router.put("/users/{user_id}", response_model=UserResponse, status_code=status.HTTP_200_OK, responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}})
+def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db), _current_user: Any = Depends(get_current_user)) -> UserResponse:
+    """Update a user by ID (protected).
+
+    Requires authentication (via `get_current_user`).
+    Updates only the fields provided in the payload.
+    """
+    # Check if user exists
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Update fields if provided
+    if payload.username is not None:
+        user.username = payload.username
+
+    try:
+        db.commit()
+        db.refresh(user)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Username already exists")
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
     return UserResponse(
         user_id=user.user_id,
         username=user.username,

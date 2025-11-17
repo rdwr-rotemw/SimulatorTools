@@ -3,6 +3,9 @@ Database seeding helpers for users.
 
 Provides `seed_test_user(db: Session)` which ensures a test user `sapro_test`
 exists and is linked to the `sapro_admin` role.
+
+Provides `seed_cc_admin_user(db: Session)` which ensures a test user `cc_test`
+exists and is linked to the `cc_admin` role.
 """
 from __future__ import annotations
 
@@ -80,3 +83,64 @@ def seed_test_user(db: Session) -> Optional[User]:
         print(f"Failed to seed test user: {exc}")
         raise
 
+
+def seed_cc_admin_user(db: Session) -> Optional[User]:
+    """Ensure a CC admin test user exists and is assigned the `cc_admin` role.
+
+    Args:
+        db: SQLAlchemy Session (short-lived session provided by caller)
+
+    Returns:
+        The created or existing User instance on success.
+
+    Raises:
+        ValueError: if the required role `cc_admin` does not exist.
+        Exception: re-raises unexpected exceptions after rolling back the session.
+    """
+    username = "cc_test"
+    password = "testpass123"
+
+    try:
+        existing = db.query(User).filter(User.username == username).first()
+        if existing:
+            msg = "CC admin user already exists"
+            print(msg)
+            logger.info(msg)
+            return existing
+
+        # Ensure role exists
+        role = db.query(Role).filter(Role.role_name == "cc_admin").first()
+        if not role:
+            msg = "Role 'cc_admin' not found; cannot create CC admin user"
+            print(msg)
+            logger.error(msg)
+            raise ValueError(msg)
+
+        # Create user with hashed password
+        password_hash = hash_password(password)
+        user = User(username=username, password_hash=password_hash)
+        db.add(user)
+        # Flush to populate user.user_id for the association
+        db.flush()
+
+        # Link user to role
+        user_role = UserRole(user_id=user.user_id, role_id=role.role_id)
+        db.add(user_role)
+
+        # Commit transaction
+        db.commit()
+
+        msg = "CC admin user created"
+        print(msg)
+        logger.info(msg)
+        return user
+    except Exception as exc:
+        # Rollback any partial changes and re-raise after logging
+        try:
+            db.rollback()
+        except Exception:
+            # Best-effort rollback; ignore rollback failures
+            pass
+        logger.exception("Failed to seed CC admin user: %s", exc)
+        print(f"Failed to seed CC admin user: {exc}")
+        raise

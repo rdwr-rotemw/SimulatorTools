@@ -24,6 +24,7 @@ class User(Base):
     # association to roles via user_roles association table
     user_roles = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
     roles = relationship("Role", secondary="user_roles", back_populates="users")
+    cc_sessions = relationship("CCSession", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:  # pragma: no cover - trivial
         return f"<User id={self.user_id} username={self.username}>"
