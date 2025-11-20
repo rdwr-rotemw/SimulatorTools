@@ -25,9 +25,25 @@ from backend.app.schemas.reporter import (
 from backend.app.utils.auth import require_cc_access
 from backend.app.utils.database import get_db
 from backend.app.models.user import User
+from pydantic import BaseModel
+from typing import Any, Dict, Union
+from backend.app.utils.database import get_mongo_db
+from backend.app.modules.reporter.irp.irp_module import send_irp, create_irp_template, load_schema_from_mongo
 
 router = APIRouter(prefix="/api", tags=["reporter"])
 
+
+class IRPSendPayload(BaseModel):
+    mongo_id: str
+    message_id: Union[int, str]
+    message_data: Dict[str, Any]
+    from_ip: str
+    to_ip: str
+
+
+class IRPTemplatePayload(BaseModel):
+    mongo_id: str
+    message_id: Union[int, str]
 
 
 @router.post(
@@ -206,5 +222,68 @@ async def send_polling_config_endpoint(
         )
 
 
-__all__ = ["router"]
+@router.post(
+    "/cc/{cc_ip}/irp/send",
+    status_code=status.HTTP_200_OK,
+)
+async def send_irp_endpoint(
+    cc_ip: str,
+    payload: IRPSendPayload,
+    mongo_db = Depends(get_mongo_db),
+    current_user: User = Depends(require_cc_access),
+) -> Dict[str, Any]:
+    """Send an IRP message based on a stored IdsDataFormat schema in MongoDB.
 
+    Body fields: mongo_id, message_id, message_data, from_ip, to_ip
+    """
+    try:
+        ok, msg = send_irp(payload.mongo_id, payload.message_id, payload.message_data, payload.from_ip, payload.to_ip, mongo_db)
+        if not ok:
+            # Sending failed
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg)
+        return {"success": True, "message": msg}
+    except ValueError as ve:
+        # invalid id format
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except KeyError as ke:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ke))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to send IRP: {exc!s}")
+
+
+@router.post(
+    "/cc/{cc_ip}/irp/template",
+    status_code=status.HTTP_200_OK,
+)
+async def create_irp_template_endpoint(
+    cc_ip: str,
+    payload: IRPTemplatePayload,
+    mongo_db = Depends(get_mongo_db),
+    current_user: User = Depends(require_cc_access),
+) -> Dict[str, Any]:
+    """Generate an IRP template for a message from a stored schema in MongoDB."""
+    try:
+        schema_obj = load_schema_from_mongo(mongo_db, payload.mongo_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except KeyError as ke:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ke))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to load schema: {exc!s}")
+
+    try:
+        template = create_irp_template(schema_obj, payload.message_id)
+        if template is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message ID not found or template generation failed")
+        return {"success": True, "template": template}
+    except HTTPException:
+        raise
+    except KeyError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message ID not found")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Template generation failed: {exc!s}")
+
+
+__all__ = ["router"]
