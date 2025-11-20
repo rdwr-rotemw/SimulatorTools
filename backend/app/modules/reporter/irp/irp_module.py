@@ -4,15 +4,11 @@ This module contains a placeholder conversion function that will be implemented
 by the user to transform IdsDataFormat XML files into JSON-like Python dicts.
 """
 from typing import Dict, Any, Optional
-import importlib
 from typing import Tuple
 
 from backend.app.modules.reporter.irp.tools.convert_xml import ConvertXml
-from backend.app.modules.reporter.irp.tools.message_builder import MessageBuilder
 from backend.app.modules.reporter.irp.tools.template_generator import TemplateGenerator
-from backend.app.modules.reporter.irp.tools.type_handler import TypeHandler
-from backend.app.modules.reporter.irp.tools.footprint_template_generator import FootprintTemplateGenerator
-import socket
+from backend.app.modules.reporter.irp.core.irp_formatter import IrpFormatter
 
 
 def convert_xml(xml_file_path: str) -> Dict[str, Any]:
@@ -62,7 +58,10 @@ def _serialize_messages(messages: Optional[Dict[Any, Any]]) -> Dict[str, Any]:
         try:
             name = getattr(msg, "name", None)
             data = getattr(msg, "data", None)
-            out[str(msg_id)] = {"name": name, "data": str(data)}
+            out[str(msg_id)] = {
+                "name": name,
+                "data": _serialize_object(data)  # FIX: use _serialize_object, not str()
+            }
         except Exception:
             out[str(msg_id)] = {"name": None, "data": None}
     return out
@@ -120,7 +119,9 @@ def _serialize_templates(templates_obj: Optional[Any]) -> Dict[str, Any]:
     structs: Dict[str, Any] = {}
     for name, struct in structs_raw.items():
         try:
-            structs[name] = {"fields": str(getattr(struct, "fields", None))}
+            structs[name] = {
+                "fields": _serialize_object(getattr(struct, "fields", None))  # FIX: use _serialize_object
+            }
         except Exception:
             structs[name] = {"fields": None}
 
@@ -128,8 +129,9 @@ def _serialize_templates(templates_obj: Optional[Any]) -> Dict[str, Any]:
     namespaces: Dict[str, Any] = {}
     for ns_name, ns_structs in namespaces_raw.items():
         try:
-            # ns_structs is expected to be a mapping
-            namespaces[ns_name] = {k: str(v) for k, v in ns_structs.items()}
+            namespaces[ns_name] = {
+                k: _serialize_object(v) for k, v in ns_structs.items()  # FIX: use _serialize_object
+            }
         except Exception:
             namespaces[ns_name] = {}
 
@@ -171,7 +173,7 @@ def _serialize_object(obj: Any) -> Any:
 
 
 def _deserialize_object(data: Any) -> Any:
-    """Recursively deserialize JSON back to ConvertXml objects"""
+    """Recursively deserialize JSON back to ConvertXml objects."""
     if data is None:
         return None
 
@@ -182,26 +184,83 @@ def _deserialize_object(data: Any) -> Any:
         # Check if this is a serialized ConvertXml object
         if '__type__' in data and '__data__' in data:
             class_path = data['__type__']
-            obj_data = {k: _deserialize_object(v) for k, v in data['__data__'].items()}
 
-            # Attempt to import class
+            # Recursively deserialize nested data FIRST
+            obj_data = {}
+            for k, v in data['__data__'].items():
+                obj_data[k] = _deserialize_object(v)
+
+            # Now reconstruct the object
+            if 'convert_xml.' in class_path:
+                class_name = class_path.split('.')[-1]
+
+                if hasattr(ConvertXml, class_name):
+                    cls = getattr(ConvertXml, class_name)
+                    try:
+                        obj = object.__new__(cls)
+                        obj.__dict__.update(obj_data)
+                        return obj  # Return the actual ConvertXml object
+                    except Exception as e:
+                        print(f"ERROR: Failed to instantiate ConvertXml.{class_name}: {e}")
+                        print(f"Class: {cls}, Data keys: {obj_data.keys()}")
+                        raise
+                else:
+                    print(f"ERROR: ConvertXml.{class_name} not found!")
+                    print(f"Available: {[x for x in dir(ConvertXml) if not x.startswith('_')]}")
+                    raise AttributeError(f"ConvertXml.{class_name} not found")
+
+            # Try regular class import
             try:
-                module_path, class_name = class_path.rsplit('.', 1)
-                module = importlib.import_module(module_path)
-                cls = getattr(module, class_name)
-                obj = object.__new__(cls)
-                # Update internal dict
-                if isinstance(obj_data, dict):
+                parts = class_path.rsplit('.', 1)
+                if len(parts) == 2:
+                    module_path, class_name = parts
+                    module = __import__(module_path, fromlist=[class_name])
+                    cls = getattr(module, class_name)
+                    obj = object.__new__(cls)
                     obj.__dict__.update(obj_data)
-                return obj
-            except Exception:
-                # Fallback: return raw dict
-                return obj_data
+                    return obj
+            except Exception as e:
+                print(f"ERROR: Failed to deserialize {class_path}: {e}")
+                raise
 
-        # Regular dict
+        # Regular dict - recursively deserialize values
         return {k: _deserialize_object(v) for k, v in data.items()}
 
     return data
+
+
+# New helper: convert serialized dicts back into ConvertXml nested elements when needed
+def _dict_to_convertxml_element(data_dict):
+    """Convert a deserialized dict back to the proper ConvertXml class instance."""
+    if not isinstance(data_dict, dict):
+        return data_dict
+
+    # Check if this has the object marker
+    if '__type__' not in data_dict or '__data__' not in data_dict:
+        # It's a plain dict (shouldn't happen after _deserialize_object, but handle it)
+        return data_dict
+
+    class_path = data_dict['__type__']
+    obj_data = data_dict['__data__']
+
+    # Extract class name
+    if 'ConvertXml.' in class_path:
+        class_name = class_path.split('.')[-1]
+        if hasattr(ConvertXml, class_name):
+            cls = getattr(ConvertXml, class_name)
+            obj = object.__new__(cls)
+
+            # Recursively convert nested dicts in obj_data
+            for k, v in obj_data.items():
+                if isinstance(v, list):
+                    obj_data[k] = [_dict_to_convertxml_element(item) if isinstance(item, dict) else item for item in v]
+                elif isinstance(v, dict) and '__type__' in v:
+                    obj_data[k] = _dict_to_convertxml_element(v)
+
+            obj.__dict__.update(obj_data)
+            return obj
+
+    return data_dict
 
 
 def load_schema_from_mongo(mongo_db, document_id) -> Any:
@@ -227,6 +286,17 @@ def load_schema_from_mongo(mongo_db, document_id) -> Any:
     if not doc:
         raise KeyError(f"Document with id {document_id} not found in irp_data_formats")
 
+    # DEBUG: Print raw message structure from MongoDB
+    if 'schema' in doc and 'messages' in doc['schema']:
+        messages_raw_from_mongo = doc['schema']['messages']
+        print("DEBUG - Raw messages from MongoDB (first message):")
+        first_msg_id = list(messages_raw_from_mongo.keys())[0]
+        first_msg = messages_raw_from_mongo[first_msg_id]
+        print(f"Message ID: {first_msg_id}")
+        print(f"Keys: {first_msg.keys()}")
+        print(f"Data type: {type(first_msg['data'])}")
+        print(f"First data element: {first_msg['data'][0] if first_msg['data'] else 'empty'}")
+
     # Document may store schema at top-level keys or under a 'schema' field
     schema_blob = None
     if 'schema' in doc and isinstance(doc['schema'], dict):
@@ -244,9 +314,31 @@ def load_schema_from_mongo(mongo_db, document_id) -> Any:
         raise KeyError("No serialized schema found in document")
 
     # Deserialize components
-    messages = _deserialize_object(schema_blob.get('messages'))
+    messages_raw = _deserialize_object(schema_blob.get('messages'))
     types = _deserialize_object(schema_blob.get('types'))
     templates = _deserialize_object(schema_blob.get('templates'))
+
+    # Convert deserialized message dicts back to Message objects
+    from backend.app.modules.reporter.irp.models.data_format_models import Message
+
+    # Convert message dicts to Message objects with properly typed data
+    messages = {}
+    if messages_raw and isinstance(messages_raw, dict):
+        for msg_id, msg_data in messages_raw.items():
+            if isinstance(msg_data, dict) and 'name' in msg_data and 'data' in msg_data:
+                # Ensure data elements are ConvertXml objects
+                msg_data_list = msg_data['data']
+                if isinstance(msg_data_list, list):
+                    # Convert each element from dict to proper ConvertXml type
+                    msg_data_typed = [_dict_to_convertxml_element(item) if isinstance(item, dict) else item                                        for item in msg_data_list]
+                else:
+                    msg_data_typed = msg_data_list
+
+                messages[msg_id] = Message(msg_data['name'], msg_data_typed)
+            else:
+                messages[msg_id] = msg_data
+    else:
+        messages = messages_raw
 
     # Build a lightweight Schema object and attach to a ConvertXml-like wrapper
     Schema = type('Schema', (), {})
@@ -269,7 +361,7 @@ def load_schema_from_mongo(mongo_db, document_id) -> Any:
     return cx
 
 
-def send_irp_message(schema_obj, message_id, message_data, from_ip: str, to_ip: str, dest_port: int = 9000) -> Tuple[bool, str]:
+def send_irp_message(schema_obj, message_id, message_data, from_ip: str, to_ip: str) -> Tuple[bool, str]:
     """Build and send a binary IRP message via UDP.
 
     Args:
@@ -278,31 +370,16 @@ def send_irp_message(schema_obj, message_id, message_data, from_ip: str, to_ip: 
         message_data: dict of values for the message fields
         from_ip: source IP address to bind from
         to_ip: destination IP address
-        dest_port: destination UDP port (default 9000)
 
     Returns:
         (True, "Sent") on success or (False, error_message)
     """
     try:
-        # Create a type handler and message builder
-        type_handler = TypeHandler(getattr(schema_obj.schema, 'types', None))
-        builder = MessageBuilder(schema_obj.schema, type_handler)
+        # Use refactored IrpFormatter that accepts schema object
+        formatter = IrpFormatter(schema_obj.schema, from_ip, to_ip)
 
-        # Build binary message
-        msg_binary = builder.build_message(message_id, message_data)
-
-        # Send via UDP
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            # Bind to source IP (ephemeral port)
-            sock.bind((from_ip, 0))
-        except Exception:
-            # If binding fails, continue without explicit source bind
-            pass
-        try:
-            sock.sendto(msg_binary, (to_ip, int(dest_port)))
-        finally:
-            sock.close()
+        # Send message (internally uses MessageBuilder)
+        formatter.send_message_from_data(message_id, message_data)
 
         return True, "Sent"
     except Exception as exc:
@@ -320,13 +397,11 @@ def create_irp_template(schema_obj, message_id) -> Dict[str, Any]:
         Template dict
     """
     try:
-        # Create a TemplateGenerator-like instance without parsing a file
-        tg = object.__new__(TemplateGenerator)
-        # Assign schema and footprint generator used by TemplateGenerator methods
-        setattr(tg, 'schema', getattr(schema_obj, 'schema', None))
-        setattr(tg, 'footprint_generator', FootprintTemplateGenerator())
+        tg = TemplateGenerator(schema_obj.schema)
 
-        template = TemplateGenerator.generate_template(tg, message_id)
+        # Generate and return template (no file output)
+        template = tg.generate_template(message_id, interactive=False)
+
         return template
     except Exception as exc:
         raise RuntimeError(f"create_irp_template error: {exc}")

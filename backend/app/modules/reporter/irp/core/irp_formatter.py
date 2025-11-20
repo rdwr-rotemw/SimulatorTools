@@ -1,14 +1,14 @@
 """
-IrpFormatter: XML-to-binary UDP message sender for IDS schemas.
+IrpFormatter: Schema-to-binary UDP message sender for IDS schemas.
 
 Example usage:
-    irp = IrpFormatter("schema.xml", "10.218.101.38", "172.17.40.1")
+    schema_obj = load_schema_from_mongo(mongo_db, mongo_id)
+    irp = IrpFormatter(schema_obj.schema, "10.218.101.38", "172.17.40.1")
     irp.send_message(7, "message_values.json")
 """
 import socket
 import struct
 import time
-from backend.app.modules.reporter.irp.tools.convert_xml import ConvertXml
 from backend.app.modules.reporter.irp.tools.type_handler import TypeHandler
 from backend.app.modules.reporter.irp.tools.message_builder import MessageBuilder
 from backend.app.modules.reporter.irp.tools.value_loader import ValueLoader
@@ -20,14 +20,10 @@ class IrpFormatter:
     Formats and sends messages as UDP packets using XML schema and JSON values.
     """
 
-    def __init__(self, xml_file, from_ip, to_ip):
+    def __init__(self, schema, from_ip, to_ip):
         self.from_ip = from_ip
         self.to_ip = to_ip
-        try:
-            converter = ConvertXml(xml_file).convert_xml()
-            self.schema = converter.schema
-        except Exception as e:
-            raise RuntimeError(f"Failed to load/parse schema from {xml_file}: {e}")
+        self.schema = schema
         try:
             self.type_handler = TypeHandler(self.schema.types)
         except Exception as e:

@@ -1,9 +1,7 @@
-import enum
 import json
 from pathlib import Path
-from backend.app.modules.reporter.irp.tools.convert_xml import ConvertXml
 from backend.app.modules.reporter.irp.tools.footprint_template_generator import FootprintTemplateGenerator
-from backend.app.modules.reporter.irp.models.data_format_models import Schema, Enum
+from backend.app.modules.reporter.irp.models.data_format_models import Enum
 
 
 class TemplateGenerator:
@@ -13,11 +11,8 @@ class TemplateGenerator:
     Includes specialized handling for footprint structures with var-arrays.
     """
 
-    def __init__(self, xml_file):
-        self.xml_converter = ConvertXml(xml_file)
-        # Initialize and populate schema
-        self.xml_converter.convert_xml()
-        self.schema = self.xml_converter.schema
+    def __init__(self, schema):
+        self.schema = schema
         self.footprint_generator = FootprintTemplateGenerator()
 
     def generate_template(self, message_id, output_file=None, interactive=False):

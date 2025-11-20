@@ -595,15 +595,11 @@ async def download_ids_data_format(
         # Convert XML to JSON-like structure and insert into MongoDB
         try:
             converted = convert_xml(local_path)
-            # Normalize to a list of dicts for the IRPMessageTemplate.messages field
-            if isinstance(converted, dict):
-                messages = [converted]
-            elif isinstance(converted, list):
-                messages = converted
-            else:
-                # wrap other types
-                messages = [converted]
-
+            # Debug: print what convert_xml returns
+            print("DEBUG convert_xml output:")
+            print(f"Type: {type(converted)}")
+            print(f"Keys: {list(converted.keys()) if isinstance(converted, dict) else 'N/A'}")
+            print(f"Content: {converted}")
             mongo_db = get_mongo_db()
             template_name = os.path.basename(local_path)
             if template_name.lower().endswith('.xml'):
@@ -612,7 +608,7 @@ async def download_ids_data_format(
             doc = IRPMessageTemplate(
                 template_name=template_name,
                 description=f"Downloaded from {cc_ip}",
-                messages=messages,  # type: ignore[arg-type]
+                schema=converted,  # Pass entire converted schema dict
                 IdsDataFormat_version=payload.sim_version,
                 user_id=str(current_user.user_id),
             )
