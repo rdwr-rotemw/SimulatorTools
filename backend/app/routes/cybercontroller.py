@@ -14,17 +14,26 @@ handled via username/password in request body or query parameters.
 """
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from backend.app.modules.cc.cc_client import get_cc_handler, CCDevice, CCHandler
+from backend.app.models.cc_session import CCSession
+from backend.app.models.user import User
+from backend.app.modules.cc.cc_client import get_cc_handler, CCDevice, CCHandler, CCCredentials
+from backend.app.modules.sapro.sapro_client import get_sapro_handler
+from backend.app.modules.sapro.src.returnTypes.models import SaproDevice
+from backend.app.modules.reporter.irp.irp_module import convert_xml
+from backend.app.utils.database import get_mongo_db
+from backend.app.modules.mongo_models import IRPMessageTemplate
 from backend.app.utils.auth import require_cc_access
 from backend.app.utils.database import get_db
-from backend.app.models.user import User
-from backend.app.models.cc_session import CCSession
+
+logger = logging.getLogger("sim-tools.cybercontroller")
 
 router = APIRouter(prefix="/api", tags=["cybercontroller"])
 
@@ -88,6 +97,12 @@ class CCIdsDataFormatResponse(BaseModel):
     files: List[str]
 
 
+class IdsDataFormatPayload(BaseModel):
+    """Payload for listing IdsDataFormat files via SSH credentials."""
+    username: str
+    password: str
+
+
 # ============================================================================
 # Endpoints
 # ============================================================================
@@ -98,15 +113,15 @@ class CCIdsDataFormatResponse(BaseModel):
     response_model=CCLoginResponse,
 )
 async def cc_login(
-    cc_ip: str,
-    payload: CCLoginPayload,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_cc_access),
+        cc_ip: str,
+        payload: CCLoginPayload,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
 ) -> CCLoginResponse:
     """Authenticate to a CyberController instance.
 
     Creates or retrieves a CC handler for the given IP and credentials,
-    then attempts to login. On success, stores the JSESSIONID in the database
+    then attempts to log in. On success, stores the JSESSIONID in the database
     for session management.
 
     Args:
@@ -166,18 +181,14 @@ async def cc_login(
     response_model=CCDevicesListResponse,
 )
 async def get_cc_simulators(
-    cc_ip: str,
-    username: str = Query(..., description="CC username"),
-    password: str = Query(..., description="CC password"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_cc_access),
+        cc_ip: str,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
 ) -> CCDevicesListResponse:
-    """Get all devices (simulators) from a CyberController instance.
+    """Get all dp devices (simulators) from a CyberController instance.
 
     Args:
         cc_ip: CyberController IP address or hostname
-        username: CC authentication username (query param)
-        password: CC authentication password (query param)
         db: Database session
         current_user: Authenticated user with cc_admin or admin role
 
@@ -188,26 +199,47 @@ async def get_cc_simulators(
         HTTPException: If authentication or device retrieval fails
     """
     try:
-        handler = get_cc_handler(cc_ip, username, password)
+        # Query for active session for this user and CC
+        cc_session = db.query(CCSession).filter(
+            CCSession.cc_ip == cc_ip,
+            CCSession.user_id == current_user.user_id
+        ).first()
 
-        # Ensure authenticated (handler will auto-refresh if needed)
-        if not handler.is_logged_in():
-            ok, msg = handler.refresh_session()
-            if not ok:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=f"CC authentication failed: {msg}"
-                )
+        if not cc_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
+            )
+
+        # Create handler and attach stored JSESSIONID so requests use it
+        handler = CCHandler(cc_ip, "", "")
+        jsession_id = str(cc_session.jsession_id)
+        handler._creds = CCCredentials(jsession_id=jsession_id, cc_ip=cc_ip,
+                                       authenticated_at=getattr(cc_session, 'login_time', None))
+        try:
+            handler._session.cookies.set("JSESSIONID", jsession_id)
+        except Exception:
+            pass
 
         # Get all devices
-        ok, result = handler.get_all_devices()
+        ok, result = handler.get_all_dps()
         if not ok:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to retrieve devices: {result}"
             )
 
-        devices: List[CCDevice] = result  # type: ignore
+        # Query Sapro for available simulators and filter DP devices accordingly
+        sapro_sims =  list[SaproDevice]
+        try:
+            sapro_handler = get_sapro_handler()
+            sapro_sims = sapro_handler.get_all_devices()
+        except Exception as e:
+            logger.error(f"failed to get sapro simulators: {str(e)}")
+
+        sapro_ips = {getattr(s, 'ip_address', None) for s in sapro_sims if
+                     getattr(s, 'ip_address', None) is not None}
+        filtered_devices = [d for d in result if d.management_ip in sapro_ips]
 
         # Convert to response model
         device_responses = [
@@ -218,7 +250,7 @@ async def get_cc_simulators(
                 device_type=d.device_type,
                 status=d.status,
             )
-            for d in devices
+            for d in filtered_devices
         ]
 
         return CCDevicesListResponse(devices=device_responses)
@@ -237,10 +269,10 @@ async def get_cc_simulators(
     response_model=CCDeviceResponse,
 )
 async def add_cc_simulator(
-    cc_ip: str,
-    payload: CCAddDevicePayload,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_cc_access),
+        cc_ip: str,
+        payload: CCAddDevicePayload,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
 ) -> CCDeviceResponse:
     """Add a device (simulator) to a CyberController instance.
 
@@ -257,16 +289,26 @@ async def add_cc_simulator(
         HTTPException: If authentication or device creation fails
     """
     try:
-        handler = get_cc_handler(cc_ip, payload.username, payload.password)
+        # Query for active session
+        cc_session = db.query(CCSession).filter(
+            CCSession.cc_ip == cc_ip,
+            CCSession.user_id == current_user.user_id
+        ).first()
 
-        # Ensure authenticated
-        if not handler.is_logged_in():
-            ok, msg = handler.refresh_session()
-            if not ok:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=f"CC authentication failed: {msg}"
-                )
+        if not cc_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
+            )
+
+        handler = CCHandler(cc_ip, "", "")
+        jsession_id = str(cc_session.jsession_id)
+        handler._creds = CCCredentials(jsession_id=jsession_id, cc_ip=cc_ip,
+                                       authenticated_at=getattr(cc_session, 'login_time', None))
+        try:
+            handler._session.cookies.set("JSESSIONID", jsession_id)
+        except Exception:
+            pass
 
         # Add device
         ok, result = handler.add_device(
@@ -308,20 +350,16 @@ async def add_cc_simulator(
     response_model=CCDeleteResponse,
 )
 async def delete_cc_simulator(
-    cc_ip: str,
-    simulator_ip: str,
-    username: str = Query(..., description="CC username"),
-    password: str = Query(..., description="CC password"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_cc_access),
+        cc_ip: str,
+        simulator_ip: str,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
 ) -> CCDeleteResponse:
     """Delete a device (simulator) from a CyberController instance.
 
     Args:
         cc_ip: CyberController IP address or hostname
         simulator_ip: IP address of the simulator to delete
-        username: CC authentication username (query param)
-        password: CC authentication password (query param)
         db: Database session
         current_user: Authenticated user with cc_admin or admin role
 
@@ -332,16 +370,26 @@ async def delete_cc_simulator(
         HTTPException: If authentication or device deletion fails
     """
     try:
-        handler = get_cc_handler(cc_ip, username, password)
+        # Query for active session
+        cc_session = db.query(CCSession).filter(
+            CCSession.cc_ip == cc_ip,
+            CCSession.user_id == current_user.user_id
+        ).first()
 
-        # Ensure authenticated
-        if not handler.is_logged_in():
-            ok, msg = handler.refresh_session()
-            if not ok:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=f"CC authentication failed: {msg}"
-                )
+        if not cc_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
+            )
+
+        handler = CCHandler(cc_ip, "", "")
+        jsession_id = str(cc_session.jsession_id)
+        handler._creds = CCCredentials(jsession_id=jsession_id, cc_ip=cc_ip,
+                                       authenticated_at=getattr(cc_session, 'login_time', None))
+        try:
+            handler._session.cookies.set("JSESSIONID", jsession_id)
+        except Exception:
+            pass
 
         # Delete device
         ok, msg = handler.delete_device(simulator_ip)
@@ -368,9 +416,9 @@ async def delete_cc_simulator(
     response_model=CCLogoutResponse,
 )
 async def cc_logout(
-    cc_ip: str,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_cc_access),
+        cc_ip: str,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
 ) -> CCLogoutResponse:
     """Logout from a CyberController instance.
 
@@ -399,18 +447,15 @@ async def cc_logout(
 
         if not cc_session:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No active session found for CC {cc_ip}"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
             )
 
         # Get the jsession_id from the database
         jsession_id = str(cc_session.jsession_id)
 
         # Create CCHandler instance without logging in (we only need it to call logout)
-        # Use empty strings for username/password since we're not authenticating
         handler = CCHandler(cc_ip, "", "")
-
-        # Call logout with the stored jsession_id
         ok, msg = handler.logout(jsession_id)
 
         # Delete the session record from database regardless of server logout result
@@ -435,62 +480,48 @@ async def cc_logout(
         )
 
 
-@router.get(
+@router.post(
     "/cc/{cc_ip}/irp/IdsDataFormat",
     status_code=status.HTTP_200_OK,
     response_model=CCIdsDataFormatResponse,
 )
 async def get_ids_data_format(
-    cc_ip: str,
-    username: str = Query(..., description="CC username"),
-    password: str = Query(..., description="CC password"),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(require_cc_access),
+        cc_ip: str,
+        payload: IdsDataFormatPayload,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
 ) -> CCIdsDataFormatResponse:
-    """Get IdsDataFormat XML files from CyberController.
+    """List IdsDataFormat XML files available on the CyberController via SSH.
 
-    This endpoint retrieves the list of IdsDataFormat XML configuration files
-    available on the CyberController instance.
-
-    Args:
-        cc_ip: CyberController IP address or hostname
-        username: CC authentication username (query param)
-        password: CC authentication password (query param)
-        db: Database session
-        current_user: Authenticated user with cc_admin or admin role
-
-    Returns:
-        CCIdsDataFormatResponse containing list of XML file names
-
-    Raises:
-        HTTPException: If authentication or file retrieval fails
+    Requires an active CCSession stored in the database and root SSH credentials
+    to connect to the CC host and enumerate files.
     """
     try:
-        handler = get_cc_handler(cc_ip, username, password)
+        cc_session = db.query(CCSession).filter(
+            CCSession.cc_ip == cc_ip,
+            CCSession.user_id == current_user.user_id
+        ).first()
 
-        # Ensure authenticated
-        if not handler.is_logged_in():
-            ok, msg = handler.refresh_session()
-            if not ok:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=f"CC authentication failed: {msg}"
-                )
+        if not cc_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
+            )
 
-        # TODO: Implement IdsDataFormat XML retrieval in CCHandler
-        # For now, return placeholder
-        # Example implementation:
-        # ok, files = handler.get_ids_data_format_files()
-        # if not ok:
-        #     raise HTTPException(
-        #         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        #         detail=f"Failed to retrieve IdsDataFormat files: {files}"
-        #     )
+        handler = CCHandler(cc_ip, "", "")
+        # attach stored jsession so handler can use API if needed
+        try:
+            handler._session.cookies.set("JSESSIONID", str(cc_session.jsession_id))
+        except Exception:
+            pass
 
-        # Placeholder response
-        return CCIdsDataFormatResponse(
-            files=["IdsDataFormat_placeholder.xml"]
-        )
+        ok, files = handler.get_ids_data_formats(payload.username, payload.password)
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to retrieve IdsDataFormat files: {files}"
+            )
+        return CCIdsDataFormatResponse(files=files)
     except HTTPException:
         raise
     except Exception as exc:
@@ -500,5 +531,108 @@ async def get_ids_data_format(
         )
 
 
-__all__ = ["router"]
+class IdsDownloadPayload(BaseModel):
+    """Payload for downloading an IdsDataFormat based on simulator version.
 
+    sim_version: Simulator version string such as "10.3.0" or "8.2.1". This
+    will be converted to the corresponding IdsDataFormat filename (for example
+    "10.3.0" -> "IdsDataFormat100300.xml") and that file will be downloaded
+    via SCP to /tmp/data_formats/ on the backend host.
+    """
+    sim_version: str
+    username: str
+    password: str
+
+
+@router.post(
+    "/cc/{cc_ip}/irp/IdsDataFormat/download",
+    status_code=status.HTTP_200_OK,
+)
+async def download_ids_data_format(
+        cc_ip: str,
+        payload: IdsDownloadPayload,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
+):
+    """Download IdsDataFormat file for a given simulator version.
+
+    This endpoint accepts a simulator version string (for example "10.6.0.0" or
+    "8.2.1"). The version is converted to the corresponding IdsDataFormat
+    filename (e.g. "IdsDataFormat100300.xml"), then the endpoint connects to
+    the CC host via SSH using provided root credentials and downloads the file
+    via SCP to /tmp/data_formats/ on the backend host.
+
+    Returns a JSON object with keys: success (bool), message (str), local_path (str).
+    """
+    try:
+        cc_session = db.query(CCSession).filter(
+            CCSession.cc_ip == cc_ip,
+            CCSession.user_id == current_user.user_id
+        ).first()
+
+        if not cc_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
+            )
+
+        handler = CCHandler(cc_ip, "", "")
+        try:
+            handler._session.cookies.set("JSESSIONID", str(cc_session.jsession_id))
+        except Exception:
+            pass
+
+        ok, res = handler.download_ids_data_format(payload.sim_version, payload.username, payload.password)
+        if not ok:
+            return {"success": False, "message": res, "local_path": "", "mongo_id": ""}
+
+        local_path = res
+
+        # Ensure file exists before attempting conversion
+        if not os.path.exists(local_path):
+            return {"success": False, "message": f"Downloaded file not found: {local_path}", "local_path": local_path, "mongo_id": ""}
+
+        # Convert XML to JSON-like structure and insert into MongoDB
+        try:
+            converted = convert_xml(local_path)
+            # Normalize to a list of dicts for the IRPMessageTemplate.messages field
+            if isinstance(converted, dict):
+                messages = [converted]
+            elif isinstance(converted, list):
+                messages = converted
+            else:
+                # wrap other types
+                messages = [converted]
+
+            mongo_db = get_mongo_db()
+            template_name = os.path.basename(local_path)
+            if template_name.lower().endswith('.xml'):
+                template_name = template_name[:-4]
+
+            doc = IRPMessageTemplate(
+                template_name=template_name,
+                description=f"Downloaded from {cc_ip}",
+                messages=messages,  # type: ignore[arg-type]
+                IdsDataFormat_version=payload.sim_version,
+                user_id=str(current_user.user_id),
+            )
+
+            result = mongo_db.irp_data_formats.insert_one(doc.model_dump())
+            mongo_id = str(result.inserted_id)
+
+            return {"success": True, "message": "Downloaded and saved", "local_path": local_path, "mongo_id": mongo_id}
+        except FileNotFoundError:
+            return {"success": False, "message": "Downloaded file disappeared before conversion", "local_path": local_path, "mongo_id": ""}
+        except Exception as exc:
+            # Conversion or Mongo insertion failed
+            return {"success": False, "message": f"Conversion/Mongo error: {exc!s}", "local_path": local_path, "mongo_id": ""}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error downloading IdsDataFormat: {exc!s}"
+        )
+
+
+__all__ = ["router"]

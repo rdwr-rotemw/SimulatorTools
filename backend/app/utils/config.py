@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     # Environment
     ENV: str = Field("development", description="Runtime environment")
     DEBUG: bool = Field(False, description="Enable debug mode")
+    ENVIRONMENT: str = Field(default="development", env="ENVIRONMENT", description="dev or prod")
 
     # Database type (postgresql or sqlite)
     DATABASE_TYPE: str = Field(default="postgresql", description="Database type: postgresql or sqlite")
@@ -64,6 +65,12 @@ class Settings(BaseSettings):
     SAPRO_IP: str = Field("172.17.166.10", description="Sapro server IP (use localhost on production Sapro machine)")
     SAPRO_PORT: int = Field(2100, description="Sapro server port")
     SAPRO_MAP_DIR: str = Field("/opt/sapro/map/", description="Sapro maps directory path")
+    SAPRO_SSH_HOST: str = Field(default="172.17.166.10", env="SAPRO_SSH_HOST")
+    SAPRO_SSH_USER: str = Field(default="root", env="SAPRO_SSH_USER")
+    SAPRO_SSH_PASSWORD: str = Field(default="", env="SAPRO_SSH_PASSWORD")
+
+    # Download path for IRP/IdsDataFormat files (used by CC SSH download helpers)
+    DOWNLOAD_PATH: str = Field(default="/tmp/irp_files", env="DOWNLOAD_PATH")
 
     # Logging
     LOG_LEVEL: str = Field("INFO", description="Logging level (DEBUG/INFO/WARNING/ERROR)")

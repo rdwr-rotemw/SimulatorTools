@@ -135,6 +135,9 @@ class SaproCommunicationHandler:
 
     def snmp_get_device_info(self, device_ip: str) -> Tuple[Optional[str], Optional[str]]:
         """Retrieve device type and version via SNMP."""
+        if settings.ENVIRONMENT == "development":
+            # In development environment, return mock values
+            return "DefensePro", "10.6.0.0"
         snmp_client = SnmpClient(device_ip)
 
         device_type = snmp_client.get("1.3.6.1.2.1.1.1.0")

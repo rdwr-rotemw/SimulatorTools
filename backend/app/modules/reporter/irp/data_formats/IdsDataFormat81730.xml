@@ -1,0 +1,918 @@
+<?xml version="1.0"?>
+<schema>
+		<messages>
+				<message id="1" name="security-events">
+						<for-loop name="traps" iterations="uint-32">
+								<data name="attack-id" type="uint-32"></data>
+								<data name="policy-id" type="uint-32"></data>
+								<data name="msg-type" type="msg-type"></data>
+								<data name="time" type="uint-32"></data>
+								<data name="date" type="uint-32"></data>
+								<data name="src-addr" type="ipv6"></data>
+								<data name="dst-addr" type="ipv6"></data>
+						</for-loop>
+				</message>
+				<message id="2" name="behavioral-dos-footprint">
+						<template instanceof="report-id"></template>
+						<data name="final" type="boolean-8"></data>
+						<struct name="footprint">
+								<data name="relation" type="vsecure.relation"></data>
+								<template name="or" instanceof="vsecure.footprint-values"></template>
+								<template name="and" instanceof="vsecure.footprint-values"></template>
+						</struct>
+				</message>
+				<message id="3" name="behavioral-dos-controller-state">
+						<template instanceof="report-id"></template>
+						<data name="state" type="vsecure.controller-state"></data>
+						<template instanceof="bdos.burst-attack-stats"></template>
+				</message>
+				<message id="4" name="behavioral-dos-all-found-values">
+						<template instanceof="report-id"></template>
+						<template name="found-values" instanceof="vsecure.footprint-values"></template>
+				</message>
+				<message id="5" name="behavioral-dos-attack-data">
+						<template instanceof="report-id"></template>
+						<composite type="bdos.protection-type">
+								<data name="protection" type="bdos.protection"></data>
+								<data name="direction" type="bdos.direction"></data>
+						</composite>
+						<data name="strictness-level" type="bdos.strictness-level"></data>
+						<struct name="attack-statistics">
+								<template name="anomalous-pps" instanceof="bdos.all-protections-data"></template>
+								<template name="anomalous-bps" instanceof="bdos.all-protections-data"></template>
+								<template name="normal-pps" instanceof="bdos.all-protections-data"></template>
+								<template name="normal-bps" instanceof="bdos.all-protections-data"></template>
+						</struct>
+						<fixed-array name="short-term-history" type="uint-64" size="20"></fixed-array>
+						<fixed-array name="short-term-pps-history" type="uint-64" size="20"></fixed-array>
+				</message>
+				<message id="6" name="traffic-monitoring-applications-data">
+				        <data name="received_packets" type="uint-64"></data>
+						<data name="received_bytes" type="uint-64"></data>
+						<clone enumeration="trafmon.applications">
+								<template instanceof="trafmon.application-data"></template>
+						</clone>
+				</message>
+				<message id="7" name="traffic-monitoring-global-data">
+						<data name="concur-tcp-connections" type="uint-32"></data>
+						<data name="concur-udp-connections" type="uint-32"></data>
+						<while-loop name="global-data" sentinel="uint-32" stop-at="999999">
+								<data name="port" type="uint-32"></data>
+								<clone enumeration="trafmon.protocols">
+										<template instanceof="trafmon.protocol-data"></template>
+								</clone>
+								<data name="total_in_packets" type="uint-64"></data>
+								<data name="total_in_bytes" type="uint-64"></data>
+								<data name="total_out_packets" type="uint-64"></data>
+								<data name="total_out_bytes" type="uint-64"></data>
+						</while-loop>
+				</message>
+				<message id="8" name="httpflood-state-transition">
+						<template instanceof="report-id"></template>
+						<data name="old-state" type="httpflood.state-type"></data>
+						<data name="new-state" type="httpflood.state-type"></data>
+						<data name="characterization-mode" type="httpflood.char-mode"></data>
+				</message>
+				<message id="9" name="httpflood-counters-report">
+						<template instanceof="report-id"></template>
+						<data name="bins-nums" type="uint-32"></data>
+						<data name="bins-size" type="uint-32"></data>
+						<data name="rate-detect-r-c" type="uint-32"></data>
+						<data name="rate-detect-other-c" type="uint-32"></data>
+						<data name="rate-detect-outb_c" type="uint-32"></data>
+						<data name="rate-detect-s-r-c" type="uint-32"></data>
+						<data name="rate-detect-con_r_c" type="uint-32"></data>
+						<fixed-array name="invariant-sdt" type="uint-32" size="150"></fixed-array>
+						<data name="invariant-out-r-p" type="uint-32"></data>
+						<data name="normal-r-c" type="uint-32"></data>
+						<data name="normal-other-c" type="uint-32"></data>
+						<data name="normal-outb_c" type="uint-32"></data>
+						<data name="normal-s-r-c" type="uint-32"></data>
+						<data name="normal-con_r_c" type="uint-32"></data>
+						<fixed-array name="invariant-ldt" type="uint-32" size="150"></fixed-array>
+						<data name="normal-out-r-p" type="uint-32"></data>					
+				</message>
+				<message id="10" name="httpflood-block-rules-report">
+						<template instanceof="report-id"></template>
+						<data name="other" type="boolean-8"></data>
+						<overlap>
+								<data name="blocking-rules-status" type="httpflood.rules-status"></data>
+								<switch selector="httpflood.rules-status">
+										<nil name="none"></nil>
+										<nil name="unchanged"></nil>
+										<switch name="changed" selector="httpflood.block-rules">
+											<struct name="source">
+													<while-loop name="source-list" sentinel="uint-32" stop-at="999999">
+															<data name="address" type="ipv4and6"></data>
+															<while-loop name="url-list" sentinel="uint-32" stop-at="888888">
+																	<data name="bypass" type="boolean-8"></data>
+																	<data name="url" type="httpflood.http-url"></data>
+															</while-loop>
+													</while-loop>
+													<data name="source-nums" type="uint-32"></data>
+											</struct>
+											<while-loop name="size" sentinel="uint-32" stop-at="999999">
+											        <data name="bypass" type="boolean-8"></data>
+													<data name="url" type="httpflood.http-url"></data>
+											</while-loop>
+											<error name="none"></error>
+											<error name="other"></error>
+										</switch>
+								</switch>
+						</overlap>
+				</message>
+					<message id="11" name="httpflood-periodic-report">
+						<while-loop name="counters" sentinel="uint-32" stop-at="999999">
+							<data name="server-name" type="httpflood.http-server-name"></data>										
+							<data name="real-time-r-c" type="uint-32"></data>
+							<data name="real-time-other-c" type="uint-32"></data>
+							<data name="real-time-outb_c" type="uint-32"></data>
+							<data name="real-time-s-r-c" type="uint-32"></data>
+							<data name="real-time-con_r_c" type="uint-32"></data>
+							<data name="normal-r-c" type="uint-32"></data>
+							<data name="normal-other-c" type="uint-32"></data>
+							<data name="normal-outb_c" type="uint-32"></data>
+							<data name="normal-s-r-c" type="uint-32"></data>
+							<data name="normal-con_r_c" type="uint-32"></data>
+						</while-loop>				
+				</message>
+				<message id="12" name="scanning-events-samples-report">
+						<template instanceof="report-id"></template>
+                        <for-loop name="events-sample" iterations="uint-8" transparent="yes">                        
+                            <struct name="event-sample">
+                                <data name="destination-ip" type="ipv4and6"></data>
+                                <data name="destination-port" type="uint-16"></data>
+								<overlap>
+										<data name="protocol" type="scanning.protocols"></data>
+										<switch selector="scanning.protocols">
+											<struct name="tcp">
+												<data name="flags" type="tcp-flags"></data>
+											</struct>
+											<struct name="icmp">
+												<data name="icmp-msg-type" type="uint-8"></data>
+											</struct>
+											<nil name="udp"></nil>
+											<error name="igmp"></error>
+										</switch>
+								</overlap>
+                            </struct>
+                        </for-loop>
+				</message>
+				<message id="13" name="scanning-attack-details-report">
+						<template instanceof="report-id"></template>
+						<data name="avg-time-between-events" type="float"></data>
+						<data name="number-of-events" type="uint-32"></data>
+						<data name="actual-action" type="scanning.protection-action"></data>
+						<data name="action-reason" type="scanning.reason"></data>
+						<data name="source-ip" type="ipv4and6"></data>
+				</message>
+				<message id="14" name="scanning-footpring-blocking-rule">
+						<template instanceof="report-id"></template>
+						<data name="direction" type="bdos.direction"></data>
+						<data name="strictness-level" type="bdos.strictness-level"></data>
+						<data name="final" type="boolean-8"></data>
+						<struct name="footprint">
+								<data name="relation" type="vsecure.relation"></data>
+								<template name="or" instanceof="vsecure.footprint-values"></template>
+								<template name="and" instanceof="vsecure.footprint-values"></template>
+						</struct>
+				</message>
+				<message id="15" name="server-protection-attack-details">
+						<template instanceof="report-id"></template>
+						<data name="attacker-ip" type="ipv4and6"></data>
+						<data name="protected-host" type="ipv4and6"></data>
+						<data name="protected-port" type="uint-16"></data>
+						<data name="action" type="action-type"></data>
+						<data name="attacker-url" type="httpflood.http-url"></data>
+				</message>
+				<message id="16" name="server-protection-blocking-details">
+						<template instanceof="report-id"></template>
+						<data name="number-of-events" type="uint-32"></data>
+						<data name="blocking-duration" type="uint-32"></data>
+						<data name="avg-time-between-events" type="float"></data>
+				</message>
+                                <message id="18" name="syn-protection-start-attack-details">
+					<template instanceof="report-id"></template>
+					<data name="activation-threshold" type="uint-32"></data>
+                                        <data name="tcp-challenge-method" type="syn-protection.tcp-challenge"></data>
+                                        <data name="web-enabled" type="boolean-8"></data>
+                                        <data name="web-challenge-method" type="syn-protection.http-challenge"></data>
+				</message>
+				<message id="19" name="syn-protection-periodic-attack-details">
+					<template instanceof="report-id"></template>
+                                        <data name="total-syns" type="uint-32"></data>
+					<data name="total-acks" type="uint-32"></data>
+                                        <data name="web-enabled" type="boolean-8"></data>
+                                        <data name="web-utilization" type="uint-32"></data>
+                                        <data name="tcp-enabled" type="boolean-8"></data>
+                                        <data name="tcp-utilization" type="uint-32"></data>
+				</message>
+				<message id="20" name="behavioral-dos-rt-monitoring">
+                    <data name="policy-name" type="policy-name"></data>
+                    <data name="policy-type" type="bdos.policy-type"></data>
+                    <struct name="ipv4">
+                         <while-loop name="controllers" sentinel="uint-32" stop-at="999999">
+                            <composite type="bdos.protection-type">
+                                    <data name="protection" type="bdos.protection"></data>
+                                    <data name="direction" type="bdos.direction"></data>
+                            </composite>
+                            <template instanceof="bdos.all-controllers-data"></template>
+                        </while-loop>
+                    </struct>
+                    <if name="ipv6" condition="boolean-8">
+                        <while-loop name="controllers" sentinel="uint-32" stop-at="999999">
+                            <composite type="bdos.protection-type">
+								<data name="protection" type="bdos.protection"></data>
+								<data name="direction" type="bdos.direction"></data>
+                            </composite>
+                            <template instanceof="bdos.all-controllers-data"></template>
+                        </while-loop>
+                    </if>
+				</message>
+				<message id="21" name="behavioral-dos-rt-rate-vectors">
+                        <data name="policy-name" type="policy-name"></data>
+                        <data name="policy-type" type="bdos.policy-type"></data>
+						<struct name="ipv4">
+                            <template instanceof="bdos.rate-vectors"></template>
+						</struct>
+                        <if name="ipv6" condition="boolean-8">
+                            <template instanceof="bdos.rate-vectors"></template>
+                        </if>
+				</message>
+				<message id="22" name="behavioral-dos-rt-portion-vectors">
+                        <data name="policy-name" type="policy-name"></data>
+                        <data name="policy-type" type="bdos.policy-type"></data>
+						<struct name="ipv4">
+                            <template instanceof="bdos.portion-vectors"></template>
+						</struct>
+                        <if name="ipv6" condition="boolean-8">
+                            <template instanceof="bdos.portion-vectors"></template>
+                        </if>
+				</message>
+				<message id="23" name="behavioral-dos-rt-fuzzy-info">
+                        <data name="policy-name" type="policy-name"></data>
+                        <data name="policy-type" type="bdos.policy-type"></data>
+						<struct name="ipv4">
+                            <template instanceof="bdos.fuzzy-edges-info"></template>
+						</struct>
+                        <if name="ipv6" condition="boolean-8">
+                            <template instanceof="bdos.fuzzy-edges-info"></template>
+                        </if>
+				</message>
+				<message id="24" name="scanning-blocking-duration-report">
+						<template instanceof="report-id"></template>
+						<data name="blocking-duration" type="uint-32"></data>
+				</message>
+				<message id="25" name="server-protection-event-details">
+						<template instanceof="report-id"></template>
+						<data name="protocol" type="server-protection.protocol"></data>
+						<while-loop name="event-details" sentinel="uint-32" stop-at="999999">
+							<data name="message" type="server-protection.event-details-message"></data>
+						</while-loop>
+				</message>
+				<message id="26" name="pps-connection-attack-details">
+						<while-loop name="event-details" sentinel="uint-32" stop-at="999999">
+							<template instanceof="report-id"></template>
+							<data name="attacker-ip" type="ipv4and6"></data>
+							<data name="protected-host" type="ipv4and6"></data>
+							<data name="protected-port" type="uint-16"></data>
+							<data name="action" type="action-type"></data>
+							<data name="attack-duration" type="uint-64"></data>
+							<data name="attack-rate" type="uint-64"></data>
+							<data name="attack-total-drop-rate" type="uint-64"></data>
+						</while-loop>
+				</message>	
+				<message id="27" name="dns-protection-footprint">
+						<template instanceof="report-id"></template>
+						<data name="final" type="boolean-8"></data>
+						<struct name="footprint">
+								<data name="relation" type="vsecure.relation"></data>
+								<template name="or" instanceof="vsecure.footprint-values"></template>
+								<template name="and" instanceof="vsecure.footprint-values"></template>
+						</struct>
+						
+						<template name="found-excluded_subdomains" instanceof="vsecure.excluded_subdomains-values"></template>
+				</message>
+				<message id="28" name="dns-protection-controller-state">
+						<template instanceof="report-id"></template>
+						<data name="state" type="vsecure.controller-state"></data>
+						<data name="action" type="vsecure.action-type"></data>
+				</message>
+				<message id="29" name="dns-protection-all-found-values">
+						<template instanceof="report-id"></template>
+						<template name="found-values" instanceof="vsecure.footprint-values"></template>
+
+				</message>
+				<message id="30" name="dns-protection-attack-data">
+						<template instanceof="report-id"></template>
+						<composite type="dns.protection-type">
+								<data name="protection" type="dns.protection"></data>
+								<data name="direction" type="bdos.direction"></data>
+						</composite>
+						<data name="strictness-level" type="bdos.strictness-level"></data>
+						<struct name="attack-statistics">
+								<template name="anomalous-pps" instanceof="dns.all-protections-data"></template>
+								<template name="anomalous-bps" instanceof="dns.all-protections-data"></template>
+								<template name="normal-pps" instanceof="dns.all-protections-data"></template>
+								<template name="normal-bps" instanceof="dns.all-protections-data"></template>
+						</struct>
+						<fixed-array name="short-term-history" type="uint-64" size="20"></fixed-array>
+						<fixed-array name="short-term-pps-history" type="uint-64" size="20"></fixed-array>
+				</message>
+				<message id="31" name="dns-protection-rt-monitoring">
+                    <data name="policy-name" type="policy-name"></data>
+                    <data name="policy-type" type="bdos.policy-type"></data>
+                    <struct name="ipv4">
+                         <while-loop name="controllers" sentinel="uint-32" stop-at="999999">
+                            <composite type="dns.protection-type">
+                                    <data name="protection" type="dns.protection"></data>
+                                    <data name="direction" type="bdos.direction"></data>
+                            </composite>
+                            <template instanceof="dns.all-controllers-data"></template>
+                        </while-loop>
+                    </struct>
+                    <if name="ipv6" condition="boolean-8">
+                        <while-loop name="controllers" sentinel="uint-32" stop-at="999999">
+                            <composite type="dns.protection-type">
+								<data name="protection" type="dns.protection"></data>
+								<data name="direction" type="bdos.direction"></data>
+                            </composite>
+                            <template instanceof="dns.all-controllers-data"></template>
+                        </while-loop>
+                    </if>
+				</message>
+				<message id="32" name="dns-protection-rt-rate-vectors">
+                        <data name="policy-name" type="policy-name"></data>
+                        <data name="policy-type" type="bdos.policy-type"></data>
+						<struct name="ipv4">
+                            <template instanceof="dns.rate-vectors"></template>
+						</struct>
+                        <if name="ipv6" condition="boolean-8">
+                            <template instanceof="dns.rate-vectors"></template>
+                        </if>
+				</message>
+				<message id="33" name="dns-protection-rt-portion-vectors">
+                        <data name="policy-name" type="policy-name"></data>
+                        <data name="policy-type" type="bdos.policy-type"></data>
+						<struct name="ipv4">
+                            <template instanceof="dns.portion-vectors"></template>
+						</struct>
+                        <if name="ipv6" condition="boolean-8">
+                            <template instanceof="dns.portion-vectors"></template>
+                        </if>
+				</message>
+				<message id="34" name="dns-protection-rt-fuzzy-info">
+                        <data name="policy-name" type="policy-name"></data>
+                        <data name="policy-type" type="bdos.policy-type"></data>
+						<struct name="ipv4">
+                            <template instanceof="dns.fuzzy-edges-info"></template>
+						</struct>
+                        <if name="ipv6" condition="boolean-8">
+                            <template instanceof="dns.fuzzy-edges-info"></template>
+                        </if>
+			</message>
+		<message id="35" name="httpflood-mitigation-state-transition">
+			<template instanceof="report-id"></template>
+			<data name="old-state" type="httpflood.mitigation-state-type"></data>
+			<data name="new-state" type="httpflood.mitigation-state-type"></data>
+		</message>
+		<message id="36" name="authentication-tables-status">
+			<data name="dns-concur-attacks" type="uint-32"></data>
+			<data name="dns-table-utilization" type="uint-32"></data>
+			<data name="dns-challenges-rate" type="uint-32"></data>
+			<data name="tcp-concur-attacks" type="uint-32"></data>
+			<data name="tcp-table-utilization" type="uint-32"></data>
+			<data name="tcp-challenges-rate" type="uint-32"></data>
+			<data name="http-concur-attacks" type="uint-32"></data>
+			<data name="http-table-utilization" type="uint-32"></data>
+			<data name="http-challenges-rate" type="uint-32"></data>
+		</message>
+		<message id="37" name="http-flood-periodic-attack-details">
+			<template instanceof="report-id"></template>
+			<data name="escalation-mode" type="httpflood.escalation-type"></data>
+			<data name="challenge-mode" type="httpflood.challenge-type"></data>	
+			<data name="challenged-candidates" type="uint-32"></data>
+			<data name="suspicious-sources" type="uint-32"></data>
+			<data name="web-utilization" type="uint-32"></data>			
+		</message>
+		<message id="38" name="traffic-monitoring-per-policy_report">
+			<while-loop name="per-policy-data" sentinel="uint-32" stop-at="999999">
+				<data name="policy-name" type="policy-name"></data>
+				<data name="policy-direction" type="trafmon.directions"></data>
+				<data name="tcp-connections" type="uint-32"></data>
+				<data name="udp-connections" type="uint-32"></data>
+				<data name="concur-tcp-connections" type="uint-32"></data>
+				<data name="concur-udp-connections" type="uint-32"></data>
+				<clone enumeration="trafmon.protocols">
+					<template instanceof="trafmon.per-policy-counters"></template>
+				</clone>
+			</while-loop>
+		</message>
+		<message id="39" name="dns-protection-ten-top-talkers">
+				<data name="policy-name" type="policy-name"></data>
+				<template name="topTalkers" instanceof="vsecure.top-talkers-values"></template>	
+		</message>
+				
+		</messages>
+		<templates>
+				<report-id>
+						<struct name="report-id">
+								<data name="time" type="uint-32"></data>
+								<data name="cnt" type="uint-32"></data>
+						</struct>
+				</report-id>
+				<namespace name="vsecure">
+
+						
+						<top-talkers-values>
+							<for-loop name="top-talkers-data" iterations="uint-8" transparent="yes">
+								<struct name="top-talker-data">
+									<data name="fqdn" type="domain-name"></data>
+									<data name="score" type="float"></data>
+								</struct>
+							</for-loop>
+						</top-talkers-values>
+						
+							
+						<footprint-values>
+								<for-loop name="footprint-values" iterations="uint-8" transparent="yes">
+										<switch selector="vsecure.footprint-types">
+												<var-array name="checksum" type="uint-32" size="uint-8"></var-array>
+												<var-array name="sequence-number" type="uint-32" size="uint-8"></var-array>
+												<var-array name="id-number" type="uint-32" size="uint-8"></var-array>
+												<var-array name="dns-id" type="uint-32" size="uint-8"></var-array>
+												<var-array name="dns-qname" type="vsecure.dns-qname" size="uint-8"></var-array>
+												<var-array name="dns-subdomain" type="vsecure.dns-subdomain" size="uint-8"></var-array>
+												<var-array name="dns-qcount" type="uint-32" size="uint-8"></var-array>
+												<var-array name="source-port" type="uint-32" size="uint-8"></var-array>
+												<var-array name="source-ip" type="ipv4and6" size="uint-8"></var-array>
+												<var-array name="fragment-offset" type="uint-32" size="uint-8"></var-array>
+												<var-array name="flow-label" type="uint-32" size="uint-8"></var-array>
+												<var-array name="tos" type="uint-32" size="uint-8"></var-array>
+												<var-array name="packet-size" type="uint-32" size="uint-8"></var-array>
+												<var-array name="destination-port" type="uint-32" size="uint-8"></var-array>
+												<var-array name="destination-ip" type="ipv4and6" size="uint-8"></var-array>
+												<var-array name="fragment" type="uint-32" size="uint-8"></var-array>
+												<var-array name="message-type" type="uint-32" size="uint-8"></var-array>
+												<var-array name="ttl" type="uint-32" size="uint-8"></var-array>
+												<var-array name="context-tag" type="uint-32" size="uint-8"></var-array>
+												<var-array name="dns-ancount" type="uint-32" size="uint-8"></var-array>
+												<var-array name="dns-flags" type="uint-32" size="uint-8"></var-array>
+										</switch>
+								</for-loop>
+						</footprint-values>
+						
+							<excluded_subdomains-values>
+							<for-loop name="excluded_subdomains-data" iterations="uint-8" transparent="yes">
+									<data name="excluded_subdomain" type="vsecure.dns-excluded_subdomain"></data>
+							</for-loop>
+						</excluded_subdomains-values>
+				
+						
+				</namespace>
+				<namespace name="bdos">
+						<protection-data>
+								<struct name="protection-data">
+										<data name="in" type="uint-64"></data>
+										<data name="out" type="uint-64"></data>
+								</struct>
+						</protection-data>
+						<all-controllers-data>
+								<struct name="controller-data">
+										<data name="state" type="vsecure.controller-state"></data>
+										<data name="degree-of-attack" type="uint-32"></data>
+								</struct>
+						</all-controllers-data>
+						<all-protections-data>
+								<struct name="attack-statistics">
+										<clone enumeration="bdos.counter-protection">
+												<template instanceof="bdos.protection-data"></template>
+										</clone>
+								</struct>
+						</all-protections-data>
+						<all-portion-data>
+								<struct name="portion-information">
+										<clone enumeration="bdos.protection">
+												<data name="portion-data" type="float"></data>
+										</clone>
+								</struct>
+						</all-portion-data>
+						<all-fuzzy-edges-data>
+								<struct name="fuzzy-edges-information">
+										<clone enumeration="bdos.protection">
+                                            <struct name="protection-fuzzy-edges-data">
+												<data name="suspect-fuzzy-edge" type="float"></data>
+												<data name="attack-fuzzy-edge" type="float"></data>
+												<data name="suspect-fuzzy-pps-edge" type="float"></data>
+												<data name="attack-fuzzy-pps-edge" type="float"></data>
+                                            </struct>
+										</clone>
+								</struct>
+						</all-fuzzy-edges-data>
+						<burst-attack-stats>
+							<struct name="burst-attack-stats">
+								<data name="is-burst-active" type="uint-32"></data>
+								<data name="current-burst-number" type="uint-32"></data>
+								<data name="average-burst-duration" type="float"></data>
+								<data name="average-time-between-bursts" type="float"></data>
+								<data name="average-burst-rate" type="uint-64"></data>
+								<data name="max-burst-rate" type="uint-64"></data>
+							</struct>
+						</burst-attack-stats>
+						<rate-vectors>
+								<template name="normal-rate-vector-bps" instanceof="bdos.all-protections-data"></template>
+								<template name="full-rate-vector-bps" instanceof="bdos.all-protections-data"></template>
+								<template name="partial-rate-vector-bps" instanceof="bdos.all-protections-data"></template>
+								<template name="normal-rate-vector-pps" instanceof="bdos.all-protections-data"></template>
+								<template name="full-rate-vector-pps" instanceof="bdos.all-protections-data"></template>
+								<template name="partial-rate-vector-pps" instanceof="bdos.all-protections-data"></template>
+							    <template name="recent-rate-vector-bps" instanceof="bdos.all-protections-data"></template>
+						</rate-vectors>
+						<portion-vectors>
+								<template name="normal-portion-vector-in" instanceof="bdos.all-portion-data"></template>
+								<template name="normal-portion-vector-out" instanceof="bdos.all-portion-data"></template>
+								<template name="full-portion-vector-in" instanceof="bdos.all-portion-data"></template>
+								<template name="full-portion-vector-out" instanceof="bdos.all-portion-data"></template>
+								<template name="partial-portion-vector-in" instanceof="bdos.all-portion-data"></template>
+								<template name="partial-portion-vector-out" instanceof="bdos.all-portion-data"></template>
+						</portion-vectors>
+						<fuzzy-edges-info>
+								<template name="fuzzy-edges-vector-in" instanceof="bdos.all-fuzzy-edges-data"></template>
+								<template name="fuzzy-edges-vector-out" instanceof="bdos.all-fuzzy-edges-data"></template>
+						</fuzzy-edges-info>
+				</namespace>
+				<namespace name="dns">
+						<protection-data>
+								<struct name="protection-data">
+										<data name="in" type="uint-64"></data>
+										<data name="out" type="uint-64"></data>
+								</struct>
+						</protection-data>
+						<all-controllers-data>
+								<struct name="controller-data">
+										<data name="state" type="vsecure.controller-state"></data>
+										<data name="degree-of-attack" type="uint-32"></data>
+										<data name="degree-of-attack-noise" type="uint-32"></data>
+										<data name="action" type="vsecure.action-type"></data>
+								</struct>
+						</all-controllers-data>
+						<all-protections-data>
+								<struct name="attack-statistics">
+										<clone enumeration="dns.counter-protection">
+												<template instanceof="dns.protection-data"></template>
+										</clone>
+								</struct>
+						</all-protections-data>
+						<all-portion-data>
+								<struct name="portion-information">
+										<clone enumeration="dns.protection">
+												<data name="portion-data" type="float"></data>
+										</clone>
+								</struct>
+						</all-portion-data>
+						<all-fuzzy-edges-data>
+								<struct name="fuzzy-edges-information">
+										<clone enumeration="dns.protection">
+                                            <struct name="protection-fuzzy-edges-data">
+												<data name="suspect-fuzzy-pps-edge" type="float"></data>
+												<data name="attack-fuzzy-pps-edge" type="float"></data>
+												<data name="suspect-fuzzy-noise-edge" type="float"></data>
+												<data name="attack-fuzzy-noise-edge" type="float"></data>
+												
+                                            </struct>
+										</clone>
+								</struct>
+						</all-fuzzy-edges-data>
+						<rate-vectors>
+								<template name="normal-rate-vector-bps" instanceof="dns.all-protections-data"></template>
+								<template name="full-rate-vector-bps" instanceof="dns.all-protections-data"></template>
+								<template name="partial-rate-vector-bps" instanceof="dns.all-protections-data"></template>
+								<template name="normal-rate-vector-pps" instanceof="dns.all-protections-data"></template>
+								<template name="full-rate-vector-pps" instanceof="dns.all-protections-data"></template>
+								<template name="partial-rate-vector-pps" instanceof="dns.all-protections-data"></template>
+						</rate-vectors>
+						<portion-vectors>
+								<template name="normal-portion-vector-in" instanceof="dns.all-portion-data"></template>
+								<template name="normal-portion-vector-out" instanceof="dns.all-portion-data"></template>
+								<template name="full-portion-vector-in" instanceof="dns.all-portion-data"></template>
+								<template name="full-portion-vector-out" instanceof="dns.all-portion-data"></template>
+								<template name="partial-portion-vector-in" instanceof="dns.all-portion-data"></template>
+								<template name="partial-portion-vector-out" instanceof="dns.all-portion-data"></template>
+								<template name="normal-portion-noise-in" instanceof="dns.all-portion-data"></template>
+								<template name="normal-portion-noise-out" instanceof="dns.all-portion-data"></template>
+								<template name="full-portion-noise-in" instanceof="dns.all-portion-data"></template>
+								<template name="full-portion-noise-out" instanceof="dns.all-portion-data"></template>
+								<template name="partial-portion-noise-in" instanceof="dns.all-portion-data"></template>
+								<template name="partial-portion-noise-out" instanceof="dns.all-portion-data"></template>								
+						</portion-vectors>
+						<fuzzy-edges-info>
+								<template name="fuzzy-edges-vector-in" instanceof="dns.all-fuzzy-edges-data"></template>
+								<template name="fuzzy-edges-vector-out" instanceof="dns.all-fuzzy-edges-data"></template>
+						</fuzzy-edges-info>
+				</namespace>
+				<namespace name="trafmon">
+						<application-data>
+								<struct name="application-data">
+									<data name="dropped-packets" type="uint-64"></data>
+									<data name="dropped-bytes" type="uint-64"></data>
+									<data name="would-drop-packets" type="uint-64"></data>
+									<data name="would-drop-bytes" type="uint-64"></data>
+								</struct>
+						</application-data>
+						<protocol-data>
+								<struct name="protocol-data">
+								    <data name="connections" type="uint-32"></data>
+									<data name="received-packets" type="uint-64"></data>
+									<data name="dropped-packets" type="uint-64"></data>
+									<data name="excluded-packets" type="uint-64"></data>
+									<data name="received-bytes" type="uint-64"></data>
+									<data name="dropped-bytes" type="uint-64"></data>
+									<data name="excluded-bytes" type="uint-64"></data>
+								</struct>
+						</protocol-data>
+						<per-policy-counters>
+								<struct name="per-policy-counters">
+									<data name="received-packets" type="uint-64"></data>
+									<data name="dropped-packets" type="uint-64"></data>
+									<data name="received-bytes" type="uint-64"></data>
+									<data name="dropped-bytes" type="uint-64"></data>
+								</struct>
+						</per-policy-counters>
+                </namespace>
+		</templates>
+		<types>
+				<integer name="uint-8" size="1" signed="no"></integer>
+				<integer name="uint-16" size="2" signed="no"></integer>
+				<integer name="uint-32" size="4" signed="no"></integer>
+				<integer name="uint-64" size="8" signed="no"></integer>
+				<boolean name="boolean-8" size="1"></boolean>
+				<float name="float"></float>
+				<fixed-string name="policy-name" size="65"></fixed-string>
+				<fixed-string name="domain-name" size="255"></fixed-string>
+				<ip-address name="ipv6" version="6"></ip-address>
+				<ip-address name="ipv4" version="4"></ip-address>
+				<ip-address name="ipv4and6" version="dynamic"></ip-address>
+				<enumeration name="msg-type" type="uint-32">
+						<value code="1" name="started"></value>
+						<value code="2" name="terminated"></value>
+						<value code="3" name="occured-discrete"></value>
+						<value code="6" name="sampled"></value>
+				</enumeration>
+                <enumeration name="action-type" type="uint-32">
+                        <value name="forward" code="0"></value>
+                        <value name="proxy" code="9"></value>
+                        <value name="drop" code="10"></value>
+                        <value name="src-reset" code="11"></value>
+                        <value name="dst-reset" code="12"></value>
+                        <value name="both-reset" code="13"></value>
+                        <value name="bypass" code="14"></value>
+                </enumeration>
+				<bitmap name="tcp-flags" size="1">
+						<value code="1" name="fin"></value>
+						<value code="2" name="syn"></value>
+						<value code="3" name="rst"></value>
+						<value code="4" name="psh"></value>
+						<value code="5" name="ack"></value>
+						<value code="6" name="urg"></value>
+						<value code="7" name="NA-1"></value>
+						<value code="8" name="NA-2"></value>
+				</bitmap>
+				<namespace name="vsecure">
+						<fixed-string name="dns-qname" size="255"></fixed-string>
+						<fixed-string name="dns-subdomain" size="255"></fixed-string>
+						<fixed-string name="dns-excluded_subdomain" size="255"></fixed-string>							
+
+
+						<enumeration name="relation" type="uint-8">
+								<value code="0" name="or"></value>
+								<value code="1" name="and"></value>
+						</enumeration>
+
+						<enumeration name="relation" type="uint-8">
+								<value code="0" name="or"></value>
+								<value code="1" name="and"></value>
+						</enumeration>												
+						<enumeration name="footprint-types" type="uint-32">
+								<value code="0" name="checksum"></value>
+								<value code="1" name="sequence-number"></value>
+								<value code="2" name="id-number"></value>
+								<value code="3" name="dns-id"></value>
+								<value code="4" name="dns-qname"></value>
+								<value code="5" name="dns-subdomain"></value>
+								<value code="6" name="dns-qcount"></value>
+								<value code="7" name="source-port"></value>
+								<value code="8" name="source-ip"></value>
+								<value code="9" name="fragment-offset"></value>
+								<value code="10" name="flow-label"></value>
+								<value code="11" name="tos"></value>
+								<value code="12" name="packet-size"></value>
+								<value code="13" name="destination-port"></value>
+								<value code="14" name="destination-ip"></value>
+								<value code="15" name="fragment"></value>
+								<value code="19" name="message-type"></value>
+								<value code="20" name="ttl"></value>
+								<value code="28" name="context-tag"></value>
+								<value code="30" name="dns-ancount"></value>
+								<value code="31" name="dns-flags"></value>
+							
+
+						</enumeration>
+						<enumeration name="controller-state" type="uint-32">
+								<value name="non-attack"></value>
+								<value name="footprint-analysis"></value>
+								<value name="blocking"></value>
+								<value name="suspicious-activities"></value>
+								<value name="non-strict-footprint"></value>
+								<value name="burst-attack-blocking"></value>
+								<value name="footprint-is-overblocking"></value>
+						</enumeration>
+						<enumeration name="action-type" type="uint-32">
+								<value name="none"></value>
+								<value name="signature-block"></value>
+								<value name="collective-block"></value>
+								<value name="signature-challenge"></value>
+								<value name="signature-rate-limit"></value>
+								<value name="collective-challenge"></value>
+								<value name="collective-rate-limit"></value>
+						</enumeration>
+				</namespace>
+				<namespace name="bdos">
+						<composite name="protection-type">
+								<div-mod denominator="2" type="uint-32"></div-mod>
+						</composite>
+						<enumeration name="protection" type="uint-32">
+								<value name="udp" code="0"></value>
+								<value name="udp-frag"></value>
+								<value name="icmp"></value>
+								<value name="igmp"></value>
+								<value name="tcp-syn"></value>
+								<value name="tcp-rst"></value>
+								<value name="tcp-ack"></value>
+								<value name="tcp-ack-psh"></value>
+								<value name="tcp-ack-fin"></value>
+								<value name="tcp-syn-ack"></value>
+								<value name="tcp-frag"></value>
+						</enumeration>
+						<enumeration name="counter-protection" type="uint-32">
+								<value name="icmp" code="0"></value>
+								<value name="tcp"></value>
+								<value name="udp"></value>
+								<value name="udp-frag"></value>
+								<value name="igmp"></value>
+								<value name="tcp-syn"></value>
+								<value name="tcp-rst"></value>
+								<value name="tcp-ack"></value>
+								<value name="tcp-ack-psh"></value>
+								<value name="tcp-ack-fin"></value>
+								<value name="tcp-syn-ack"></value>
+								<value name="tcp-frag"></value>
+						</enumeration>
+						<enumeration name="direction" type="uint-32">
+								<value name="in" code="0"></value>
+								<value name="out" code="1"></value>
+						</enumeration>
+						<enumeration name="protection-mode" type="uint-32">
+								<value name="drop" code="0"></value>
+								<value name="disable" code="1"></value>
+								<value name="detection" code="2"></value>
+						</enumeration>
+						<enumeration name="strictness-level" type="uint-32">
+								<value name="low" code="1"></value>
+								<value name="med" code="2"></value>
+								<value name="high" code="3"></value>
+						</enumeration>
+						<enumeration name="policy-type" type="uint-32">
+								<value name="n-a" code="0"></value>
+								<value name="policy-based" code="1"></value>
+								<value name="policy-based" code="2"></value>
+								<value name="dns-protection-based" code="3"></value>
+						</enumeration>
+				</namespace>
+				<namespace name="dns">
+						<composite name="protection-type">
+								<div-mod denominator="2" type="uint-32"></div-mod>
+						</composite>
+						<enumeration name="protection" type="uint-32">
+								<value name="dns-a" code="0"></value>
+								<value name="dns-mx"></value>
+								<value name="dns-ptr"></value>
+								<value name="dns-aaaa"></value>
+								<value name="dns-text"></value>
+								<value name="dns-soa"></value>
+								<value name="dns-naptr"></value>
+								<value name="dns-srv"></value>
+								<value name="dns-other"></value>
+						</enumeration>
+						<enumeration name="counter-protection" type="uint-32">
+								<value name="dns-a" code="0"></value>
+								<value name="dns-mx"></value>
+								<value name="dns-ptr"></value>
+								<value name="dns-aaaa"></value>
+								<value name="dns-text"></value>
+								<value name="dns-soa"></value>
+								<value name="dns-naptr"></value>
+								<value name="dns-srv"></value>
+								<value name="dns-other"></value>
+						</enumeration>
+				</namespace>
+				<namespace name="trafmon">
+						<enumeration name="applications" type="uint-32">
+								<value name="behavioral-dos" code="0"></value>
+								<value name="dos-shield"></value>
+								<value name="scanning"></value>
+                                <value name="http-flood"></value>
+                                <value name="out-of-state"></value>
+						</enumeration>
+						<enumeration name="protocols" type="uint-32">
+								<value name="udp" code="0"></value>
+								<value name="tcp"></value>
+								<value name="icmp"></value>
+								<value name="other"></value>
+								<value name="sctp"></value>
+								<value name="igmp"></value>
+						</enumeration>
+						<enumeration name="directions" type="uint-32">
+								<value name="inbound" code="0"></value>
+								<value name="outbound"></value>
+						</enumeration>
+				</namespace>
+				<namespace name="httpflood">
+						<fixed-string name="http-url" size="150"></fixed-string>
+						<enumeration name="char-mode" type="uint-32">
+								<value name="None" code="0"></value>
+								<value name="Source" code="1"></value>
+								<value name="Size" code="2"></value>
+								<value name="Other" code="3"></value>
+						</enumeration>
+						<enumeration name="state-type" type="uint-32">
+								<value name="Normal" code="0"></value>
+								<value name="Characterization"></value>
+								<value name="Mitigation"></value>
+								<value name="Suspect"></value>
+						</enumeration>
+						<enumeration name="block-rules" type="uint-32">
+								<value name="none" code="0"></value>
+								<value name="source" code="1"></value>
+								<value name="size" code="2"></value>
+								<value name="other" code="3"></value>
+						</enumeration>
+						<enumeration name="rules-status" type="uint-32">
+								<value name="none" code="0"></value>
+								<value name="unchanged" code="1"></value>
+								<value name="changed" code="2"></value>
+						</enumeration>
+						<enumeration name="mitigation-state-type" type="uint-32">
+								<value name="No Mitigation" code="0"></value>
+								<value name="Challenge Suspected Attackers"></value>
+								<value name="Challenge All Sources"></value>
+								<value name="Block Suspected Attackers"></value>
+						</enumeration>
+						<enumeration name="escalation-type" type="uint-32">
+								<value name="Default" code="0"></value>
+								<value name="Customized"></value>
+						</enumeration>
+						<enumeration name="challenge-type" type="uint-32">
+								<value name="302 Redirect" code="1"></value>
+								<value name="JavaScript"  code="2"></value>
+						</enumeration>
+						<fixed-string name="http-server-name" size="33"></fixed-string>
+				</namespace>
+ 				<namespace name="scanning">
+						<enumeration name="protection-action" type="uint-32">
+								<value name="forward" code="0"></value>
+								<value name="drop" code="1"></value>
+						</enumeration>
+						<enumeration name="reason" type="uint-32">
+								<value name="Configuration" code="0"></value>
+								<value name="Footprint-accuracy-level" code="1"></value>
+								<value name="Multiple-probed-ports" code="2"></value>
+						</enumeration>
+						<enumeration name="protocols" type="uint-32">
+								<value name="udp" code="0"></value>
+								<value name="icmp" code="1"></value>
+								<value name="igmp" code="2"></value>
+								<value name="tcp" code="3"></value>
+						</enumeration>
+				</namespace>
+  				<namespace name="server-protection">
+						<fixed-string name="event-details-message" size="256"></fixed-string>
+						<enumeration name="protocol" type="uint-32">
+								<value name="http" code="1"></value>
+                                <value name="ftp" code="3"></value>
+                                <value name="pop3" code="4"></value>
+                                <value name="sip" code="5"></value>
+                        </enumeration>
+                </namespace>
+                <namespace name="syn-protection">
+                        <enumeration name="tcp-challenge" type="uint-32">
+                                <value name="Safe-Reset" code="0"></value>
+                                <value name="Transparent proxy" code="1"></value>
+								<value name="TCP-Reset" code="2"></value>
+						</enumeration>
+                        <enumeration name="http-challenge" type="uint-32">
+                                <value name="302 Redirect" code="0"></value>
+                                <value name="JavaScript" code="1"></value>
+                        </enumeration>
+                </namespace>
+		</types>
+</schema>

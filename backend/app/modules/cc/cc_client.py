@@ -14,15 +14,18 @@ paths to match your CyberController deployment if needed.
 """
 from __future__ import annotations
 
+import ipaddress
+import logging
+import os
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
-import ipaddress
-import logging
-import threading
 
+import paramiko
 import requests
 import urllib3
+from scp import SCPClient
 
 # Suppress only the single InsecureRequestWarning raised when verify=False
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -125,7 +128,8 @@ class CCHandler:
                 logger.error(f"Login to {self.cc_ip} did not return JSESSIONID cookie")
                 return False, "Login response did not contain JSESSIONID cookie"
 
-            self._creds = CCCredentials(jsession_id=str(jsession), cc_ip=self.cc_ip, authenticated_at=datetime.now(timezone.utc))
+            self._creds = CCCredentials(jsession_id=str(jsession), cc_ip=self.cc_ip,
+                                        authenticated_at=datetime.now(timezone.utc))
             return True, "OK"
         except Exception as exc:  # pragma: no cover - network error handling
             logger.error(f"Exception during login to {self.cc_ip}: {exc!s}")
@@ -173,8 +177,6 @@ class CCHandler:
                 pass
             logger.error(f"Exception during logout from {self.cc_ip}: {exc!s}")
             return False, f"Exception during logout: {exc!s}"
-            logger.error(f"Exception during logout from {self.cc_ip}: {exc!s}")
-            return False, f"Exception during logout: {exc!s}"
 
     def is_authenticated(self) -> Tuple[bool, str]:
         """Check whether the current session appears authenticated.
@@ -220,14 +222,7 @@ class CCHandler:
             # so we do not mutate self._session.cookies (pure validation).
             cookies = {"JSESSIONID": self._creds.jsession_id}
             resp = requests.get(info_url, cookies=cookies, verify=self._verify_ssl, timeout=15)
-            if resp.status_code != 200:
-                return False
-            try:
-                data = resp.json()
-            except Exception:
-                return False
-            username = data.get("username") or data.get("user") or data.get("name")
-            return bool(username and username == self.username)
+            return resp.status_code == 200
         except Exception:
             return False
 
@@ -279,8 +274,8 @@ class CCHandler:
             status=raw.get("status"),
         )
 
-    def get_all_devices(self) -> Tuple[bool, Union[str, List[CCDevice]]]:
-        """Fetch all devices from the CyberController and return a list of CCDevice.
+    def get_all_dps(self) -> Tuple[bool, Union[str, List[CCDevice]]]:
+        """Fetch all dp devices from the CyberController and return a list of CCDevice.
 
         Returns:
             (True, [CCDevice, ...]) on success or (False, error_message) on failure.
@@ -291,53 +286,28 @@ class CCHandler:
                 if not ok:
                     # caller expects a failure tuple; raise to be caught below
                     raise RuntimeError(f"Authentication required and refresh failed: {msg}")
-            # Try a few common device listing endpoints - adjust as needed for your CC
-            candidates = ("/api/devices", "/devices", "/rest/devices", "/api/device")
-            last_err = "No endpoints tried"
-            for path in candidates:
-                url = f"{self.base_url}{path}"
+            url = f"https://{self.cc_ip}/mgmt/system/monitor/dp/devices?includeDeletedPolicies=true"
+            cookies = {"JSESSIONID": self._creds.jsession_id}
+            resp = requests.get(url, cookies=cookies, verify=self._verify_ssl, timeout=15)
+
+            if resp.status_code == 200:
                 try:
-                    resp = self._session.get(url, verify=self._verify_ssl, timeout=30)
-                except Exception as exc:
-                    last_err = f"Connection failed for {url}: {exc!s}"
-                    continue
-
-                if resp.status_code == 200:
-                    try:
-                        data = resp.json()
-                    except Exception:
-                        # If response is not JSON, skip
-                        last_err = f"Non-JSON response from {url}"
-                        continue
-
-                    # data could be a dict with items under a key or a list
-                    devices_raw = []
-                    if isinstance(data, dict):
-                        # try common wrapper keys
-                        for key in ("devices", "items", "data"):
-                            if key in data and isinstance(data[key], list):
-                                devices_raw = data[key]
-                                break
-                        else:
-                            # fallback: if dict contains many device-like dicts, try to extract
-                            # if values are dicts and contain 'ip' keys, treat them as list
-                            maybe = [v for v in data.values() if isinstance(v, dict) and ("ip" in v or "name" in v)]
-                            if maybe:
-                                devices_raw = maybe
-                    elif isinstance(data, list):
-                        devices_raw = data
-
-                    if not devices_raw:
-                        last_err = f"No device array found in response from {url}"
-                        continue
-
-                    devices = [self._map_device(d) for d in devices_raw]
+                    devices = [
+                        CCDevice(
+                            management_ip=d['ip'],
+                            name=d['name'],
+                            device_id=d['deviceId'],
+                            device_type="DefensePro",
+                            status=d['status'],
+                        )
+                        for d in resp.json()['devices']
+                    ]
                     return True, devices
+                except Exception:
+                    return False, "Failed to parse devices JSON response"
 
-                last_err = f"Unexpected HTTP {resp.status_code} from {url}"
-
-            return False, f"Failed to fetch devices: {last_err}"
-        except Exception as exc:  # pragma: no cover
+            return False, f"Failed to fetch devices from: {self.cc_ip}"
+        except Exception as exc:
             return False, f"Exception in get_all_devices: {exc!s}"
 
     def get_device_by_ip(self, ip: str) -> Tuple[bool, Union[str, CCDevice]]:
@@ -351,7 +321,7 @@ class CCHandler:
                 ok, msg = self.refresh_session()
                 if not ok:
                     raise RuntimeError(f"Authentication required and refresh failed: {msg}")
-            ok, res = self.get_all_devices()
+            ok, res = self.get_all_dps()
             if not ok:
                 return False, f"Could not list devices: {res}"
 
@@ -363,7 +333,8 @@ class CCHandler:
         except Exception as exc:  # pragma: no cover
             return False, f"Exception in get_device_by_ip: {exc!s}"
 
-    def add_device(self, name: str, parent_orm: Any, management_ip: str, device_type: str, user: str, password: str) -> Tuple[bool, Union[str, CCDevice]]:
+    def add_device(self, name: str, parent_orm: Any, management_ip: str, device_type: str, user: str, password: str) -> \
+            Tuple[bool, Union[str, CCDevice]]:
         """Add a single device to CyberController.
 
         Args:
@@ -400,7 +371,8 @@ class CCHandler:
                     return True, device
 
                 # map and return
-                device = self._map_device(data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else {}))
+                device = self._map_device(
+                    data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else {}))
                 return True, device
             return False, f"Failed to add device: HTTP {resp.status_code} - {resp.text}"
         except Exception as exc:  # pragma: no cover
@@ -436,7 +408,8 @@ class CCHandler:
         except Exception as exc:  # pragma: no cover
             return False, f"Exception in delete_device: {exc!s}"
 
-    def add_device_range(self, name_convention: str, parent_orm: Any, device_type: str, start_ip: str, end_ip: str, user: str, password: str) -> Tuple[bool, str]:
+    def add_device_range(self, name_convention: str, parent_orm: Any, device_type: str, start_ip: str, end_ip: str,
+                         user: str, password: str) -> Tuple[bool, str]:
         """Add a range of devices created from an IP start/end inclusive.
 
         name_convention may include a single formatting placeholder '{ip}' or '{i}' to
@@ -467,7 +440,8 @@ class CCHandler:
                 else:
                     name = f"{name_convention}-{ip_str}"
 
-                ok, res = self.add_device(name=name, parent_orm=parent_orm, management_ip=ip_str, device_type=device_type, user=user, password=password)
+                ok, res = self.add_device(name=name, parent_orm=parent_orm, management_ip=ip_str,
+                                          device_type=device_type, user=user, password=password)
                 if not ok:
                     return False, f"Failed to add device {ip_str}: {res}"
                 idx += 1
@@ -475,6 +449,88 @@ class CCHandler:
             return True, "OK"
         except Exception as exc:  # pragma: no cover
             return False, f"Exception in add_device_range: {exc!s}"
+
+    def get_ids_data_formats(self, username: str, password: str) -> Tuple[bool, Union[str, List[str]]]:
+        """Connect via SSH as root to enumerate IdsDataFormat XML files.
+
+        Returns (True, [list_of_files]) or (False, error_message).
+        """
+        ssh = None
+        try:
+            # Connect via SSH using provided root credentials
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(hostname=self.cc_ip, port=22, username=username, password=password, timeout=10)
+
+            found_files = []
+
+            stdin, stdout, stderr = ssh.exec_command(
+                "ls /var/lib/docker/radware-storage/dc_config/kvision-configuration-service/config/conf | grep Ids |grep -v prop")
+            out = stdout.read().decode("utf-8", errors="ignore").strip()
+            if out:
+                found_files = [line.strip() for line in out.split('\n') if line.strip()]
+        except paramiko.SSHException as exc:
+            return False, f"SSH error: {exc!s}"
+        finally:
+            if ssh:
+                ssh.close()
+        return True, found_files
+
+    def _version_to_data_format(self, version: str) -> str:
+        """Convert sim version string to IdsDataFormat format.
+
+        Examples:
+          "10.3.0" -> "100300"
+          "8.2.1"  -> "821"
+        """
+        parts = version.split('.') if version is not None else []
+        result = ''
+        needs_padding = len(parts) > 0 and parts[0] == '10'
+        parts_to_process = min(3, len(parts)) if needs_padding else len(parts)
+        for i in range(parts_to_process):
+            part = parts[i]
+            if needs_padding and len(part) == 1:
+                result += '0' + part
+            else:
+                result += part
+        return result
+
+    def download_ids_data_format(self, sim_version: str, username: str, password: str) -> Tuple[bool, str]:
+        """Download IdsDataFormat XML file based on sim_version via SCP.
+
+        Returns (True, local_path) or (False, error_message)
+        """
+        ssh = None
+        try:
+            format_version = self._version_to_data_format(sim_version or '')
+            filename = f"IdsDataFormat{format_version}.xml"
+            remote_path = f"/var/lib/docker/radware-storage/dc_config/kvision-configuration-service/config/conf/{filename}"
+            local_dir = "/tmp/data_formats"
+            local_path = f"{local_dir}/{filename}"
+
+            # Create local directory
+            os.makedirs(local_dir, exist_ok=True)
+
+            # SSH connect and SCP download
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(hostname=self.cc_ip, port=22, username=username, password=password, timeout=10)
+
+            with SCPClient(ssh.get_transport()) as scp:
+                scp.get(remote_path, local_path)
+
+            try:
+                ssh.close()
+            except Exception:
+                pass
+            return True, local_path
+        except Exception as exc:
+            try:
+                if ssh:
+                    ssh.close()
+            except Exception:
+                pass
+            return False, f"Download error: {exc!s}"
 
 
 def get_cc_handler(cc_ip: str, username: str, password: str) -> CCHandler:
