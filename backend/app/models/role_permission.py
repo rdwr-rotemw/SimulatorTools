@@ -15,8 +15,8 @@ class RolePermission(Base):
     )
 
     # relationships
-    role = relationship("Role", back_populates="role_permissions")
-    permission = relationship("Permission", back_populates="role_permissions")
+    role = relationship("Role", back_populates="role_permissions", overlaps="permissions,roles")
+    permission = relationship("Permission", back_populates="role_permissions", overlaps="permissions,roles")
 
     def __repr__(self) -> str:  # pragma: no cover - trivial
         return f"<RolePermission role_id={self.role_id} perm_id={self.permission_id}>"

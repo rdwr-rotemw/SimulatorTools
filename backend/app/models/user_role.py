@@ -18,8 +18,8 @@ class UserRole(Base):
     )
 
     # relationships
-    user = relationship("User", back_populates="user_roles")
-    role = relationship("Role", back_populates="user_roles")
+    user = relationship("User", back_populates="user_roles", overlaps="roles,users")
+    role = relationship("Role", back_populates="user_roles", overlaps="roles,users")
 
     def __repr__(self) -> str:  # pragma: no cover - trivial
         return f"<UserRole user_id={self.user_id} role_id={self.role_id}>"

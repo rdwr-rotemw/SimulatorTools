@@ -23,7 +23,7 @@ class User(Base):
     audit_logs = relationship("AuditLog", back_populates="user", cascade="all, delete-orphan")
     # association to roles via user_roles association table
     user_roles = relationship("UserRole", back_populates="user", cascade="all, delete-orphan")
-    roles = relationship("Role", secondary="user_roles", back_populates="users")
+    roles = relationship("Role", secondary="user_roles", back_populates="users", overlaps="user_roles")
     cc_sessions = relationship("CCSession", back_populates="user", cascade="all, delete-orphan")
 
     def __repr__(self) -> str:  # pragma: no cover - trivial
