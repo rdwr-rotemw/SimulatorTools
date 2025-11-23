@@ -32,6 +32,8 @@ pydantic-settings==2.11.0
 pydantic_core==2.41.5
 pymongo==4.15.3
 pynacl==1.6.1
+pyasn1==0.6.1
+pyasn1-modules==0.4.1
 pysmi==1.6.2
 pysnmp==4.4.12
 python-dotenv==1.2.1
