@@ -79,6 +79,28 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     # Validators
+    @field_validator("JWT_SECRET_KEY")
+    def _validate_jwt_secret_key(cls, v, info):
+        """Validate JWT_SECRET_KEY - must be changed in production."""
+        # Get ENVIRONMENT from the validated data
+        environment = info.data.get("ENVIRONMENT", "development")
+
+        # In production, reject the default insecure value
+        if environment == "production":
+            if v == "CHANGE_ME_REPLACE_IN_PROD":
+                raise ValueError(
+                    "JWT_SECRET_KEY must be set to a secure value in production! "
+                    "Generate one with: python3 -c 'import secrets; print(secrets.token_urlsafe(64))'"
+                )
+            # Also check for common weak values
+            if len(v) < 32:
+                raise ValueError(
+                    "JWT_SECRET_KEY is too short for production (minimum 32 characters). "
+                    "Generate a secure key with: python3 -c 'import secrets; print(secrets.token_urlsafe(64))'"
+                )
+
+        return v
+
     @field_validator("CORS_ORIGINS", mode="before")
     def _parse_cors_origins(cls, v):
         """Normalize CORS_ORIGINS into a Python list of origins."""

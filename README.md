@@ -36,15 +36,71 @@ A comprehensive web application for managing and monitoring network security sim
 
 ## Deployment
 
-Use pre-built Docker images from GitHub Container Registry. The `.github/workflows/docker-build-push.yml` workflow automatically builds and publishes images on push to main.
+### Option 1: Using Pre-Built Images from GitHub (After First Push)
+
+After you push to GitHub, the `.github/workflows/docker-build-push.yml` workflow automatically builds and publishes images.
+
+**Prerequisites:**
+- GitHub Actions has run and built images
+- Authenticate to GHCR: `echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin`
+
+**On server:**
+```bash
+# Use docker-compose.ghcr.yml
+cp docker-compose.ghcr.yml docker-compose.yml
+docker compose up -d
+```
+
+### Option 2: Build Images Locally on Server (First Deployment)
+
+If you haven't pushed to GitHub yet, or want to build locally:
+
+**On server:**
+```bash
+# Clone repository to server
+git clone <your-repo-url> /opt/simtools
+cd /opt/simtools
+
+# Use local build compose file
+cp docker-compose.local-build.yml docker-compose.yml
+
+# Build and start
+docker compose up -d
+```
+
+### Configuration Files Needed
 
 On your Rocky Linux 9 server, create these files in `/opt/simtools/`:
 
-1. **docker-compose.yml** - Use `docker-compose.ghcr.yml` as template
-2. **.env** - Configure your environment variables
-3. **nginx.conf** - Reverse proxy configuration
+### 1. `.env` - Environment Configuration
+Use `.env.production.example` as a template. **Critical settings to change**:
 
-Then run: `docker compose up -d`
+- `GITHUB_REPO_OWNER` - Your GitHub username/org (only for GHCR method)
+- `PG_PASSWORD` - Generate: `openssl rand -base64 32`
+- `MONGO_PASSWORD` - Generate: `openssl rand -base64 32`
+- `JWT_SECRET_KEY` - Already set in example: `EWAR0aCjk_v2V9SLCFiA5-_NlrTxAI6BZ95uk52rfLAyT7nU2HaSAjx1ZgUQ6HQC3hQqbgFpNoAo3nY_aYRSXA`
+- `CORS_ORIGINS` - Your server with HTTPS, e.g., `https://192.168.1.100` or `https://radware.sapro`
+- `API_BASE_URL` - Your API URL with HTTPS, e.g., `https://192.168.1.100/api`
+
+**Database users are created automatically** on first container start - just set the passwords.
+
+**SAPRO SSH settings** are only used in development. In production, the app uses subprocess directly (no SSH).
+
+Then: `chmod 600 /opt/simtools/.env`
+
+### 2. `nginx.conf`
+Copy from `nginx.conf.example` - **HTTPS only** with HTTP→HTTPS redirect
+
+### 3. SSL Certificates (Required)
+Create self-signed certificates:
+```bash
+mkdir -p /opt/simtools/ssl
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout /opt/simtools/ssl/privkey.pem \
+  -out /opt/simtools/ssl/fullchain.pem \
+  -subj "/C=US/ST=State/L=City/O=Org/CN=192.168.1.100"
+```
+
 
 ## Quick Start (Development)
 
