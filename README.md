@@ -36,70 +36,104 @@ A comprehensive web application for managing and monitoring network security sim
 
 ## Deployment
 
-### Option 1: Using Pre-Built Images from GitHub (After First Push)
+### Production Deployment Using Pre-Built Images (Recommended)
 
-After you push to GitHub, the `.github/workflows/docker-build-push.yml` workflow automatically builds and publishes images.
+This project uses GitHub Actions to automatically build Docker images and publish them to GitHub Container Registry (GHCR). You don't need to build images manually on the server.
 
-**Prerequisites:**
-- GitHub Actions has run and built images
-- Authenticate to GHCR: `echo $GITHUB_TOKEN | docker login ghcr.io -u USERNAME --password-stdin`
+**Workflow:**
+1. Push code to GitHub → GitHub Actions builds images → Images published to GHCR
+2. On server: Pull images and deploy with `docker compose pull && docker compose up -d`
 
-**On server:**
+**On your Rocky Linux 9 server:**
+
 ```bash
-# Use docker-compose.ghcr.yml
-cp docker-compose.ghcr.yml docker-compose.yml
-docker compose up -d
-```
-
-### Option 2: Build Images Locally on Server (First Deployment)
-
-If you haven't pushed to GitHub yet, or want to build locally:
-
-**On server:**
-```bash
-# Clone repository to server
-git clone <your-repo-url> /opt/simtools
 cd /opt/simtools
 
-# Use local build compose file
-cp docker-compose.local-build.yml docker-compose.yml
+# One-time setup: Create these files
+# 1. docker-compose.yml (copy from docker-compose.ghcr.yml in repo)
+# 2. .env (use .env.production.example as template)
+# 3. nginx.conf (copy from nginx.conf.example)
+# 4. ssl/ directory with certificates
 
-# Build and start
+# Deploy/Update workflow:
+docker compose pull    # Pull latest images from GHCR
+docker compose up -d   # Start/update containers
+
+# That's it! No git pull, no builds!
+```
+
+### Initial Server Setup
+
+1. **Install Docker** (see `scripts/install-docker-rocky.sh`)
+
+2. **Create project directory:**
+   ```bash
+   mkdir -p /opt/simtools/{ssl,logs}
+   cd /opt/simtools
+   ```
+
+3. **Create configuration files:**
+
+   **a) `docker-compose.yml`** - Copy from `docker-compose.ghcr.yml`:
+   ```bash
+   curl -o docker-compose.yml https://raw.githubusercontent.com/YOUR_USERNAME/SimulatorTools/dev/docker-compose.ghcr.yml
+   ```
+
+   **b) `.env`** - Use `.env.production.example` as template:
+   ```bash
+   nano .env
+   ```
+   Update these critical values:
+   - `GITHUB_REPO_OWNER` - Your GitHub username/org
+   - `PG_PASSWORD` - Generate: `openssl rand -base64 32`
+   - `MONGO_PASSWORD` - Generate: `openssl rand -base64 32`
+   - `JWT_SECRET_KEY` - Already set in example
+   - `CORS_ORIGINS` - `https://YOUR_SERVER_IP`
+   - `API_BASE_URL` - `https://YOUR_SERVER_IP/api`
+
+   Then: `chmod 600 .env`
+
+   **c) `nginx.conf`** - Copy from `nginx.conf.example`:
+   ```bash
+   curl -o nginx.conf https://raw.githubusercontent.com/YOUR_USERNAME/SimulatorTools/dev/nginx.conf.example
+   ```
+
+   **d) SSL Certificates:**
+   ```bash
+   openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+     -keyout ssl/privkey.pem \
+     -out ssl/fullchain.pem \
+     -subj "/C=US/ST=State/L=City/O=Org/CN=YOUR_SERVER_IP"
+   ```
+
+4. **Login to GitHub Container Registry:**
+   ```bash
+   echo YOUR_GITHUB_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin
+   ```
+
+5. **Deploy:**
+   ```bash
+   docker compose pull
+   docker compose up -d
+   ```
+
+### Updating the Application
+
+When you push new code to GitHub:
+
+```bash
+# On server - just pull new images and restart
+cd /opt/simtools
+docker compose pull
 docker compose up -d
 ```
 
-### Configuration Files Needed
+**No git pull, no rebuilds needed!** GitHub Actions handles everything.
 
-On your Rocky Linux 9 server, create these files in `/opt/simtools/`:
+### Development vs Production
 
-### 1. `.env` - Environment Configuration
-Use `.env.production.example` as a template. **Critical settings to change**:
-
-- `GITHUB_REPO_OWNER` - Your GitHub username/org (only for GHCR method)
-- `PG_PASSWORD` - Generate: `openssl rand -base64 32`
-- `MONGO_PASSWORD` - Generate: `openssl rand -base64 32`
-- `JWT_SECRET_KEY` - Already set in example: `EWAR0aCjk_v2V9SLCFiA5-_NlrTxAI6BZ95uk52rfLAyT7nU2HaSAjx1ZgUQ6HQC3hQqbgFpNoAo3nY_aYRSXA`
-- `CORS_ORIGINS` - Your server with HTTPS, e.g., `https://192.168.1.100` or `https://radware.sapro`
-- `API_BASE_URL` - Your API URL with HTTPS, e.g., `https://192.168.1.100/api`
-
-**Database users are created automatically** on first container start - just set the passwords.
-
-**SAPRO SSH settings** are only used in development. In production, the app uses subprocess directly (no SSH).
-
-Then: `chmod 600 /opt/simtools/.env`
-
-### 2. `nginx.conf`
-Copy from `nginx.conf.example` - **HTTPS only** with HTTP→HTTPS redirect
-
-### 3. SSL Certificates (Required)
-Create self-signed certificates:
-```bash
-mkdir -p /opt/simtools/ssl
-openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-  -keyout /opt/simtools/ssl/privkey.pem \
-  -out /opt/simtools/ssl/fullchain.pem \
-  -subj "/C=US/ST=State/L=City/O=Org/CN=192.168.1.100"
-```
+- **Development** (your machine): Use `docker-compose.yml` - builds locally
+- **Production** (server): Use `docker-compose.ghcr.yml` - pulls pre-built images from GHCR
 
 
 ## Quick Start (Development)
