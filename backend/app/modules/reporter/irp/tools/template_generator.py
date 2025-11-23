@@ -725,10 +725,19 @@ class TemplateGenerator:
         # Check if it's an enumeration
         if self._has_enum(type_name):
             enum_obj = self._get_enum(type_name)
-            if enum_obj and hasattr(enum_obj, 'values') and enum_obj.values:
-                # Return the first enum name instead of its code
-                first_key = next(iter(enum_obj.values.keys()))
-                return first_key
+            if enum_obj:
+                # Handle both dict and Enum object formats
+                if isinstance(enum_obj, dict):
+                    # Deserialized format: {'type': ..., 'values': {...}}
+                    values_dict = enum_obj.get('values', {})
+                    if values_dict and isinstance(values_dict, dict):
+                        first_key = next(iter(values_dict.keys()))
+                        return first_key
+                elif hasattr(enum_obj, 'values'):
+                    # Enum object format
+                    if enum_obj.values:
+                        first_key = next(iter(enum_obj.values.keys()))
+                        return first_key
             return 0
 
         # Handle basic types
@@ -753,8 +762,8 @@ class TemplateGenerator:
             if '.' in type_name:
                 namespace, type_local_name = type_name.rsplit('.', 1)
                 if (hasattr(self.schema, 'types') and
-                    hasattr(self.schema.types, 'namespaces') and
-                    namespace in self.schema.types.namespaces):
+                        hasattr(self.schema.types, 'namespaces') and
+                        namespace in self.schema.types.namespaces):
                     namespace_obj = self.schema.types.namespaces[namespace]
                     # Fixed-strings are stored as string values in the namespace dict
                     if type_local_name in namespace_obj and isinstance(namespace_obj[type_local_name], str):

@@ -69,10 +69,7 @@ def _serialize_messages(messages: Optional[Dict[Any, Any]]) -> Dict[str, Any]:
 
 
 def _serialize_types(types_obj: Optional[Any]) -> Dict[str, Any]:
-    """Serialize types to dict
-
-    Expected structure contains primitives, fixed_strings, ip_address, enums, bitmap, namespaces.
-    """
+    """Serialize types to dict"""
     if not types_obj:
         return {}
 
@@ -96,7 +93,17 @@ def _serialize_types(types_obj: Optional[Any]) -> Dict[str, Any]:
         except Exception:
             bitmap = None
 
-    namespaces = getattr(types_obj, "namespaces", None) or {}
+    # Properly serialize namespaces with _serialize_object
+    namespaces_raw = getattr(types_obj, "namespaces", None) or {}
+    namespaces: Dict[str, Any] = {}
+    for ns_name, ns_dict in namespaces_raw.items():
+        try:
+            serialized_ns: Dict[str, Any] = {}
+            for key, value in ns_dict.items():
+                serialized_ns[key] = _serialize_object(value)
+            namespaces[ns_name] = serialized_ns
+        except Exception:
+            namespaces[ns_name] = {}
 
     return {
         "primitives": primitives,
