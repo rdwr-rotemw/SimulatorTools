@@ -119,8 +119,6 @@ http {
 
         # Backend API
         location /api/ {
-            # Remove /api prefix when forwarding to backend
-            rewrite ^/api/(.*)$ /$1 break;
 
             proxy_pass http://backend;
             proxy_http_version 1.1;

@@ -30,7 +30,7 @@ from typing import Any, Dict, Union
 from backend.app.utils.database import get_mongo_db
 from backend.app.modules.reporter.irp.irp_module import send_irp, create_irp_template, load_schema_from_mongo
 
-router = APIRouter(tags=["reporter"])
+router = APIRouter(prefix="/api", tags=["reporter"])
 
 
 class IRPSendPayload(BaseModel):

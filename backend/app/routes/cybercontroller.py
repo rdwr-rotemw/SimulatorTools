@@ -35,7 +35,7 @@ from backend.app.utils.database import get_db
 
 logger = logging.getLogger("sim-tools.cybercontroller")
 
-router = APIRouter(tags=["cybercontroller"])
+router = APIRouter(prefix="/api", tags=["cybercontroller"])
 
 
 # ============================================================================

@@ -21,7 +21,7 @@ from backend.app.models.permission import Permission
 from backend.app.utils.database import get_db
 from backend.app.utils.auth import get_current_user
 
-router = APIRouter(tags=["permissions"])
+router = APIRouter(prefix="/api", tags=["permissions"])
 
 
 @router.post("/permissions", response_model=PermissionResponse, status_code=status.HTTP_201_CREATED)

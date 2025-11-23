@@ -22,7 +22,7 @@ from backend.app.models.role import Role
 from backend.app.utils.database import get_db
 from backend.app.utils.auth import get_current_user
 
-router = APIRouter(tags=["roles"])
+router = APIRouter(prefix="/api", tags=["roles"])
 
 
 @router.post("/roles", response_model=RoleResponse, status_code=status.HTTP_201_CREATED)
