@@ -9,6 +9,8 @@ services:
       POSTGRES_DB: ${PG_DB:-simulators}
       POSTGRES_USER: ${PG_USER:-simtools_user}
       POSTGRES_PASSWORD: ${PG_PASSWORD}
+    ports:
+      - "172.18.0.1:5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     networks:
@@ -28,6 +30,8 @@ services:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-simtools_mongo}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
       MONGO_INITDB_DATABASE: ${MONGO_DB:-simulators}
+    ports:
+      - "172.18.0.1:27017:27017"
     volumes:
       - mongo-data:/data/db
     networks:
