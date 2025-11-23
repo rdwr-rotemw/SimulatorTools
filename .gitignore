@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+.env.production
 
 # Python artifacts
 __pycache__/
@@ -28,4 +29,20 @@ Thumbs.db
 *.db
 *.sqlite
 test.db
+
+# Docker & Deployment
+data/
+logs/
+backups/
+*.log
+
+# SSL Certificates (CRITICAL - never commit!)
+docker/nginx/ssl/*.pem
+docker/nginx/ssl/*.key
+docker/nginx/ssl/*.crt
+
+# Temporary files
+tmp/
+*.tmp
+*.temp
 
