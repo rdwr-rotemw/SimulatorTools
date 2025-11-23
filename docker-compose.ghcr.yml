@@ -43,6 +43,8 @@ services:
       retries: 5
 
   # Backend Service
+  # Uses network_mode: host to bind to simulator IPs for IRP binary sends
+  # Uses SSH to execute Sapro commands (sapcnsl, etc.)
   backend:
     image: ghcr.io/${GITHUB_REPO_OWNER}/simtools-backend:${IMAGE_TAG:-latest}
     container_name: simtools-backend
@@ -52,8 +54,8 @@ services:
       - .env
     environment:
       - ENVIRONMENT=production
-      - PG_HOST=localhost
-      - MONGO_HOST=localhost
+      - PG_HOST=172.18.0.1
+      - MONGO_HOST=172.18.0.1
     volumes:
       - ./logs:/app/logs
     depends_on:
