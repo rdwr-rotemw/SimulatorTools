@@ -36,12 +36,18 @@ def send_snmp_trap(cc_ip: str, device_ip: str, trap_data: Dict[str, Any]) -> Tup
 
         # Call the attack_traps module to send traps
         logger.info(f"Sending {len(trap_data['traps'])} trap(s) from {device_ip} to {cc_ip}")
-        attack_traps.send_attack_traps(cc_ip, device_ip, trap_data)
+        success_count, failed_count, total_count = attack_traps.send_attack_traps(cc_ip, device_ip, trap_data)
 
-        # Note: send_attack_traps logs individual trap results but doesn't return status
-        # We'll consider it successful if no exception was raised
-        logger.info(f"Successfully sent {len(trap_data['traps'])} trap(s)")
-        return True, f"Traps sent successfully ({len(trap_data['traps'])} trap(s))"
+        # Report accurate results
+        if success_count > 0 and failed_count == 0:
+            logger.info(f"Successfully sent all {success_count} trap(s)")
+            return True, f"Successfully sent all {success_count} trap(s)"
+        elif success_count > 0 and failed_count > 0:
+            logger.warning(f"Partially successful: {success_count} succeeded, {failed_count} failed out of {total_count} trap(s)")
+            return False, f"Partially successful: {success_count} succeeded, {failed_count} failed"
+        else:
+            logger.error(f"All {total_count} trap(s) failed to send")
+            return False, f"Failed to send all {total_count} trap(s)"
 
     except KeyError as exc:
         # Missing required keys in trap_data

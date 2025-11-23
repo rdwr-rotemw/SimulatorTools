@@ -85,16 +85,30 @@ class ATTACK_DIRECTION(str, Enum):
 
 
 def send_attack_traps(cc_ip, device_ip, payload):
+    """Send attack traps to CyberController.
+
+    Returns:
+        Tuple of (success_count: int, failed_count: int, total_count: int)
+    """
+    success_count = 0
+    failed_count = 0
+
     for trap in payload['traps']:
         command_to_send = (f'/opt/sapro/bin/sapcnsl -m DefensePros.map -c tcl -d {device_ip} '
                            f'-f /opt/sapro/util/send_attack.tcl -a '
                            f'\"{set_trap_string_to_send(cc_ip, trap)}\"')
         success, output = execute_sapro_command(command_to_send)
         attack_name = trap['attackName']
+
         if success and "Trap(s) Sent" in output:
             logger.info(f"Successfully sent trap of attack: {attack_name} from: {device_ip} to: {cc_ip}")
+            success_count += 1
         else:
-            logger.error(f"Failed to send trap of attack: {attack_name} from: {device_ip} to: {cc_ip}:\n{output}")
+            logger.error(f"Failed to send trap of attack: {attack_name} from: {device_ip} to: {cc_ip}: {output}")
+            failed_count += 1
+
+    total_count = success_count + failed_count
+    return success_count, failed_count, total_count
 
 
 def generate_radware_id():
