@@ -7,6 +7,7 @@ from typing import Dict, Any, Optional
 from typing import Tuple
 
 from backend.app.modules.reporter.irp.tools.convert_xml import ConvertXml
+from backend.app.modules.reporter.irp.tools.message_resolver import MessageResolver
 from backend.app.modules.reporter.irp.tools.template_generator import TemplateGenerator
 from backend.app.modules.reporter.irp.core.irp_formatter import IrpFormatter
 
@@ -120,23 +121,25 @@ def _serialize_templates(templates_obj: Optional[Any]) -> Dict[str, Any]:
     for name, struct in structs_raw.items():
         try:
             structs[name] = {
-                "fields": _serialize_object(getattr(struct, "fields", None))  # FIX: use _serialize_object
+                "fields": _serialize_object(getattr(struct, "fields", None))
             }
         except Exception:
             structs[name] = {"fields": None}
 
     namespaces_raw = getattr(templates_obj, "namespaces", None) or {}
     namespaces: Dict[str, Any] = {}
-    for ns_name, ns_structs in namespaces_raw.items():
+    for ns_name, ns_obj in namespaces_raw.items():
         try:
+            # ns_obj is a Namespace object with .structs attribute
+            ns_structs_dict = getattr(ns_obj, 'structs', None) or {}
             namespaces[ns_name] = {
-                k: _serialize_object(v) for k, v in ns_structs.items()  # FIX: use _serialize_object
+                struct_name: _serialize_object(struct_obj)
+                for struct_name, struct_obj in ns_structs_dict.items()
             }
         except Exception:
             namespaces[ns_name] = {}
 
     return {"structs": structs, "namespaces": namespaces}
-
 
 def _serialize_object(obj: Any) -> Any:
     """Recursively serialize ConvertXml objects to JSON-compatible dicts.
@@ -191,6 +194,7 @@ def _deserialize_object(data: Any) -> Any:
                 obj_data[k] = _deserialize_object(v)
 
             # Now reconstruct the object
+            # If the serialized type points to convert_xml module (e.g. backend.app.modules.reporter.irp.tools.convert_xml.DataField)
             if 'convert_xml.' in class_path:
                 class_name = class_path.split('.')[-1]
 
@@ -263,6 +267,93 @@ def _dict_to_convertxml_element(data_dict):
     return data_dict
 
 
+# New helper: reconstruct a Templates object (with Struct and Namespace instances)
+# from a deserialized templates dict or Templates-like object
+def _reconstruct_templates_object(templates_dict):
+    """Reconstruct a Templates instance (Templates.structs, Templates.namespaces)
+
+    Accepts either a plain dict (as produced by serialization) or an already
+    deserialized object with attributes 'structs' and 'namespaces' that may
+    contain plain dicts. Returns a Templates instance populated with Struct
+    and Namespace objects where each Struct.data is a list of properly-typed
+    ConvertXml elements.
+    """
+    from backend.app.modules.reporter.irp.models.data_format_models import Templates, Struct, Namespace
+
+    templates = Templates()
+    if not templates_dict:
+        return templates
+
+    # Helper to obtain 'fields' list from either a dict or an object
+    def _get_fields(sdata):
+        if isinstance(sdata, dict):
+            return sdata.get('fields')
+        return getattr(sdata, 'fields', None)
+
+    # Extract raw structs and namespaces whether input is dict or object
+    if isinstance(templates_dict, dict):
+        structs_raw = templates_dict.get('structs') or {}
+        namespaces_raw = templates_dict.get('namespaces') or {}
+    else:
+        structs_raw = getattr(templates_dict, 'structs', {}) or {}
+        namespaces_raw = getattr(templates_dict, 'namespaces', {}) or {}
+
+    # Reconstruct structs
+    structs_out = {}
+    if isinstance(structs_raw, dict):
+        for struct_name, struct_data in structs_raw.items():
+            fields = _get_fields(struct_data)
+            if isinstance(fields, list):
+                converted_fields = [_dict_to_convertxml_element(f) if isinstance(f, dict) else f for f in fields]
+            else:
+                converted_fields = fields
+            s = Struct(struct_name, converted_fields)
+            # Provide both 'data' and 'fields' attributes for compatibility
+            setattr(s, 'data', converted_fields)
+            setattr(s, 'fields', converted_fields)
+            structs_out[struct_name] = s
+
+    templates.set_structs(structs_out)
+
+    # Reconstruct namespaces
+    namespaces_out = {}
+    if isinstance(namespaces_raw, dict):
+        for ns_name, ns_structs in namespaces_raw.items():
+            ns_structs_out = {}
+            if isinstance(ns_structs, dict):
+                for sname, sdata in ns_structs.items():
+                    # Obtain fields and data from either dict or object form
+                    fields = _get_fields(sdata)
+                    if isinstance(fields, list):
+                        converted_fields = [_dict_to_convertxml_element(f) if isinstance(f, dict) else f for f in fields]
+                    else:
+                        converted_fields = fields
+
+                    # Also check for 'data' attribute which may contain template elements
+                    if isinstance(sdata, dict):
+                        raw_data = sdata.get('data')
+                    else:
+                        raw_data = getattr(sdata, 'data', None)
+
+                    if isinstance(raw_data, list):
+                        converted_data = [_dict_to_convertxml_element(item) if isinstance(item, dict) else item for item in raw_data]
+                    else:
+                        converted_data = raw_data
+
+                    # Prefer converted_data for the Struct.body if present, otherwise use converted_fields
+                    struct_body = converted_data if isinstance(converted_data, list) else converted_fields
+
+                    s = Struct(sname, struct_body)
+                    # Ensure both attributes are available for TemplateGenerator compatibility
+                    setattr(s, 'data', converted_data if converted_data is not None else converted_fields)
+                    setattr(s, 'fields', converted_fields if converted_fields is not None else converted_data)
+                    ns_structs_out[sname] = s
+            namespaces_out[ns_name] = Namespace(ns_name, ns_structs_out)
+
+    templates.set_namespaces(namespaces_out)
+    return templates
+
+
 def load_schema_from_mongo(mongo_db, document_id) -> Any:
     """Load a stored IdsDataFormat schema from MongoDB and reconstruct ConvertXml-like object.
 
@@ -286,17 +377,6 @@ def load_schema_from_mongo(mongo_db, document_id) -> Any:
     if not doc:
         raise KeyError(f"Document with id {document_id} not found in irp_data_formats")
 
-    # DEBUG: Print raw message structure from MongoDB
-    if 'schema' in doc and 'messages' in doc['schema']:
-        messages_raw_from_mongo = doc['schema']['messages']
-        print("DEBUG - Raw messages from MongoDB (first message):")
-        first_msg_id = list(messages_raw_from_mongo.keys())[0]
-        first_msg = messages_raw_from_mongo[first_msg_id]
-        print(f"Message ID: {first_msg_id}")
-        print(f"Keys: {first_msg.keys()}")
-        print(f"Data type: {type(first_msg['data'])}")
-        print(f"First data element: {first_msg['data'][0] if first_msg['data'] else 'empty'}")
-
     # Document may store schema at top-level keys or under a 'schema' field
     schema_blob = None
     if 'schema' in doc and isinstance(doc['schema'], dict):
@@ -315,8 +395,62 @@ def load_schema_from_mongo(mongo_db, document_id) -> Any:
 
     # Deserialize components
     messages_raw = _deserialize_object(schema_blob.get('messages'))
-    types = _deserialize_object(schema_blob.get('types'))
-    templates = _deserialize_object(schema_blob.get('templates'))
+    types_raw = _deserialize_object(schema_blob.get('types'))
+    templates_raw = _deserialize_object(schema_blob.get('templates'))
+
+    # DEBUG: Check what's in templates_raw before reconstruction
+    if templates_raw and isinstance(templates_raw, dict):
+        if 'namespaces' in templates_raw and 'trafmon' in templates_raw['namespaces']:
+            trafmon_ns = templates_raw['namespaces']['trafmon']
+            print(f"DEBUG load_schema: trafmon namespace in raw deserialized data (templates):")
+            print(f"  - Type: {type(trafmon_ns)}")
+            print(f"  - Keys/attrs: {list(trafmon_ns.keys()) if isinstance(trafmon_ns, dict) else dir(trafmon_ns)}")
+            if isinstance(trafmon_ns, dict):
+                print(f"  - Content: {list(trafmon_ns.items())[:5]}")
+
+    # DEBUG: Check types namespaces too
+    if types_raw and isinstance(types_raw, dict):
+        if 'namespaces' in types_raw:
+            print(f"DEBUG load_schema: types.namespaces keys: {list(types_raw['namespaces'].keys())}")
+            if 'trafmon' in types_raw['namespaces']:
+                trafmon_types = types_raw['namespaces']['trafmon']
+                print(f"DEBUG load_schema: trafmon in types.namespaces:")
+                print(f"  - Type: {type(trafmon_types)}")
+                print(f"  - Keys: {list(trafmon_types.keys()) if isinstance(trafmon_types, dict) else 'not a dict'}")
+                if isinstance(trafmon_types, dict):
+                    print(f"  - Content (first 5 items): {list(trafmon_types.items())[:5]}")
+            else:
+                print(f"DEBUG load_schema: trafmon NOT in types.namespaces")
+        else:
+            print(f"DEBUG load_schema: types has no 'namespaces' key")
+    else:
+        print(f"DEBUG load_schema: types_raw is None or not a dict")
+
+    # Reconstruct templates into a proper Templates object with Struct/Namespace instances
+    templates = _reconstruct_templates_object(templates_raw)
+
+    # DEBUG: Check after reconstruction
+    if templates and hasattr(templates, 'namespaces'):
+        trafmon_ns_after = templates.namespaces.get('trafmon')
+        if trafmon_ns_after:
+            print(f"DEBUG load_schema: trafmon namespace AFTER reconstruction:")
+            print(f"  - Type: {type(trafmon_ns_after)}")
+            print(f"  - Has structs: {hasattr(trafmon_ns_after, 'structs')}")
+            if hasattr(trafmon_ns_after, 'structs'):
+                print(f"  - Structs: {list(trafmon_ns_after.structs.keys()) if trafmon_ns_after.structs else 'empty'}")
+
+    # Convert template structs to have properly typed fields
+    if templates and hasattr(templates, 'structs'):
+        structs = getattr(templates, 'structs') or {}
+        if isinstance(structs, dict):
+            for struct_name, struct_obj in structs.items():
+                if hasattr(struct_obj, 'fields'):
+                    fields = getattr(struct_obj, 'fields')
+                    if isinstance(fields, list):
+                        struct_obj.fields = [_dict_to_convertxml_element(field) if isinstance(field, dict) else field
+                                             for field in fields]
+                    else:
+                        setattr(struct_obj, 'fields', fields)
 
     # Convert deserialized message dicts back to Message objects
     from backend.app.modules.reporter.irp.models.data_format_models import Message
@@ -326,11 +460,10 @@ def load_schema_from_mongo(mongo_db, document_id) -> Any:
     if messages_raw and isinstance(messages_raw, dict):
         for msg_id, msg_data in messages_raw.items():
             if isinstance(msg_data, dict) and 'name' in msg_data and 'data' in msg_data:
-                # Ensure data elements are ConvertXml objects
                 msg_data_list = msg_data['data']
                 if isinstance(msg_data_list, list):
-                    # Convert each element from dict to proper ConvertXml type
-                    msg_data_typed = [_dict_to_convertxml_element(item) if isinstance(item, dict) else item                                        for item in msg_data_list]
+                    msg_data_typed = [_dict_to_convertxml_element(item) if isinstance(item, dict) else item
+                                      for item in msg_data_list]
                 else:
                     msg_data_typed = msg_data_list
 
@@ -344,18 +477,43 @@ def load_schema_from_mongo(mongo_db, document_id) -> Any:
     Schema = type('Schema', (), {})
     schema_obj = Schema()
     setattr(schema_obj, 'messages', messages)
-    setattr(schema_obj, 'types', types)
+
+    # Ensure types is a proper Types() object (not just a dict) before attaching
+    from backend.app.modules.reporter.irp.models.data_format_models import Types
+
+    types_obj = None
+    try:
+        # If already an instance of Types, use it directly
+        if isinstance(types_raw, Types):
+            types_obj = types_raw
+        else:
+            # Construct a Types instance and populate fields from the deserialized dict if available
+            types_obj = Types()
+            if isinstance(types_raw, dict):
+                types_obj.set_primitives(types_raw.get('primitives') or {})
+                types_obj.set_fixed_strings(types_raw.get('fixed_strings') or {})
+                # Support either 'ip_addresses' or 'ip_address' keys
+                types_obj.set_ip_address(types_raw.get('ip_addresses') or types_raw.get('ip_address') or {})
+                types_obj.set_enums(types_raw.get('enums') or {})
+                types_obj.set_bitmap(types_raw.get('bitmap'))
+                types_obj.set_namespaces(types_raw.get('namespaces') or {})
+            else:
+                # Unknown shape: attach as-is to preserve data
+                types_obj = types_raw
+    except Exception:
+        # On any error, fall back to the raw deserialized value
+        types_obj = types_raw
+
+    setattr(schema_obj, 'types', types_obj)
     setattr(schema_obj, 'templates', templates)
 
     # Create a ConvertXml-like instance without invoking __init__ (no file IO)
     try:
         cx = object.__new__(ConvertXml)
     except Exception:
-        # Fallback to a generic container if ConvertXml cannot be instantiated this way
         cx = type('ConvertXmlLike', (), {})()
 
     setattr(cx, 'schema', schema_obj)
-    # Keep minimal compatibility attributes
     setattr(cx, 'xml_file_path', None)
     setattr(cx, 'xml_dict', None)
     return cx
@@ -386,25 +544,37 @@ def send_irp_message(schema_obj, message_id, message_data, from_ip: str, to_ip: 
         return False, f"send_irp_message error: {exc!s}"
 
 
-def create_irp_template(schema_obj, message_id) -> Dict[str, Any]:
+def create_irp_template(schema_obj, message_identifier) -> Dict[str, Any]:
     """Generate a template dict for a given message from a stored schema object.
 
     Args:
         schema_obj: ConvertXml-like object with `schema` attribute
-        message_id: message ID to generate template for
+        message_identifier: message ID (int/str) or message name to generate template for
 
     Returns:
-        Template dict
+        Dict with 'success', 'name', and 'template' keys
     """
     try:
+        # Resolve message identifier (handles both ID and name)
+        message_resolver = MessageResolver(schema_obj.schema)
+        message_id = int(message_resolver.resolve_message_identifier(message_identifier))
+        message_name = message_resolver.get_message_name(message_id)
+
         tg = TemplateGenerator(schema_obj.schema)
 
-        # Generate and return template (no file output)
+        # Generate template (no file output)
         template = tg.generate_template(message_id, interactive=False)
 
-        return template
-    except Exception as exc:
-        raise RuntimeError(f"create_irp_template error: {exc}")
+        return {
+            "success": True,
+            "name": message_name,
+            "template": template
+        }
+    except Exception as e:
+        import traceback
+        print(f"ERROR: {e}")
+        print(traceback.format_exc())
+        raise
 
 
 def send_irp(mongo_id, message_id, message_data, from_ip: str, to_ip: str, mongo_db) -> Tuple[bool, str]:

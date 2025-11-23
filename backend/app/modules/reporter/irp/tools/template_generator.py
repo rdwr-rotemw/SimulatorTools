@@ -293,12 +293,22 @@ class TemplateGenerator:
 
             elif element_type == 'Clone':
                 # Clone creates object with enumeration keys
+                print(f"DEBUG Clone: enumeration='{element.enumeration}'")
+                print(f"DEBUG Clone: _has_enum result = {self._has_enum(element.enumeration)}")
                 if self._has_enum(element.enumeration):
                     enum_obj = self._get_enum(element.enumeration)
+                    print(f"DEBUG Clone: enum_obj = {enum_obj}, values = {enum_obj.values if enum_obj else 'None'}")
                     protocols_name = element.enumeration.split('.')[
                         -1] if '.' in element.enumeration else element.enumeration
                     template_dict[protocols_name] = {}
-                    for enum_key in enum_obj.values.keys():
+                    # enum_obj may be a dict (e.g. {'values': {...}}) or an Enum instance with .values
+                    if isinstance(enum_obj, dict):
+                        enum_values = enum_obj.get('values', {})
+                        enum_keys = enum_values.keys() if isinstance(enum_values, dict) else []
+                    else:
+                        enum_keys = enum_obj.values.keys() if hasattr(enum_obj, 'values') and enum_obj.values else []
+
+                    for enum_key in enum_keys:
                         template_dict[protocols_name][enum_key] = {}
                         self._process_clone_body(element.body, template_dict[protocols_name][enum_key])
                 else:
@@ -462,6 +472,8 @@ class TemplateGenerator:
         Resolve a template reference and add its structure to the template dictionary.
         Includes specialized handling for footprint structures.
         """
+        print(f"DEBUG: _resolve_template_reference called with template_name='{template_name}'")
+
         # Special handling for footprint-values templates
         if 'footprint-values' in template_name:
             if hasattr(template_dict, 'get') or isinstance(template_dict, dict):
@@ -487,28 +499,68 @@ class TemplateGenerator:
         # Handle namespace prefixes
         if '.' in template_name:
             namespace, template_local_name = template_name.rsplit('.', 1)
-            if hasattr(self.schema, 'templates') and hasattr(self.schema.templates, 'namespaces'):
-                if namespace in self.schema.templates.namespaces:
-                    namespace_obj = self.schema.templates.namespaces[namespace]
-                    if hasattr(namespace_obj, 'templates') and template_local_name in namespace_obj.templates:
-                        template_def = namespace_obj.templates[template_local_name]
-                        if hasattr(template_def, 'data'):
-                            self._process_elements(template_def.data, template_dict)
+            print(f"DEBUG: Has namespace prefix. namespace='{namespace}', local='{template_local_name}'")
+
+            if hasattr(self.schema, 'templates'):
+                print(f"DEBUG: schema.templates exists, type: {type(self.schema.templates)}")
+
+                if hasattr(self.schema.templates, 'namespaces'):
+                    print(f"DEBUG: Available namespaces: {list(self.schema.templates.namespaces.keys())}")
+
+                    if namespace in self.schema.templates.namespaces:
+                        namespace_obj = self.schema.templates.namespaces[namespace]
+                        print(f"DEBUG: Found namespace '{namespace}'")
+                        print(f"DEBUG: namespace_obj type: {type(namespace_obj)}")
+                        print(f"DEBUG: namespace_obj attrs: {dir(namespace_obj)}")
+
+                        # Check for templates
+                        if hasattr(namespace_obj, 'templates'):
+                            print(
+                                f"DEBUG: namespace has 'templates' attr: {list(namespace_obj.templates.keys()) if namespace_obj.templates else 'empty'}")
+                            if template_local_name in namespace_obj.templates:
+                                template_def = namespace_obj.templates[template_local_name]
+                                print(f"DEBUG: Found in namespace.templates")
+                                if hasattr(template_def, 'data'):
+                                    self._process_elements(template_def.data, template_dict)
+                                return
+
+                        # Check for structs
+                        if hasattr(namespace_obj, 'structs'):
+                            print(
+                                f"DEBUG: namespace has 'structs' attr: {list(namespace_obj.structs.keys()) if namespace_obj.structs else 'empty'}")
+                            if template_local_name in namespace_obj.structs:
+                                template_def = namespace_obj.structs[template_local_name]
+                                print(f"DEBUG: Found in namespace.structs, type: {type(template_def)}")
+                                print(f"DEBUG: template_def attrs: {dir(template_def)}")
+
+                                if hasattr(template_def, 'data'):
+                                    print(f"DEBUG: Processing via data")
+                                    self._process_elements(template_def.data, template_dict)
+                                elif hasattr(template_def, 'fields'):
+                                    print(f"DEBUG: Processing via fields")
+                                    self._process_elements(template_def.fields, template_dict)
+                                elif hasattr(template_def, 'body'):
+                                    print(f"DEBUG: Processing via body")
+                                    self._process_elements([template_def], template_dict)
+                                return
+
+                        print(f"DEBUG: Template '{template_local_name}' not found in namespace '{namespace}'")
                         return
-                    elif hasattr(namespace_obj, 'structs') and template_local_name in namespace_obj.structs:
-                        template_def = namespace_obj.structs[template_local_name]
-                        if hasattr(template_def, 'data'):
-                            self._process_elements(template_def.data, template_dict)
-                        elif hasattr(template_def, 'fields'):
-                            self._process_elements(template_def.fields, template_dict)
-                        elif hasattr(template_def, 'body'):
-                            self._process_elements([template_def], template_dict)
-                        return
+                    else:
+                        print(f"DEBUG: Namespace '{namespace}' not found in available namespaces")
+                else:
+                    print(f"DEBUG: schema.templates has no 'namespaces' attribute")
+            else:
+                print(f"DEBUG: schema has no 'templates' attribute")
 
         # Check global templates
+        print(f"DEBUG: Checking global templates for '{template_name}'")
         if hasattr(self.schema, 'templates') and hasattr(self.schema.templates, 'structs'):
+            print(f"DEBUG: Global structs available: {list(self.schema.templates.structs.keys())[:10]}")
+
             if template_name in self.schema.templates.structs:
                 template_def = self.schema.templates.structs[template_name]
+                print(f"DEBUG: Found in global structs")
 
                 # Handle templates with 'fields' attribute (ConvertXml.DataField objects)
                 if hasattr(template_def, 'fields') and template_def.fields:
@@ -522,7 +574,8 @@ class TemplateGenerator:
                 elif hasattr(template_def, 'data') and template_def.data:
                     for field in template_def.data:
                         if isinstance(field, dict) and 'name' in field and 'type' in field:
-                            template_dict[field['name']] = self._get_default_value_for_field(field['name'], field['type'])
+                            template_dict[field['name']] = self._get_default_value_for_field(field['name'],
+                                                                                             field['type'])
                         elif hasattr(field, 'name') and hasattr(field, 'type'):
                             template_dict[field.name] = self._get_default_value_for_field(field.name, field.type)
                     return
@@ -531,8 +584,13 @@ class TemplateGenerator:
                 elif hasattr(template_def, 'data'):
                     self._process_elements(template_def.data, template_dict)
                     return
+            else:
+                print(f"DEBUG: '{template_name}' not in global structs")
+        else:
+            print(f"DEBUG: schema.templates or schema.templates.structs not found")
 
         # Fallback - create placeholder for unknown template
+        print(f"DEBUG: FALLBACK - Template '{template_name}' not found anywhere!")
         template_dict[f"template_{template_name.replace('.', '_')}"] = f"TEMPLATE_REF: {template_name}"
 
     def _handle_footprint_struct(self, struct_name, struct_element, template_dict, interactive=False):
@@ -563,7 +621,9 @@ class TemplateGenerator:
                 print("Footprint contains 'relation' enum (0=or, 1=and) and corresponding footprint-values")
 
                 # Ask for relation type
-                relation_choice = input("Enter relation type (0=or, 1=and, default=0): ").strip()
+                relation_choice = input("Enter relation type (0=or, 1=and, default=0): ")
+
+
                 try:
                     relation = int(relation_choice) if relation_choice else 0
                     if relation not in [0, 1]:

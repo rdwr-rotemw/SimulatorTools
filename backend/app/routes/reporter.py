@@ -277,7 +277,7 @@ async def create_irp_template_endpoint(
         template = create_irp_template(schema_obj, payload.message_id)
         if template is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message ID not found or template generation failed")
-        return {"success": True, "template": template}
+        return template
     except HTTPException:
         raise
     except KeyError:

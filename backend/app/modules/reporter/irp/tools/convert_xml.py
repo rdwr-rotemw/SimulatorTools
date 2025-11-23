@@ -250,8 +250,10 @@ class ConvertXml:
 
             elif tag == 'template':
                 instanceof = attributes.get('instanceof')
+                # Auto-assign name for unnamed templates so template references like
+                # <template instanceof="report-id"></template> become named 'report-id'
                 if not name:
-                    if "." in instanceof:
+                    if instanceof and "." in instanceof:
                         name = instanceof.split('.')[1]
                     else:
                         name = instanceof
@@ -614,13 +616,13 @@ class ConvertXml:
             Compose a value from quotient and remainder.
             """
             value = quotient * self.denominator + remainder
-            return type_handler.encode(self.type_name, value)
+            return type_handler.encode(self.type, value)
 
         def decompose(self, value, type_handler):
             """
             Decompose a value into quotient and remainder.
             """
-            decoded_value = type_handler.decode(self.type_name, value)
+            decoded_value = type_handler.decode(self.type, value)
             quotient = decoded_value // self.denominator
             remainder = decoded_value % self.denominator
             return quotient, remainder
