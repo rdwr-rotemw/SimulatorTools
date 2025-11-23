@@ -24,7 +24,7 @@ from backend.app.models.user import User
 from backend.app.utils.database import get_db
 from backend.app.utils.auth import hash_password, verify_password, create_access_token, get_current_user
 
-router = APIRouter(prefix="/api", tags=["users"])
+router = APIRouter(tags=["users"])
 
 
 @router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED, responses={400: {"model": ErrorResponse}})

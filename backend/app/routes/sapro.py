@@ -29,7 +29,7 @@ from backend.app.utils.database import get_db
 from backend.app.utils.auth import require_sapro_access
 from backend.app.modules import get_sapro_handler
 
-router = APIRouter(prefix="/api", tags=["sapro"])
+router = APIRouter(tags=["sapro"])
 
 
 @router.post("/simulators", response_model=SaproSimulatorResponse, status_code=status.HTTP_201_CREATED)
