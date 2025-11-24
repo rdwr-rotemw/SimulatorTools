@@ -584,15 +584,11 @@ def create_irp_template(schema_obj, message_identifier) -> Dict[str, Any]:
         raise
 
 
-def send_irp(mongo_id, message_id, message_data, from_ip: str, to_ip: str, mongo_db) -> Tuple[bool, str]:
+def send_irp(message_id, message_data, from_ip: str, to_ip: str, schema_obj) -> Tuple[bool, str]:
     """Route wrapper: load schema from mongo and send an IRP message.
 
     Returns (True, 'Sent') or (False, error_message)
     """
-    try:
-        schema_obj = load_schema_from_mongo(mongo_db, mongo_id)
-    except Exception as exc:
-        return False, f"Failed to load schema: {exc!s}"
 
     ok, msg = send_irp_message(schema_obj, message_id, message_data, from_ip, to_ip)
     return ok, msg
