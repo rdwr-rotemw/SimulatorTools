@@ -39,6 +39,7 @@ The assistant will follow these rules for every session unless you explicitly ch
 - The assistant will follow the project's import rules: use absolute backend imports (e.g. `from backend.app...`) and never use relative imports in backend code.
 - The assistant will start each response with a one-line task receipt and a concise high-level plan for the action it will take.
 - The assistant will use `insert_edit_into_file` for edits and will not produce raw file-diff codeblocks in replies.
+- The assistant will NOT perform git commit or git push operations automatically; it will only prepare suggested commits and ask for your explicit approval before executing any `git commit` or `git push` on your behalf.
 - If you run the compile helper locally and paste its output, the assistant will treat that output as canonical verification and proceed accordingly.
 
 How to request the assistant to run the global compile here

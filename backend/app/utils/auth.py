@@ -150,6 +150,48 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(h
     return payload
 
 
+async def require_admin(
+    credentials: HTTPAuthorizationCredentials = Depends(http_bearer),
+    db: Session = Depends(get_db)
+) -> User:
+    """FastAPI dependency that requires the user to have the 'admin' role.
+
+    Returns the User object if the user is an admin.
+    Raises 403 Forbidden if the user doesn't have admin role.
+    Raises 401 Unauthorized if token is invalid.
+    """
+    token = credentials.credentials
+    logger.debug("require_admin: received token=%s", token)
+    payload = verify_token(token)
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token payload"
+        )
+
+    # Load user with roles
+    user = db.query(User).options(joinedload(User.roles)).filter(User.user_id == int(user_id)).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+
+    # Check if user has admin role
+    has_admin = any(role.role_name == "admin" for role in user.roles)
+    if not has_admin:
+        logger.warning(f"User {user.username} (ID: {user.user_id}) attempted admin-only action without admin role")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin role required for this operation"
+        )
+
+    logger.debug(f"require_admin: User {user.username} verified as admin")
+    return user
+
+
 async def require_sapro_access(
     current_user: Dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),

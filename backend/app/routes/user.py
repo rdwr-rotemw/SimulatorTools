@@ -180,9 +180,9 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse
     ))
 
 
-@router.get("/users/{user_id}/roles", response_model=UserWithRolesResponse, responses={404: {"model": ErrorResponse}})
+@router.get("/users/{username}/roles", response_model=UserWithRolesResponse, responses={404: {"model": ErrorResponse}})
 def get_user_with_roles(
-    user_id: int,
+    username: str,
     db: Session = Depends(get_db),
     _current_user: Any = Depends(get_current_user)
 ) -> UserWithRolesResponse:
@@ -190,9 +190,9 @@ def get_user_with_roles(
 
     Requires authentication. Returns user info including list of role names.
     """
-    user = db.query(User).filter(User.user_id == user_id).first()
+    user = db.query(User).filter(User.username == username).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User '{username}' not found")
 
     # Get role names
     role_names = [role.role_name for role in user.roles]
@@ -206,9 +206,9 @@ def get_user_with_roles(
     )
 
 
-@router.post("/users/{user_id}/roles", response_model=UserWithRolesResponse, status_code=status.HTTP_200_OK, responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
+@router.post("/users/{username}/roles", response_model=UserWithRolesResponse, status_code=status.HTTP_200_OK, responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
 def assign_role_to_user(
-    user_id: int,
+    username: str,
     payload: AssignRoleRequest,
     db: Session = Depends(get_db),
     admin_user: User = Depends(require_admin)
@@ -219,9 +219,9 @@ def assign_role_to_user(
     Assigns the specified role to the target user if not already assigned.
     """
     # Check if user exists
-    user = db.query(User).filter(User.user_id == user_id).first()
+    user = db.query(User).filter(User.username == username).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User '{username}' not found")
 
     # Check if role exists
     role = db.query(Role).filter(Role.role_name == payload.role_name).first()
@@ -233,19 +233,19 @@ def assign_role_to_user(
 
     # Check if user already has this role
     existing = db.query(UserRole).filter(
-        UserRole.user_id == user_id,
+        UserRole.user_id == user.user_id,
         UserRole.role_id == role.role_id
     ).first()
 
     if existing:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"User already has role '{payload.role_name}'"
+            detail=f"User '{username}' already has role '{payload.role_name}'"
         )
 
     # Assign the role
     try:
-        user_role = UserRole(user_id=user_id, role_id=role.role_id)
+        user_role = UserRole(user_id=user.user_id, role_id=role.role_id)
         db.add(user_role)
         db.commit()
         db.refresh(user)
@@ -265,9 +265,9 @@ def assign_role_to_user(
     )
 
 
-@router.delete("/users/{user_id}/roles/{role_name}", response_model=UserWithRolesResponse, responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
+@router.delete("/users/{username}/roles/{role_name}", response_model=UserWithRolesResponse, responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
 def remove_role_from_user(
-    user_id: int,
+    username: str,
     role_name: str,
     db: Session = Depends(get_db),
     admin_user: User = Depends(require_admin)
@@ -278,9 +278,9 @@ def remove_role_from_user(
     Prevents removing admin role from yourself to avoid lockout.
     """
     # Check if user exists
-    user = db.query(User).filter(User.user_id == user_id).first()
+    user = db.query(User).filter(User.username == username).first()
     if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"User '{username}' not found")
 
     # Check if role exists
     role = db.query(Role).filter(Role.role_name == role_name).first()
@@ -288,7 +288,7 @@ def remove_role_from_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Role '{role_name}' not found")
 
     # Prevent removing admin role from yourself
-    if user_id == admin_user.user_id and role_name == "admin":
+    if username == admin_user.username and role_name == "admin":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot remove admin role from your own account"
@@ -296,14 +296,14 @@ def remove_role_from_user(
 
     # Find the user_role association
     user_role = db.query(UserRole).filter(
-        UserRole.user_id == user_id,
+        UserRole.user_id == user.user_id,
         UserRole.role_id == role.role_id
     ).first()
 
     if not user_role:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User does not have role '{role_name}'"
+            detail=f"User '{username}' does not have role '{role_name}'"
         )
 
     # Remove the role
