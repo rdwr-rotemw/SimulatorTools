@@ -16,6 +16,7 @@ from typing import Any, Dict, Union
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
+from backend.app.models.user import User
 from backend.app.modules.reporter.irp.irp_module import send_irp, create_irp_template, load_schema_from_mongo
 from backend.app.modules.reporter.reporter import send_snmp_trap, send_polling
 from backend.app.modules.sapro.sapro_client import get_sapro_handler, SaproCommunicationHandler
@@ -24,6 +25,7 @@ from backend.app.schemas.reporter import (
     ReporterPollingPayload,
     ReporterResponse,
 )
+from backend.app.utils.auth import require_cc_access
 from backend.app.utils.database import get_mongo_db
 
 router = APIRouter(prefix="/api", tags=["reporter"])
@@ -51,6 +53,7 @@ async def send_snmp_trap_endpoint(
         cc_ip: str,
         simulator_ip: str,
         payload: ReporterSNMPPayload,
+        _current_user: User = Depends(require_cc_access),
 ) -> ReporterResponse:
     """Send SNMP trap to simulator via CyberController.
 
@@ -60,7 +63,6 @@ async def send_snmp_trap_endpoint(
         cc_ip: CyberController IP address
         simulator_ip: Target simulator IP address
         payload: SNMP trap configuration (with 'traps' array)
-        db: Database session
         _current_user: Authenticated user with cc_admin or admin role
 
     Returns:
@@ -101,7 +103,7 @@ async def set_polling_config_endpoint(
         cc_ip: str,
         simulator_ip: str,
         payload: ReporterPollingPayload,
-
+        _current_user: User = Depends(require_cc_access),
         sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
 ) -> ReporterResponse:
     """Send polling configuration to simulator via CyberController.
@@ -112,7 +114,6 @@ async def set_polling_config_endpoint(
         cc_ip: CyberController IP address
         simulator_ip: Target simulator IP address
         payload: Polling configuration
-        db: Database session
         _current_user: Authenticated user with cc_admin or admin role
         sapro_handler: Sapro communication handler instance
 
@@ -160,6 +161,7 @@ async def set_polling_config_endpoint(
 async def send_irp_messages(
         cc_ip: str,
         payload: IRPSendPayload,
+        _current_user: User = Depends(require_cc_access),
         mongo_db=Depends(get_mongo_db),
 ) -> Dict[str, Any]:
     """Send an IRP message based on a stored IdsDataFormat schema in MongoDB.
@@ -199,6 +201,7 @@ async def send_irp_messages(
 )
 async def create_irp_template(
         payload: IRPTemplatePayload,
+        _current_user: User = Depends(require_cc_access),
         mongo_db=Depends(get_mongo_db),
 ) -> Dict[str, Any]:
     """Generate an IRP template for a message from a stored schema in MongoDB."""

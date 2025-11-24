@@ -26,7 +26,7 @@ router = APIRouter(prefix="/api", tags=["roles"])
 
 
 @router.post("/roles", response_model=RoleResponse, status_code=status.HTTP_201_CREATED)
-def create_role(payload: RoleCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)) -> RoleResponse:
+def create_role(payload: RoleCreate, db: Session = Depends(get_db), _current_user=Depends(get_current_user)) -> RoleResponse:
     """Create a new role.
 
     Returns 201 with the created role or 409 if role_name already exists.
@@ -63,7 +63,7 @@ def list_roles(db: Session = Depends(get_db)) -> List[RoleResponse]:
 
 
 @router.put("/roles/{role_id}", response_model=RoleResponse)
-def update_role(role_id: int, payload: RoleCreate, db: Session = Depends(get_db), current_user=Depends(get_current_user)) -> RoleResponse:
+def update_role(role_id: int, payload: RoleCreate, db: Session = Depends(get_db), _current_user=Depends(get_current_user)) -> RoleResponse:
     """Update role name/description."""
     role = db.get(Role, role_id)
     if not role:
@@ -84,7 +84,7 @@ def update_role(role_id: int, payload: RoleCreate, db: Session = Depends(get_db)
 
 
 @router.delete("/roles/{role_id}", response_model=SuccessResponse)
-def delete_role(role_id: int, db: Session = Depends(get_db), current_user=Depends(get_current_user)) -> SuccessResponse:
+def delete_role(role_id: int, db: Session = Depends(get_db), _current_user=Depends(get_current_user)) -> SuccessResponse:
     """Delete a role by ID and return a success message."""
     role = db.get(Role, role_id)
     if not role:
