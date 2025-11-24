@@ -87,24 +87,45 @@ async def on_startup():
             try:
                 seed_roles(db)
                 logger.info("Role seeding completed on startup")
-                # Seed the test user after roles
-                try:
-                    seed_test_user(db)
-                    logger.info("Test user seeding completed on startup")
-                    # Seed the CC admin user after test user
+
+                # Determine whether to run test seeds
+                if not settings.SKIP_TEST_SEEDS:
+                    try:
+                        seed_test_user(db)
+                        logger.info("Test user seeding completed on startup")
+                    except Exception:
+                        logger.exception("Failed to seed test user on startup")
+
                     try:
                         seed_cc_admin_user(db)
                         logger.info("CC admin user seeding completed on startup")
                     except Exception:
                         logger.exception("Failed to seed CC admin user on startup")
-                    # Verify the seeded setup
+
+                # Optionally create a bootstrap admin user from env vars
+                if settings.CREATE_ADMIN_ON_STARTUP:
                     try:
-                        verify_setup(db)
-                        logger.info("Startup verification completed")
+                        # Prefer precomputed hash over plaintext password
+                        from backend.app.db.seed_users import seed_admin_user
+
+                        username = settings.ADMIN_USERNAME
+                        phash = settings.ADMIN_PASSWORD_HASH
+                        pclear = settings.ADMIN_PASSWORD
+                        if not username:
+                            logger.error("CREATE_ADMIN_ON_STARTUP is true but ADMIN_USERNAME is not set; skipping admin creation")
+                        else:
+                            seed_admin_user(db, username=username, password=pclear, password_hash=phash)
+                            logger.info("Admin user seeding attempted on startup")
                     except Exception:
-                        logger.exception("Failed to verify setup on startup")
+                        logger.exception("Failed to seed admin user on startup")
+
+                # Verify the seeded setup
+                try:
+                    verify_setup(db)
+                    logger.info("Startup verification completed")
                 except Exception:
-                    logger.exception("Failed to seed test user on startup")
+                    logger.exception("Failed to verify setup on startup")
+
             finally:
                 db.close()
         except Exception as exc:

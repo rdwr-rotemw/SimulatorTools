@@ -6,6 +6,10 @@ exists and is linked to the `sapro_admin` role.
 
 Provides `seed_cc_admin_user(db: Session)` which ensures a test user `cc_test`
 exists and is linked to the `cc_admin` role.
+
+Provides `seed_admin_user(db: Session, username, password=None, password_hash=None)`
+which creates an `admin` user if not already present. If `password_hash` is
+provided it will be used directly; otherwise `password` will be hashed.
 """
 from __future__ import annotations
 
@@ -143,4 +147,68 @@ def seed_cc_admin_user(db: Session) -> Optional[User]:
             pass
         logger.exception("Failed to seed CC admin user: %s", exc)
         print(f"Failed to seed CC admin user: {exc}")
+        raise
+
+
+def seed_admin_user(db: Session, username: str, password: Optional[str] = None, password_hash: Optional[str] = None) -> Optional[User]:
+    """Create an admin user if not already present.
+
+    Args:
+        db: SQLAlchemy Session
+        username: username to create
+        password: plaintext password (will be hashed) - optional if password_hash provided
+        password_hash: precomputed Argon2 password hash (preferred)
+
+    Returns:
+        The created or existing User instance on success.
+
+    Notes:
+        - This function is idempotent: if a user with the given username exists,
+          it will return the existing user and will not alter roles.
+        - It expects the `admin` role to already exist (seed_roles should run first).
+    """
+    try:
+        existing = db.query(User).filter(User.username == username).first()
+        if existing:
+            msg = f"Admin user '{username}' already exists"
+            logger.info(msg)
+            print(msg)
+            return existing
+
+        # Ensure admin role exists
+        role = db.query(Role).filter(Role.role_name == "admin").first()
+        if not role:
+            msg = "Role 'admin' not found; cannot create admin user"
+            logger.error(msg)
+            print(msg)
+            raise ValueError(msg)
+
+        # Compute password hash
+        if password_hash:
+            phash = password_hash
+        elif password:
+            phash = hash_password(password)
+        else:
+            raise ValueError("Either password or password_hash must be provided to create admin user")
+
+        user = User(username=username, password_hash=phash)
+        db.add(user)
+        db.flush()
+
+        user_role = UserRole(user_id=user.user_id, role_id=role.role_id)
+        db.add(user_role)
+        db.commit()
+
+        msg = f"Admin user '{username}' created"
+        logger.info(msg)
+        print(msg)
+        return user
+
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.exception("Failed to seed admin user: %s", exc)
+        print(f"Failed to seed admin user: {exc}")
         raise
