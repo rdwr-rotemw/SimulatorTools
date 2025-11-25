@@ -159,7 +159,7 @@ class Settings(BaseSettings):
         if user and password:
             u = quote_plus(user)
             p = quote_plus(password)
-            return f"mongodb://{u}:{p}@{host}:{port}/{db}"
+            return f"mongodb://{u}:{p}@{host}:{port}/{db}?authSource=admin"
         return f"mongodb://{host}:{port}/{db}"
 
 
