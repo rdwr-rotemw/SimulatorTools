@@ -3,7 +3,7 @@
 This module contains a placeholder conversion function that will be implemented
 by the user to transform IdsDataFormat XML files into JSON-like Python dicts.
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 from typing import Tuple
 
 from backend.app.modules.reporter.irp.tools.convert_xml import ConvertXml
@@ -89,7 +89,8 @@ def _serialize_types(types_obj: Optional[Any]) -> Dict[str, Any]:
     bitmap = None
     if bitmap_obj:
         try:
-            bitmap = {"type": getattr(bitmap_obj, "type", None), "values": getattr(bitmap_obj, "values", None)}
+            bitmap = {"name": getattr(bitmap_obj, "name"), "type": getattr(bitmap_obj, "type", None),
+                      "values": getattr(bitmap_obj, "values", None)}
         except Exception:
             bitmap = None
 
@@ -148,6 +149,7 @@ def _serialize_templates(templates_obj: Optional[Any]) -> Dict[str, Any]:
 
     return {"structs": structs, "namespaces": namespaces}
 
+
 def _serialize_object(obj: Any) -> Any:
     """Recursively serialize ConvertXml objects to JSON-compatible dicts.
 
@@ -171,7 +173,8 @@ def _serialize_object(obj: Any) -> Any:
         return {str(k): _serialize_object(v) for k, v in obj.items()}
 
     # Handle ConvertXml classes - store class name + attributes
-    if hasattr(obj, '__class__') and getattr(obj.__class__, '__module__', '').startswith('backend.app.modules.reporter.irp'):
+    if hasattr(obj, '__class__') and getattr(obj.__class__, '__module__', '').startswith(
+            'backend.app.modules.reporter.irp'):
         data: Dict[str, Any] = {k: _serialize_object(v) for k, v in obj.__dict__.items()}
         return {
             '__type__': f"{obj.__class__.__module__}.{obj.__class__.__name__}",
@@ -332,7 +335,8 @@ def _reconstruct_templates_object(templates_dict):
                     # Obtain fields and data from either dict or object form
                     fields = _get_fields(sdata)
                     if isinstance(fields, list):
-                        converted_fields = [_dict_to_convertxml_element(f) if isinstance(f, dict) else f for f in fields]
+                        converted_fields = [_dict_to_convertxml_element(f) if isinstance(f, dict) else f for f in
+                                            fields]
                     else:
                         converted_fields = fields
 
@@ -343,7 +347,8 @@ def _reconstruct_templates_object(templates_dict):
                         raw_data = getattr(sdata, 'data', None)
 
                     if isinstance(raw_data, list):
-                        converted_data = [_dict_to_convertxml_element(item) if isinstance(item, dict) else item for item in raw_data]
+                        converted_data = [_dict_to_convertxml_element(item) if isinstance(item, dict) else item for item
+                                          in raw_data]
                     else:
                         converted_data = raw_data
 
@@ -386,8 +391,8 @@ def load_schema_from_mongo(mongo_db, document_id) -> Any:
 
     # Document may store schema at top-level keys or under a 'schema' field
     schema_blob = None
-    if 'schema' in doc and isinstance(doc['schema'], dict):
-        schema_blob = doc['schema']
+    if 'xml_schema' in doc and isinstance(doc['xml_schema'], dict):
+        schema_blob = doc['xml_schema']
     else:
         # Try to extract messages/types/templates at top-level
         if any(k in doc for k in ('messages', 'types', 'templates')):
@@ -584,11 +589,26 @@ def create_irp_template(schema_obj, message_identifier) -> Dict[str, Any]:
         raise
 
 
-def send_irp(message_id, message_data, from_ip: str, to_ip: str, schema_obj) -> Tuple[bool, str]:
-    """Route wrapper: load schema from mongo and send an IRP message.
+def send_irp_messages(schema_obj, message_data, from_ip: str, to_ip: str) -> Union[
+    Dict[str, Tuple[bool, str]], Tuple[bool, str]]:
+    """Build and send a binary IRP message via UDP.
 
-    Returns (True, 'Sent') or (False, error_message)
+    Args:
+        schema_obj: ConvertXml-like object with `schema` attribute
+        message_data: dict of values for the message fields
+        from_ip: source IP address to bind from
+        to_ip: destination IP address
+
+    Returns:
+        (True, "Sent") on success or (False, error_message)
     """
-
-    ok, msg = send_irp_message(schema_obj, message_id, message_data, from_ip, to_ip)
-    return ok, msg
+    results = {}
+    try:
+        for message in message_data['messages']:
+            name = message['message']
+            del message['message']
+            ok, msg = send_irp_message(schema_obj, name, message, from_ip, to_ip)
+            results[name] = ok, msg
+        return results
+    except Exception as exc:
+        return False, f"send_irp_message error: {exc!s}"

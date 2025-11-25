@@ -608,7 +608,7 @@ async def download_ids_data_format(
             doc = IRPMessageTemplate(
                 template_name=template_name,
                 description=f"Downloaded from {cc_ip}",
-                schema=converted,  # Pass entire converted schema dict
+                xml_schema=converted,  # Pass entire converted schema dict
                 IdsDataFormat_version=payload.sim_version,
                 user_id=str(current_user.user_id),
             )

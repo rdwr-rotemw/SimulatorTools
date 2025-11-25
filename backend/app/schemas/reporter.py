@@ -6,7 +6,7 @@ Defaults for optional fields are handled in the reporter/attack_traps modules.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from pydantic import BaseModel
 
@@ -65,6 +65,7 @@ class ReporterResponse(BaseModel):
     """Reporter operation response."""
     success: bool
     message: str
+    messages: Dict[str, Tuple[bool, str]] | None = None
 
 
 __all__ = [
@@ -74,4 +75,3 @@ __all__ = [
     "ReporterPollingPayload",
     "ReporterResponse",
 ]
-

@@ -27,7 +27,7 @@ class SNMPTrapTemplate(BaseModel):
 class IRPMessageTemplate(BaseModel):
     template_name: str = Field(..., max_length=200)
     description: Optional[str]
-    schema: Dict[str, Any]  # Complete schema with messages, types, templates inside
+    xml_schema: Dict[str, Any]  # Complete schema with messages, types, templates inside
     IdsDataFormat_version: Optional[str]
     user_id: Optional[str]
     created_at: datetime = Field(default_factory=datetime.utcnow)
