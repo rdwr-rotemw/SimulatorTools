@@ -172,9 +172,10 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse
 
     token = create_access_token({"sub": str(user.user_id)})
 
-    return LoginResponse(access_token=token, token_type="bearer", user=UserResponse(
+    return LoginResponse(access_token=token, token_type="bearer", user=UserWithRolesResponse(
         user_id=user.user_id,
         username=user.username,
+        roles=[role.role_name for role in user.roles],
         created_at=user.created_at,
         updated_at=getattr(user, "updated_at", None),
     ))
