@@ -29,14 +29,15 @@ from backend.app.utils.auth import hash_password, verify_password, create_access
 router = APIRouter(prefix="/api", tags=["users"])
 
 
-@router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED, responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
-def create_user(payload: UserCreate, db: Session = Depends(get_db), admin_user: User = Depends(require_admin)) -> UserResponse:
+@router.post("/users", response_model=UserWithRolesResponse, status_code=status.HTTP_201_CREATED, responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
+def create_user(payload: UserCreate, db: Session = Depends(get_db), admin_user: User = Depends(require_admin)) -> UserWithRolesResponse:
     """Create a new user (admin only).
 
     Requires the requesting user to have the 'admin' role.
     - Hashes the provided password using `hash_password`.
     - Persists the user record to the database.
-    - Returns the created user (without the password hash).
+    - Assigns any requested roles.
+    - Returns the created user including roles.
     """
     hashed = hash_password(payload.password)
     user = User(username=payload.username, password_hash=hashed)
@@ -44,6 +45,18 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db), admin_user: 
         db.add(user)
         db.commit()
         db.refresh(user)
+
+        # Assign roles to the user
+        if getattr(payload, 'roles', None):
+            for role_name in payload.roles:
+                role = db.query(Role).filter(Role.role_name == role_name).first()
+                if role:
+                    user_role = UserRole(user_id=user.user_id, role_id=role.role_id)
+                    db.add(user_role)
+            db.commit()
+            # Reload user from database to get the roles relationship populated
+            db.refresh(user)
+
     except IntegrityError:
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exists")
@@ -51,9 +64,14 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db), admin_user: 
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
-    return UserResponse(
+    # Query roles directly from database
+    user_roles = db.query(Role).join(UserRole).filter(UserRole.user_id == user.user_id).all()
+    loaded_roles = [role.role_name for role in user_roles]
+
+    return UserWithRolesResponse(
         user_id=user.user_id,
         username=user.username,
+        roles=loaded_roles,
         created_at=user.created_at,
         updated_at=getattr(user, "updated_at", None),
     )
@@ -76,17 +94,18 @@ def get_user(user_id: int, db: Session = Depends(get_db), _current_user: Any = D
     )
 
 
-@router.get("/users", response_model=list[UserResponse], status_code=status.HTTP_200_OK)
-def get_all_users(db: Session = Depends(get_db), _current_user: Any = Depends(get_current_user)) -> list[UserResponse]:
+@router.get("/users", response_model=list[UserWithRolesResponse], status_code=status.HTTP_200_OK)
+def get_all_users(db: Session = Depends(get_db), _current_user: Any = Depends(get_current_user)) -> list[UserWithRolesResponse]:
     """Retrieve all users (protected).
 
     Requires authentication (via `get_current_user`).
     """
     users = db.query(User).all()
     return [
-        UserResponse(
+        UserWithRolesResponse(
             user_id=user.user_id,
             username=user.username,
+            roles=[role.role_name for role in user.roles],
             created_at=user.created_at,
             updated_at=getattr(user, "updated_at", None),
         )
@@ -105,6 +124,23 @@ def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db)
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Check if target user has admin role
+    target_user_roles = [role.role_name for role in user.roles]
+    if 'admin' in target_user_roles:
+        # Only the super admin (username "admin") can modify admin users
+        if admin_user.username != 'admin':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the super admin can modify users with admin role"
+            )
+
+    # Prevent super admin from editing themselves (role protection)
+    if user.username == 'admin' and admin_user.username == 'admin':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The super admin account cannot be modified for system security"
+        )
 
     # Update fields if provided
     if payload.username is not None:
@@ -140,12 +176,29 @@ def delete_user(user_id: int, db: Session = Depends(get_db), admin_user: User = 
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
-    # Prevent self-deletion
+    # Prevent super admin from being deleted at all (account protection)
+    if user.username == 'admin':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The super admin account cannot be deleted for system security"
+        )
+
+    # Prevent self-deletion for all users
     if user.user_id == admin_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete your own account"
         )
+
+    # Check if target user has admin role
+    target_user_roles = [role.role_name for role in user.roles]
+    if 'admin' in target_user_roles:
+        # Only the super admin (username "admin") can delete admin users
+        if admin_user.username != 'admin':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the super admin can delete users with admin role"
+            )
 
     try:
         db.delete(user)

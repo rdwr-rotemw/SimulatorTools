@@ -8,6 +8,7 @@ from typing import Optional, List
 class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=150, description="Desired username")
     password: str = Field(..., min_length=8, description="Plaintext password (will be hashed)")
+    roles: List[str] = Field(default_factory=list, description="List of role names to assign to the user")
 
     model_config = {"from_attributes": True}
 
@@ -44,4 +45,3 @@ class AssignRoleRequest(BaseModel):
     role_name: str = Field(..., description="Name of the role to assign (e.g., 'admin', 'sapro_admin', 'cc_admin')")
 
     model_config = {"from_attributes": True}
-

@@ -6,6 +6,8 @@ import { DashboardPage } from './pages/DashboardPage';
 import { ProtectedRoute } from './components/auth/ProtectedRoute';
 import { useAuthStore } from './store/authStore';
 import { Layout } from './components/common/Layout';
+import { SimulatorsPage } from './pages/SimulatorsPage';
+import { UsersPage } from './pages/UsersPage';
 
 function App() {
   const checkAuth = useAuthStore(state => state.checkAuth);
@@ -30,9 +32,7 @@ function App() {
             path="/simulators"
             element={
               <ProtectedRoute requiredRoles={["admin", "sapro_admin"]}>
-                <Layout>
-                  <div>Simulators Page (Coming Soon)</div>
-                </Layout>
+                <SimulatorsPage />
               </ProtectedRoute>
             }
           />
@@ -52,9 +52,7 @@ function App() {
             path="/users"
             element={
               <ProtectedRoute requiredRoles={["admin"]}>
-                <Layout>
-                  <div>User Management (Coming Soon)</div>
-                </Layout>
+                <UsersPage />
               </ProtectedRoute>
             }
           />
