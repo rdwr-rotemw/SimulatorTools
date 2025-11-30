@@ -146,26 +146,20 @@ async def cc_login(
 
         jsession_id = handler._creds.jsession_id
 
-        # Check if a session already exists for this user and CC
-        existing_session = db.query(CCSession).filter(
+        # Delete any old sessions for this user and CC (force fresh login)
+        db.query(CCSession).filter(
             CCSession.cc_ip == cc_ip,
             CCSession.user_id == current_user.user_id
-        ).first()
+        ).delete()
 
-        if existing_session:
-            # Update existing session with new JSESSIONID
-            existing_session.jsession_id = jsession_id
-            existing_session.login_time = handler._creds.authenticated_at
-            existing_session.last_activity = None
-        else:
-            # Create new session
-            cc_session = CCSession(
-                cc_ip=cc_ip,
-                jsession_id=jsession_id,
-                user_id=current_user.user_id,
-                login_time=handler._creds.authenticated_at
-            )
-            db.add(cc_session)
+        # Create new session
+        cc_session = CCSession(
+            cc_ip=cc_ip,
+            jsession_id=jsession_id,
+            user_id=current_user.user_id,
+            login_time=handler._creds.authenticated_at
+        )
+        db.add(cc_session)
 
         db.commit()
 
@@ -224,6 +218,14 @@ async def get_cc_simulators(
         # Get all devices
         ok, result = handler.get_all_dps()
         if not ok:
+            # If session is invalid, delete it from DB and return 401
+            if "Failed to fetch devices" in str(result) or "Authentication" in str(result):
+                db.delete(cc_session)
+                db.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="CC session expired. Please login again."
+                )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to retrieve devices: {result}"

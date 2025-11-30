@@ -1,7 +1,8 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Box, AppBar, Toolbar, Typography, Button } from '@mui/material';
+import { Box, AppBar, Toolbar, Typography, Button, IconButton } from '@mui/material';
 import LogoutIcon from '@mui/icons-material/Logout';
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { useAuthStore } from '../../store/authStore';
 
 interface LayoutProps {
@@ -26,6 +27,9 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           </Typography>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <IconButton onClick={() => navigate(-1)} sx={{ color: 'white' }}>
+              <ArrowBackIcon />
+            </IconButton>
             <Typography variant="body2" sx={{ color: 'white' }}>
               {`Welcome${user ? `, ${user.username}` : ''}`}
             </Typography>
@@ -44,4 +48,3 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
 };
 
 export default Layout;
-

@@ -5,9 +5,12 @@ import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { ProtectedRoute } from './components/auth/ProtectedRoute';
 import { useAuthStore } from './store/authStore';
-import { Layout } from './components/common/Layout';
 import { SimulatorsPage } from './pages/SimulatorsPage';
 import { UsersPage } from './pages/UsersPage';
+import { CCLoginPage } from './pages/CCLoginPage';
+import CCManagementPage from './pages/CCManagementPage';
+import { CCDashboardPage } from './pages/CCDashboardPage';
+import { ReportingPage } from './pages/ReportingPage';
 
 function App() {
   const checkAuth = useAuthStore(state => state.checkAuth);
@@ -37,13 +40,30 @@ function App() {
             }
           />
 
+          <Route path="/cybercontroller" element={<Navigate to="/cc/login" replace />} />
+
+          <Route path="/cc/login" element={<CCLoginPage />} />
           <Route
-            path="/cybercontroller"
+            path="/cc/dashboard"
             element={
               <ProtectedRoute requiredRoles={["admin", "cc_admin"]}>
-                <Layout>
-                  <div>CyberController Page (Coming Soon)</div>
-                </Layout>
+                <CCDashboardPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/cc/manage"
+            element={
+              <ProtectedRoute requiredRoles={["admin", "cc_admin"]}>
+                <CCManagementPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/cc/reporting"
+            element={
+              <ProtectedRoute requiredRoles={["admin", "cc_admin"]}>
+                <ReportingPage />
               </ProtectedRoute>
             }
           />

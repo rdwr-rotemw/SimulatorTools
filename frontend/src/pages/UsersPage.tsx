@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Typography, Button, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Snackbar, Alert } from '@mui/material';
+import { Box, Typography, Button, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Snackbar, Alert, TextField } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
+import SearchIcon from '@mui/icons-material/Search';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import Layout from '../components/common/Layout';
 import { UserTable } from '../components/user/UserTable';
 import { UserFormDialog } from '../components/user/UserFormDialog';
@@ -20,16 +23,17 @@ export const UsersPage: React.FC = () => {
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [userToDelete, setUserToDelete] = useState<number | null>(null);
   const [snackbar, setSnackbar] = useState<SnackbarState>({ open: false, message: '', severity: 'success' });
+  const [searchTerm, setSearchTerm] = useState('');
+  const [sortBy, setSortBy] = useState<'user_id' | 'username' | 'created_at'>('user_id');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   const {
     users,
     isLoading,
-    error,
     fetchUsers,
     createUser,
     updateUser,
     deleteUser,
-    clearError,
   } = useUserStore();
 
   const currentUser = useAuthStore(state => state.user);
@@ -97,6 +101,36 @@ export const UsersPage: React.FC = () => {
     setSnackbar((s) => ({ ...s, open: false }));
   };
 
+  const handleSort = (column: 'user_id' | 'username' | 'created_at') => {
+    if (sortBy === column) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortBy(column);
+      setSortOrder('asc');
+    }
+  };
+
+  const filteredUsers = users.filter(user => {
+    const search = searchTerm.toLowerCase();
+    const usernameMatch = user.username.toLowerCase().includes(search);
+    const rolesMatch = user.roles?.some(role => role.toLowerCase().includes(search));
+    return usernameMatch || rolesMatch;
+  });
+
+  const sortedUsers = [...filteredUsers].sort((a, b) => {
+    let aValue: any = a[sortBy];
+    let bValue: any = b[sortBy];
+
+    if (sortBy === 'created_at') {
+      aValue = new Date(aValue).getTime();
+      bValue = new Date(bValue).getTime();
+    }
+
+    if (aValue < bValue) return sortOrder === 'asc' ? -1 : 1;
+    if (aValue > bValue) return sortOrder === 'asc' ? 1 : -1;
+    return 0;
+  });
+
   return (
     <Layout>
       <Box sx={{ padding: 4 }}>
@@ -105,7 +139,18 @@ export const UsersPage: React.FC = () => {
           <Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate}>Create User</Button>
         </Box>
 
-        <UserTable users={users} currentUser={currentUser} onEdit={handleEdit} onDelete={handleDeleteClick} isLoading={isLoading} />
+        <TextField
+          placeholder="Search by username or role..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          fullWidth
+          sx={{ marginBottom: 3 }}
+          InputProps={{
+            startAdornment: <SearchIcon sx={{ color: '#999', marginRight: 1 }} />
+          }}
+        />
+
+        <UserTable users={sortedUsers} currentUser={currentUser} onEdit={handleEdit} onDelete={handleDeleteClick} isLoading={isLoading} sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
 
         <UserFormDialog open={formOpen} user={selectedUser} onClose={handleFormClose} onSubmit={handleFormSubmit} />
 
@@ -113,6 +158,18 @@ export const UsersPage: React.FC = () => {
           <DialogTitle>Confirm Delete</DialogTitle>
           <DialogContent>
             <DialogContentText>Are you sure you want to delete this user?</DialogContentText>
+
+            {userToDelete !== null && users.find(u => u.user_id === userToDelete) && (
+              <Box sx={{ marginTop: 2, padding: 2, background: '#FFF3E0', borderRadius: 1, border: '1px solid #FFB74D' }}>
+                <Typography variant="body2" sx={{ fontWeight: 600, marginBottom: 1 }}>User Details:</Typography>
+                <Typography variant="body2">Username: <strong>{users.find(u => u.user_id === userToDelete)?.username}</strong></Typography>
+                <Typography variant="body2">Roles: <strong>{users.find(u => u.user_id === userToDelete)?.roles?.join(', ') || 'None'}</strong></Typography>
+              </Box>
+            )}
+
+            <Typography variant="body2" sx={{ marginTop: 2, color: '#d32f2f' }}>
+              This action cannot be undone.
+            </Typography>
           </DialogContent>
           <DialogActions>
             <Button onClick={handleDeleteCancel}>Cancel</Button>
