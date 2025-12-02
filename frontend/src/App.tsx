@@ -11,6 +11,9 @@ import { CCLoginPage } from './pages/CCLoginPage';
 import CCManagementPage from './pages/CCManagementPage';
 import { CCDashboardPage } from './pages/CCDashboardPage';
 import { ReportingPage } from './pages/ReportingPage';
+import { SNMPPage } from './pages/SNMPPage';
+import { IRPManagerPage } from './pages/IRPManagerPage';
+import { IRPSenderPage } from './pages/IRPSenderPage';
 
 function App() {
   const checkAuth = useAuthStore(state => state.checkAuth);
@@ -67,6 +70,17 @@ function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="/cc/reporting/snmp"
+            element={
+              <ProtectedRoute requiredRoles={["admin", "cc_admin"]}>
+                <SNMPPage />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route path="/cc/reporting/irp/send" element={<ProtectedRoute requiredRoles={["admin", "cc_admin"]}><IRPSenderPage /></ProtectedRoute>} />
+          <Route path="/cc/reporting/irp" element={<ProtectedRoute requiredRoles={["admin", "cc_admin"]}><IRPManagerPage /></ProtectedRoute>} />
 
           <Route
             path="/users"

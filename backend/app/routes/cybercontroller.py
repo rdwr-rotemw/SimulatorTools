@@ -73,6 +73,7 @@ class CCDeviceResponse(BaseModel):
     device_id: Optional[str] = None
     device_type: Optional[str] = None
     status: Optional[str] = None
+    version: Optional[str] = None
 
 
 class CCDevicesListResponse(BaseModel):
@@ -101,6 +102,30 @@ class IdsDataFormatPayload(BaseModel):
     """Payload for listing IdsDataFormat files via SSH credentials."""
     username: str
     password: str
+
+
+class ManagementPort(BaseModel):
+    """Single management port."""
+    interface: str
+    address: str
+
+
+class ManagementPortsResponse(BaseModel):
+    """Response for management ports list."""
+    ports: List[ManagementPort]
+
+
+class IRPSchemaListItem(BaseModel):
+    """Single IRP schema item."""
+    mongo_id: str
+    template_name: str
+    version: str
+    created_at: str
+
+
+class IRPSchemaListResponse(BaseModel):
+    """Response for IRP schemas list."""
+    schemas: List[IRPSchemaListItem]
 
 
 # ============================================================================
@@ -241,6 +266,8 @@ async def get_cc_simulators(
 
         sapro_ips = {getattr(s, 'ip_address', None) for s in sapro_sims if
                      getattr(s, 'ip_address', None) is not None}
+        # Create IP to version mapping from Sapro devices
+        sapro_versions = {getattr(s, 'ip_address', None): getattr(s, 'version', None) for s in sapro_sims if getattr(s, 'ip_address', None) is not None}
         filtered_devices = [d for d in result if d.management_ip in sapro_ips]
 
         # Convert to response model
@@ -251,6 +278,7 @@ async def get_cc_simulators(
                 device_id=d.device_id,
                 device_type=d.device_type,
                 status=d.status,
+                version=sapro_versions.get(d.management_ip),
             )
             for d in filtered_devices
         ]
@@ -630,6 +658,267 @@ async def download_ids_data_format(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error downloading IdsDataFormat: {exc!s}"
+        )
+
+
+@router.get(
+    "/cc/{cc_ip}/management-ports",
+    status_code=status.HTTP_200_OK,
+    response_model=ManagementPortsResponse,
+)
+async def get_management_ports(
+        cc_ip: str,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
+) -> ManagementPortsResponse:
+    """Get management port interfaces from CyberController.
+
+    Args:
+        cc_ip: CyberController IP address
+        db: Database session
+        current_user: Authenticated user with cc_admin or admin role
+
+    Returns:
+        ManagementPortsResponse with list of management ports
+
+    Raises:
+        HTTPException: If authentication or retrieval fails
+    """
+    try:
+        cc_session = db.query(CCSession).filter(
+            CCSession.cc_ip == cc_ip,
+            CCSession.user_id == current_user.user_id
+        ).first()
+
+        if not cc_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
+            )
+
+        handler = CCHandler(cc_ip, "", "")
+        jsession_id = str(cc_session.jsession_id)
+        handler._creds = CCCredentials(
+            jsession_id=jsession_id,
+            cc_ip=cc_ip,
+            authenticated_at=getattr(cc_session, 'login_time', None)
+        )
+        try:
+            handler._session.cookies.set("JSESSIONID", jsession_id)
+        except Exception:
+            pass
+
+        ok, result = handler.get_management_ports()
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to retrieve management ports: {result}"
+            )
+
+        ports = [ManagementPort(interface=p["interface"], address=p["address"]) for p in result]
+        return ManagementPortsResponse(ports=ports)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error retrieving management ports: {exc!s}"
+        )
+
+
+@router.get(
+    "/cc/{cc_ip}/irp/schemas/{schema_id}/messages",
+    status_code=status.HTTP_200_OK,
+)
+async def list_schema_messages(
+    cc_ip: str,
+    schema_id: str,
+    _current_user: User = Depends(require_cc_access),
+):
+    """List all available messages for a given IRP schema.
+
+    Args:
+        cc_ip: CyberController IP
+        schema_id: MongoDB ObjectId of the schema
+        _current_user: Authenticated user with cc_admin or admin role
+
+    Returns:
+        List of message IDs and names
+    """
+    try:
+        # Load helper locally to avoid import cycles
+        from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo
+        mongo_db = get_mongo_db()
+
+        # Load schema from MongoDB
+        schema_obj = load_schema_from_mongo(mongo_db, schema_id)
+
+        # Check if schema and messages exist
+        if not schema_obj or not hasattr(schema_obj, 'schema'):
+            return {"messages": []}
+
+        schema = schema_obj.schema
+        if not hasattr(schema, 'messages') or not schema.messages:
+            return {"messages": []}
+
+        messages = schema.messages
+        message_list = []
+
+        # Handle different message structures
+        if isinstance(messages, dict):
+            for msg_id, msg_obj in messages.items():
+                try:
+                    # Try to get name from message object
+                    if msg_obj is None:
+                        continue
+
+                    if hasattr(msg_obj, 'name'):
+                        name = msg_obj.name
+                    elif isinstance(msg_obj, dict):
+                        name = msg_obj.get('name', f"Message {msg_id}")
+                    else:
+                        name = str(msg_obj) if msg_obj else f"Message {msg_id}"
+
+                    message_list.append({
+                        "id": str(msg_id),
+                        "name": name or f"Message {msg_id}"
+                    })
+                except Exception as e:
+                    # Skip problematic messages but continue
+                    logger.warning(f"Failed to process message {msg_id}: {e}")
+                    continue
+        elif isinstance(messages, list):
+            # If messages are in a list, try to extract name/index
+            for idx, msg_obj in enumerate(messages):
+                try:
+                    if msg_obj is None:
+                        continue
+                    if hasattr(msg_obj, 'name'):
+                        name = msg_obj.name
+                    elif isinstance(msg_obj, dict):
+                        name = msg_obj.get('name', f"Message {idx}")
+                    else:
+                        name = str(msg_obj) if msg_obj else f"Message {idx}"
+
+                    message_list.append({"id": str(idx), "name": name or f"Message {idx}"})
+                except Exception as e:
+                    logger.warning(f"Failed to process message at index {idx}: {e}")
+                    continue
+        else:
+            # Unknown structure - attempt best-effort iteration if possible
+            try:
+                for msg_id, msg_obj in getattr(messages, 'items', lambda: [])():
+                    try:
+                        if msg_obj is None:
+                            continue
+                        if hasattr(msg_obj, 'name'):
+                            name = msg_obj.name
+                        elif isinstance(msg_obj, dict):
+                            name = msg_obj.get('name', f"Message {msg_id}")
+                        else:
+                            name = str(msg_obj) if msg_obj else f"Message {msg_id}"
+
+                        message_list.append({"id": str(msg_id), "name": name or f"Message {msg_id}"})
+                    except Exception as e:
+                        logger.warning(f"Failed to process message {msg_id} in unknown structure: {e}")
+                        continue
+            except Exception:
+                # Cannot iterate messages - return empty
+                return {"messages": []}
+
+        return {"messages": message_list}
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error listing messages: {exc!s}"
+        )
+
+
+# New endpoints for IRP schema management
+@router.get(
+    "/cc/{cc_ip}/irp/schemas",
+    status_code=status.HTTP_200_OK,
+    response_model=IRPSchemaListResponse,
+)
+async def list_irp_schemas(
+    cc_ip: str,
+    current_user: User = Depends(require_cc_access),
+) -> IRPSchemaListResponse:
+    """List all IRP schemas stored in MongoDB.
+
+    Returns:
+        IRPSchemaListResponse with list of schemas
+    """
+    try:
+        mongo_db = get_mongo_db()
+        schemas_cursor = mongo_db.irp_data_formats.find({}, {
+            "_id": 1,
+            "template_name": 1,
+            "IdsDataFormat_version": 1,
+            "created_at": 1
+        })
+
+        schemas = []
+        for doc in schemas_cursor:
+            created_at = doc.get("created_at", "")
+            # Convert datetime to ISO string if needed
+            if hasattr(created_at, 'isoformat'):
+                created_at = created_at.isoformat()
+            elif not isinstance(created_at, str):
+                created_at = str(created_at) if created_at else ""
+
+            schemas.append(IRPSchemaListItem(
+                mongo_id=str(doc["_id"]),
+                template_name=doc.get("template_name", "Unknown"),
+                version=doc.get("IdsDataFormat_version", "Unknown"),
+                created_at=created_at
+            ))
+
+        return IRPSchemaListResponse(schemas=schemas)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error listing schemas: {exc!s}"
+        )
+
+
+@router.delete(
+    "/cc/{cc_ip}/irp/schemas/{schema_id}",
+    status_code=status.HTTP_200_OK,
+)
+async def delete_irp_schema(
+    cc_ip: str,
+    schema_id: str,
+    current_user: User = Depends(require_cc_access),
+):
+    """Delete an IRP schema from MongoDB.
+
+    Args:
+        cc_ip: CyberController IP
+        schema_id: MongoDB ObjectId of schema to delete
+
+    Returns:
+        Success response
+    """
+    try:
+        from bson.objectid import ObjectId
+        mongo_db = get_mongo_db()
+
+        result = mongo_db.irp_data_formats.delete_one({"_id": ObjectId(schema_id)})
+
+        if result.deleted_count == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Schema not found"
+            )
+
+        return {"success": True, "message": "Schema deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting schema: {exc!s}"
         )
 
 

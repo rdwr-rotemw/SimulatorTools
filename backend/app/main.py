@@ -31,6 +31,7 @@ from backend.app.routes.reporter import router as reporter_router
 from backend.app.routes.user import router as user_router
 from backend.app.routes.role import router as role_router
 from backend.app.routes.permission import router as permission_router
+from backend.app.routes import snmp_templates
 
 logger = logging.getLogger("sim-tools")
 logging.basicConfig(level=logging.INFO)
@@ -64,6 +65,7 @@ app.include_router(user_router, prefix="", tags=["users"])
 # Register new routers
 app.include_router(role_router)
 app.include_router(permission_router)
+app.include_router(snmp_templates.router)
 
 
 @app.get("/health", tags=["meta"])

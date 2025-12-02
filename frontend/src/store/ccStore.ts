@@ -1,10 +1,11 @@
 import { create } from 'zustand';
-import { ccService } from '../api/services/cc.service';
-import { CCState, CCAddDeviceRequest } from '../types/cc.types';
+import { ccService, ManagementPort } from '../api/services/cc.service';
+import { CCState, CCAddDeviceRequest, ManagementPort as ManagementPortType } from '../types/cc.types';
 
-export const useCCStore = create<CCState>((set) => ({
+export const useCCStore = create<CCState>((set, get) => ({
   currentCC: null,
   devices: [],
+  managementPorts: [],
   isLoading: false,
   error: null,
 
@@ -13,6 +14,10 @@ export const useCCStore = create<CCState>((set) => ({
     try {
       await ccService.login(cc_ip, username, password);
       set({ currentCC: cc_ip, isLoading: false });
+      // Fetch devices immediately after login
+      await get().fetchDevices(cc_ip);
+      // Also fetch management ports right after login
+      await get().fetchManagementPorts(cc_ip);
     } catch (error: any) {
       const message = error?.response?.data?.message || error?.message || 'Login failed';
       set({ error: message, isLoading: false });
@@ -46,6 +51,17 @@ export const useCCStore = create<CCState>((set) => ({
         const message = error?.response?.data?.detail || error?.message || 'Failed to fetch devices';
         set({ isLoading: false, error: message });
       }
+    }
+  },
+
+  fetchManagementPorts: async (cc_ip: string) => {
+    set({ isLoading: true, error: null });
+    try {
+      const ports = await ccService.getManagementPorts(cc_ip);
+      set({ managementPorts: ports, isLoading: false });
+    } catch (error: any) {
+      const message = error?.response?.data?.detail || error?.message || 'Failed to fetch management ports';
+      set({ isLoading: false, error: message });
     }
   },
 
