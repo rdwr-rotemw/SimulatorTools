@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Dict, Union
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from backend.app.models.user import User
-from backend.app.modules.reporter.irp.irp_module import create_irp_template, load_schema_from_mongo, \
-    send_irp_messages
+from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo, send_irp_messages
 from backend.app.modules.reporter.snmp import attack_traps
 from backend.app.modules.sapro.sapro_client import get_sapro_handler, SaproCommunicationHandler
 from backend.app.schemas.reporter import (
@@ -27,7 +27,7 @@ from backend.app.schemas.reporter import (
     ReporterPollingPayload,
     ReporterResponse,
 )
-from backend.app.utils.auth import require_cc_access
+from backend.app.utils.auth import require_cc_access, get_current_user
 from backend.app.utils.database import get_mongo_db
 
 router = APIRouter(prefix="/api", tags=["reporter"])
@@ -225,11 +225,25 @@ async def create_irp_template_endpoint(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to load schema: {exc!s}")
 
     try:
-        template = create_irp_template(schema_obj, payload.message_id)
-        if template is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                                detail="Message ID not found or template generation failed")
-        return template
+        from backend.app.modules.reporter.irp.tools.template_generator import TemplateGenerator
+        tg = TemplateGenerator(schema_obj.schema)
+
+        # Use new method that generates both template and metadata
+        result = tg.generate_template_with_metadata(payload.message_id, interactive=False)
+
+        # Get message name
+        message_id_str = str(payload.message_id)
+        message_name = "Unknown"
+        if hasattr(schema_obj.schema, 'messages') and message_id_str in schema_obj.schema.messages:
+            msg_obj = schema_obj.schema.messages[message_id_str]
+            message_name = getattr(msg_obj, 'name', 'Unknown')
+
+        return {
+            "success": True,
+            "name": message_name,
+            "template": result["template"],
+            "schema": result["schema"]
+        }
     except HTTPException:
         raise
     except KeyError:
@@ -237,6 +251,115 @@ async def create_irp_template_endpoint(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Template generation failed: {exc!s}")
+
+
+# IRP Template Management
+@router.post("/cc/{cc_ip}/irp/templates")
+async def save_irp_template(
+    cc_ip: str,
+    template_data: dict,
+    current_user: dict = Depends(get_current_user)
+):
+    """Save an IRP message template"""
+    try:
+        db = get_mongo_db()
+
+        template_doc = {
+            "user_id": current_user.get("sub") or current_user.get("id"),
+            "cc_ip": cc_ip,
+            "name": template_data["name"],
+            "schema_id": template_data["schema_id"],
+            "schema_name": template_data["schema_name"],
+            "messages": template_data.get("messages", {}),
+            "created_at": datetime.now(timezone.utc)
+        }
+
+        result = db.irp_templates.insert_one(template_doc)
+
+        return {
+            "success": True,
+            "template_id": str(result.inserted_id),
+            "message": "Template saved successfully"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save template: {str(e)}")
+
+
+@router.get("/cc/{cc_ip}/irp/templates")
+async def list_irp_templates(
+    cc_ip: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """List all IRP templates for current user and CC"""
+    try:
+        db = get_mongo_db()
+
+        templates = list(db.irp_templates.find(
+            {"user_id": current_user.get("sub") or current_user.get("id"), "cc_ip": cc_ip},
+            {"_id": 1, "name": 1, "schema_name": 1, "created_at": 1}
+        ))
+
+        # Convert ObjectId to string
+        for template in templates:
+            template["id"] = str(template.pop("_id"))
+
+        return {"success": True, "templates": templates}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list templates: {str(e)}")
+
+
+@router.get("/cc/{cc_ip}/irp/templates/{template_id}")
+async def load_irp_template(
+    cc_ip: str,
+    template_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Load a specific IRP template"""
+    try:
+        from bson import ObjectId
+        db = get_mongo_db()
+
+        template = db.irp_templates.find_one({
+            "_id": ObjectId(template_id),
+            "user_id": current_user.get("sub") or current_user.get("id"),
+            "cc_ip": cc_ip
+        })
+
+        if not template:
+            raise HTTPException(status_code=404, detail="Template not found")
+
+        template["id"] = str(template.pop("_id"))
+
+        return {"success": True, "template": template}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load template: {str(e)}")
+
+
+@router.delete("/cc/{cc_ip}/irp/templates/{template_id}")
+async def delete_irp_template(
+    cc_ip: str,
+    template_id: str,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete an IRP template"""
+    try:
+        from bson import ObjectId
+        db = get_mongo_db()
+
+        result = db.irp_templates.delete_one({
+            "_id": ObjectId(template_id),
+            "user_id": current_user.get("sub") or current_user.get("id"),
+            "cc_ip": cc_ip
+        })
+
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Template not found")
+
+        return {"success": True, "message": "Template deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete template: {str(e)}")
 
 
 __all__ = ["router"]

@@ -532,6 +532,35 @@ class CCHandler:
                 pass
             return False, f"Download error: {exc!s}"
 
+    def get_management_ports(self) -> Tuple[bool, Union[str, List[Dict[str, str]]]]:
+        """Fetch management port interfaces from CyberController.
+
+        Returns:
+            (True, [{"interface": "G1", "address": "172.17.154.77"}, ...]) on success
+            or (False, error_message) on failure.
+        """
+        try:
+            if not self.is_logged_in():
+                ok, msg = self.refresh_session()
+                if not ok:
+                    raise RuntimeError(f"Authentication required and refresh failed: {msg}")
+
+            url = f"{self.base_url}/mgmt/system/config/itemlist/mngtports"
+            cookies = {"JSESSIONID": self._creds.jsession_id}
+            resp = requests.get(url, cookies=cookies, verify=self._verify_ssl, timeout=15)
+
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    ports = data.get("mngtports", [])
+                    return True, ports
+                except Exception as exc:
+                    return False, f"Failed to parse management ports response: {exc!s}"
+
+            return False, f"Failed to fetch management ports: HTTP {resp.status_code}"
+        except Exception as exc:
+            return False, f"Exception in get_management_ports: {exc!s}"
+
 
 def get_cc_handler(cc_ip: str, username: str, password: str) -> CCHandler:
     """Return a singleton CCHandler for the given (cc_ip, username, password).

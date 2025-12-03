@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import logging
 from typing import List
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.app.utils.config import settings
@@ -31,6 +33,7 @@ from backend.app.routes.reporter import router as reporter_router
 from backend.app.routes.user import router as user_router
 from backend.app.routes.role import router as role_router
 from backend.app.routes.permission import router as permission_router
+from backend.app.routes import snmp_templates
 
 logger = logging.getLogger("sim-tools")
 logging.basicConfig(level=logging.INFO)
@@ -64,6 +67,12 @@ app.include_router(user_router, prefix="", tags=["users"])
 # Register new routers
 app.include_router(role_router)
 app.include_router(permission_router)
+app.include_router(snmp_templates.router)
+
+# Mount static files (React build) - serve frontend build at root if present
+BUILD_DIR = Path(__file__).parent.parent.parent / "frontend" / "build"
+if BUILD_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(BUILD_DIR), html=True), name="static")
 
 
 @app.get("/health", tags=["meta"])
