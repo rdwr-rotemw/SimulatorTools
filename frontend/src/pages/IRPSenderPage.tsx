@@ -21,6 +21,8 @@ import {
   List,
   ListItemButton,
   ListItemText,
+  ListItem,
+  TextField,
 } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import AddIcon from '@mui/icons-material/Add'
@@ -34,23 +36,36 @@ import DeleteIcon from '@mui/icons-material/Delete'
 import Layout from '../components/common/Layout'
 import useCCStore from '../store/ccStore'
 import { irpSchemaService, SchemaMessage } from '../api/services/irpSchema.service'
+import IRPMessageForm from '../components/irp/IRPMessageForm'
 
 export const IRPSenderPage: React.FC = () => {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const schemaId = searchParams.get('schema_id')
 
-  const { currentCC, devices, managementPorts } = useCCStore()
+  const currentCC = useCCStore((state) => state.currentCC)
+  const devices = useCCStore((state) => state.devices)
+  const managementPorts = useCCStore((state) => state.managementPorts)
 
   const [schemaInfo, setSchemaInfo] = useState<{ name: string; version: string } | null>(null)
   const [selectedSimulator, setSelectedSimulator] = useState<string>('')
   const [selectedDestinationPort, setSelectedDestinationPort] = useState<string>('')
-  const [messages, setMessages] = useState<Array<{ messageType: string; messageName: string; data: Record<string, any> }>>([])
+  const [messages, setMessages] = useState<Array<{ messageType: string; messageName: string; data: Record<string, any>; schema: Record<string, any> }>>([])
   const [expandedMessages, setExpandedMessages] = useState<number[]>([])
   const [availableMessages, setAvailableMessages] = useState<SchemaMessage[]>([])
   const [addMessageDialogOpen, setAddMessageDialogOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({ open: false, message: '', severity: 'success' })
+
+  // Template management state
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false)
+  const [loadDialogOpen, setLoadDialogOpen] = useState(false)
+  const [templateName, setTemplateName] = useState('')
+  const [savedTemplates, setSavedTemplates] = useState<any[]>([])
+  const [loadingTemplates, setLoadingTemplates] = useState(false)
+
+  // Log render for debugging
+  console.log('IRPSenderPage rendered')
 
   // Redirect if missing context
   useEffect(() => {
@@ -63,6 +78,7 @@ export const IRPSenderPage: React.FC = () => {
 
   // Fetch schema info and available messages
   useEffect(() => {
+    console.log('Schema fetch effect running')
     if (currentCC && schemaId) {
       const fetchData = async () => {
         try {
@@ -99,10 +115,18 @@ export const IRPSenderPage: React.FC = () => {
 
   // Message management
   const addMessage = async (messageType: string, messageName: string) => {
+    console.log('=== addMessage called ===', messageType, messageName, Date.now())
     try {
       setIsLoading(true)
+      console.log('About to call getMessageTemplate')
       const template = await irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageType)
-      setMessages((prev) => [...prev, { messageType, messageName, data: template.template }])
+      console.log('getMessageTemplate returned:', template)
+      setMessages((prev) => [...prev, {
+        messageType,
+        messageName,
+        data: template.template,
+        schema: template.schema,
+      }])
       setExpandedMessages((prev) => [...prev, messages.length])
       setAddMessageDialogOpen(false)
       setSnackbar({ open: true, message: `Added ${messageName}`, severity: 'success' })
@@ -114,10 +138,6 @@ export const IRPSenderPage: React.FC = () => {
   }
 
   const deleteMessage = (index: number) => {
-    if (messages.length === 1) {
-      setSnackbar({ open: true, message: 'Must have at least one message', severity: 'error' })
-      return
-    }
     setMessages((prev) => prev.filter((_, i) => i !== index))
     setExpandedMessages((prev) => prev.filter((i) => i !== index).map((i) => (i > index ? i - 1 : i)))
   }
@@ -126,13 +146,109 @@ export const IRPSenderPage: React.FC = () => {
     setExpandedMessages((prev) => (prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]))
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const updateMessage = (index: number, data: Record<string, any>) => {
+  function updateMessage(index: number, data: Record<string, any>) {
     setMessages((prev) => {
       const next = [...prev]
       next[index] = { ...next[index], data }
       return next
     })
+  }
+
+  // Save Template
+  const handleSaveTemplate = async () => {
+    if (!templateName.trim()) {
+      alert('Please enter a template name')
+      return
+    }
+
+    try {
+      const templateData = {
+        name: templateName.trim(),
+        schema_id: schemaId!,
+        schema_name: schemaInfo?.name || '',
+        messages: messages,
+      }
+
+      await irpSchemaService.saveTemplate(currentCC!, templateData)
+      alert('Template saved successfully')
+      setSaveDialogOpen(false)
+      setTemplateName('')
+    } catch (error) {
+      console.error('Failed to save template:', error)
+      alert('Failed to save template')
+    }
+  }
+
+  // Load Template - Open Dialog
+  const handleOpenLoadDialog = async () => {
+    setLoadingTemplates(true)
+    setLoadDialogOpen(true)
+
+    try {
+      const result = await irpSchemaService.listTemplates(currentCC!)
+      setSavedTemplates(result.templates)
+    } catch (error) {
+      console.error('Failed to load templates:', error)
+      alert('Failed to load templates')
+    } finally {
+      setLoadingTemplates(false)
+    }
+  }
+
+  // Load Template - Apply
+  const handleLoadTemplate = async (templateId: string) => {
+    try {
+      const result = await irpSchemaService.loadTemplate(currentCC!, templateId)
+      const template = result.template
+
+      // Update page state with loaded template
+      setMessages(template.messages)
+      setLoadDialogOpen(false)
+      alert('Template loaded successfully')
+    } catch (error) {
+      console.error('Failed to load template:', error)
+      alert('Failed to load template')
+    }
+  }
+
+  // Delete Template
+  const handleDeleteTemplate = async (templateId: string) => {
+    if (!window.confirm('Are you sure you want to delete this template?')) {
+      return
+    }
+
+    try {
+      await irpSchemaService.deleteTemplate(currentCC!, templateId)
+      // Refresh list
+      const result = await irpSchemaService.listTemplates(currentCC!)
+      setSavedTemplates(result.templates)
+    } catch (error) {
+      console.error('Failed to delete template:', error)
+      alert('Failed to delete template')
+    }
+  }
+
+  // Download JSON
+  const handleDownloadJSON = () => {
+    // Export only the data needed for sending - no schema metadata
+    const messagesForExport = messages.map((msg) => ({
+      message: msg.messageName,
+      ...msg.data,
+    }))
+
+    const dataToDownload = {
+      messages: messagesForExport,
+    }
+
+    const blob = new Blob([JSON.stringify(dataToDownload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `irp-messages-${new Date().toISOString().slice(0, 10)}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
   }
 
   return (
@@ -196,9 +312,11 @@ export const IRPSenderPage: React.FC = () => {
                   </Box>
                 </Box>
                 <Collapse in={expandedMessages.includes(index)}>
-                  <Typography variant="body2" color="textSecondary">
-                    Message form builder coming next...
-                  </Typography>
+                  <IRPMessageForm
+                    messageData={msg.data}
+                    schema={msg.schema}
+                    onChange={(data) => updateMessage(index, data)}
+                  />
                 </Collapse>
               </Paper>
             ))
@@ -210,13 +328,27 @@ export const IRPSenderPage: React.FC = () => {
           <Button variant="outlined" startIcon={<AddIcon />} onClick={() => setAddMessageDialogOpen(true)}>
             Add Message
           </Button>
-          <Button variant="outlined" startIcon={<SaveIcon />}>
+          <Button
+            variant="contained"
+            color="secondary"
+            onClick={() => setSaveDialogOpen(true)}
+            disabled={messages.length === 0}
+          >
             Save Template
           </Button>
-          <Button variant="outlined" startIcon={<DownloadIcon />}>
+          <Button
+            variant="contained"
+            color="secondary"
+            onClick={handleDownloadJSON}
+            disabled={messages.length === 0}
+          >
             Download JSON
           </Button>
-          <Button variant="outlined" startIcon={<UploadIcon />}>
+          <Button
+            variant="contained"
+            color="secondary"
+            onClick={handleOpenLoadDialog}
+          >
             Load Template
           </Button>
           <Box sx={{ flex: 1 }} />
@@ -229,6 +361,72 @@ export const IRPSenderPage: React.FC = () => {
             Send Messages ({messages.length})
           </Button>
         </Box>
+
+        {/* Save Template Dialog */}
+        <Dialog open={saveDialogOpen} onClose={() => setSaveDialogOpen(false)}>
+          <DialogTitle>Save Template</DialogTitle>
+          <DialogContent>
+            <TextField
+              autoFocus
+              margin="dense"
+              label="Template Name"
+              fullWidth
+              value={templateName}
+              onChange={(e) => setTemplateName(e.target.value)}
+              onKeyPress={(e) => {
+                if (e.key === 'Enter') {
+                  handleSaveTemplate()
+                }
+              }}
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setSaveDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleSaveTemplate} variant="contained" color="primary">
+              Save
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Load Template Dialog */}
+        <Dialog
+          open={loadDialogOpen}
+          onClose={() => setLoadDialogOpen(false)}
+          maxWidth="md"
+          fullWidth
+        >
+          <DialogTitle>Load Template</DialogTitle>
+          <DialogContent>
+            {loadingTemplates ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', padding: 3 }}>
+                <CircularProgress />
+              </Box>
+            ) : savedTemplates.length === 0 ? (
+              <Typography color="textSecondary">No saved templates</Typography>
+            ) : (
+              <List>
+                {savedTemplates.map((template) => (
+                  <ListItem key={template.id} secondaryAction={
+                    <IconButton edge="end" onClick={() => handleDeleteTemplate(template.id)}>
+                      <DeleteIcon />
+                    </IconButton>
+                  }>
+                    <ListItemButton onClick={() => handleLoadTemplate(template.id)}>
+                      <ListItemText
+                        primary={template.name}
+                        secondary={`Schema: ${template.schema_name} | Created: ${new Date(template.created_at).toLocaleDateString()}`}
+                      />
+                    </ListItemButton>
+                  </ListItem>
+                ))}
+              </List>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setLoadDialogOpen(false)}>Close</Button>
+          </DialogActions>
+        </Dialog>
+
       </Box>
 
       {/* Add Message Dialog */}
@@ -248,10 +446,14 @@ export const IRPSenderPage: React.FC = () => {
         </DialogActions>
       </Dialog>
 
-      <Snackbar open={snackbar.open} autoHideDuration={6000} onClose={() => setSnackbar((s) => ({ ...s, open: false }))}>
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={3000}
+        onClose={() => setSnackbar((s) => ({ ...s, open: false }))}
+        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+      >
         <Alert severity={snackbar.severity}>{snackbar.message}</Alert>
       </Snackbar>
     </Layout>
   )
 }
-

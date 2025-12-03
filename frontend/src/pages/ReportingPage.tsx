@@ -9,7 +9,7 @@ import useCCStore from '../store/ccStore';
 
 export const ReportingPage: React.FC = () => {
   const navigate = useNavigate();
-  const { currentCC } = useCCStore();
+  const currentCC = useCCStore((state) => state.currentCC);
 
   useEffect(() => {
     if (!currentCC) {

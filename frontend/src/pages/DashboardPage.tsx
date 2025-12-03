@@ -9,7 +9,7 @@ import { Layout } from '../components/common/Layout';
 
 export const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
-  const { user } = useAuthStore();
+  const user = useAuthStore((state) => state.user);
 
   const isAdmin = user?.roles?.includes('admin');
   const isSaproAdmin = user?.roles?.includes('sapro_admin');

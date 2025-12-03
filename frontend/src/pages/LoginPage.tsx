@@ -7,7 +7,11 @@ import { LoginRequest } from '../types/auth';
 
 export const LoginPage: React.FC = () => {
   const navigate = useNavigate();
-  const { login, isLoading, error, isAuthenticated, clearError } = useAuthStore();
+  const login = useAuthStore((state) => state.login);
+  const isLoading = useAuthStore((state) => state.isLoading);
+  const error = useAuthStore((state) => state.error);
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const clearError = useAuthStore((state) => state.clearError);
 
   const { register, handleSubmit, formState } = useForm<LoginRequest>();
   const { errors } = formState;

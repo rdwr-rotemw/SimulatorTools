@@ -39,16 +39,14 @@ const CCManagementPage: React.FC = () => {
   const [sortBy, setSortBy] = useState<'management_ip' | 'name' | 'device_type' | 'status'>('management_ip');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
-  const {
-    currentCC,
-    devices,
-    isLoading,
-    fetchDevices,
-    addDevice,
-    deleteDevice,
-    logout,
-    clearState,
-  } = useCCStore();
+  const currentCC = useCCStore((state) => state.currentCC);
+  const devices = useCCStore((state) => state.devices);
+  const isLoading = useCCStore((state) => state.isLoading);
+  const fetchDevices = useCCStore((state) => state.fetchDevices);
+  const addDevice = useCCStore((state) => state.addDevice);
+  const deleteDevice = useCCStore((state) => state.deleteDevice);
+  const logout = useCCStore((state) => state.logout);
+  const clearState = useCCStore((state) => state.clearState);
 
   useEffect(() => {
     if (!currentCC) {

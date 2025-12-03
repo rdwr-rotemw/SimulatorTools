@@ -41,7 +41,9 @@ import { snmpTemplateService } from '../api/services/snmpTemplate.service';
 
 export const SNMPPage: React.FC = () => {
   const navigate = useNavigate();
-  const { currentCC, devices: devicesList, managementPorts } = useCCStore();
+  const currentCC = useCCStore((state) => state.currentCC);
+  const devicesList = useCCStore((state) => state.devices);
+  const managementPorts = useCCStore((state) => state.managementPorts);
 
   const [selectedSimulator, setSelectedSimulator] = useState<string>('');
   const [selectedDestinationPort, setSelectedDestinationPort] = useState<string>('');
@@ -399,8 +401,13 @@ export const SNMPPage: React.FC = () => {
         </DialogActions>
       </Dialog>
 
-      <Snackbar open={snackbar.open} autoHideDuration={6000} onClose={handleCloseSnackbar}>
-        <Alert onClose={handleCloseSnackbar} severity={snackbar.severity} sx={{ width: '100%' }}>
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={3000}
+        onClose={() => setSnackbar((s) => ({ ...s, open: false }))}
+        anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
+      >
+        <Alert severity={snackbar.severity} sx={{ width: '100%' }}>
           {snackbar.message}
         </Alert>
       </Snackbar>

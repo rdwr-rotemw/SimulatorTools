@@ -13,7 +13,10 @@ interface FormValues {
 
 export const CCLoginPage: React.FC = () => {
   const navigate = useNavigate();
-  const { login, isLoading, error, clearError } = useCCStore();
+  const login = useCCStore((state) => state.login);
+  const isLoading = useCCStore((state) => state.isLoading);
+  const error = useCCStore((state) => state.error);
+  const clearError = useCCStore((state) => state.clearError);
 
   const { register, handleSubmit } = useForm<FormValues>({
     defaultValues: { cc_ip: '', username: '', password: '' },

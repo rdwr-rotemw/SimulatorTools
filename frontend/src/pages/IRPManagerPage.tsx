@@ -30,7 +30,8 @@ import { irpSchemaService, IRPSchema } from '../api/services/irpSchema.service'
 
 export const IRPManagerPage: React.FC = () => {
   const navigate = useNavigate()
-  const { currentCC, devices } = useCCStore()
+  const currentCC = useCCStore((state) => state.currentCC)
+  const devices = useCCStore((state) => state.devices)
 
   const [selectedVersion, setSelectedVersion] = useState<string | ''>('')
   const [sshUsername, setSshUsername] = useState<string>('')
@@ -104,12 +105,12 @@ export const IRPManagerPage: React.FC = () => {
   }
 
   const handleDelete = async (schemaId: string, templateName: string) => {
-    if (!confirm(`Delete schema "${templateName}"?`)) return
+    if (!window.confirm(`Delete schema "${templateName}"?`)) return
 
     try {
       await irpSchemaService.deleteSchema(currentCC!, schemaId)
       setSnackbar({ open: true, message: 'Schema deleted successfully', severity: 'success' })
-      fetchSchemas()
+      await fetchSchemas()
     } catch (error: any) {
       setSnackbar({ open: true, message: 'Failed to delete schema', severity: 'error' })
     }

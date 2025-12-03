@@ -9,7 +9,6 @@ class TemplateGenerator:
     Generates JSON templates for IRP messages based on XML schema definitions.
     Creates template files that can be used as starting points for message values.
     Includes specialized handling for footprint structures with var-arrays.
-    NOW WITH METADATA: Can generate field metadata for dynamic UI form generation.
     """
 
     def __init__(self, schema):
@@ -57,44 +56,6 @@ class TemplateGenerator:
         else:
             return template
 
-    def generate_template_with_metadata(self, message_id, interactive=False):
-        """
-        Generate a JSON template with field metadata for UI form generation.
-
-        Args:
-            message_id (int): The message ID to generate template for
-            interactive (bool): If True, prompt user for array sizes
-
-        Returns:
-            dict: {
-                "template": {...},  # Default values
-                "schema": {...}     # Field metadata (type, options, etc.)
-            }
-        """
-        message_id_str = str(message_id)
-        if message_id_str not in self.schema.messages:
-            raise ValueError(f"Message ID {message_id} not found in schema")
-
-        message = self.schema.messages[message_id_str]
-
-        # Collect array information
-        array_info = []
-        if interactive:
-            array_info = self._collect_array_info(message.data)
-        else:
-            array_info = self._collect_array_info_with_defaults(message.data)
-
-        template = {}
-        schema = {}
-
-        # Process message data elements to create both template and schema
-        self._process_elements_with_metadata(message.data, template, schema, array_info, interactive)
-
-        return {
-            "template": template,
-            "schema": schema
-        }
-
     def _collect_array_info(self, elements, path=""):
         """
         Recursively collect information about arrays in the message structure.
@@ -126,6 +87,9 @@ class TemplateGenerator:
                 # Check nested structures
                 elif hasattr(element, 'data') and element.data:
                     collect_from_elements(element.data, full_path)
+
+        collect_from_elements(elements, path)
+
 
         collect_from_elements(elements, path)
         return array_info
@@ -162,525 +126,6 @@ class TemplateGenerator:
 
         collect_from_elements(elements, path)
         return array_info
-
-    def _get_field_metadata(self, field_name, type_name):
-        """
-        Extract field metadata including type, options (for enums), min/max, etc.
-
-        Returns:
-            dict: Field metadata for UI form generation
-        """
-        metadata = {
-            "type": type_name,
-            "required": True
-        }
-
-        # Check if it's an enum
-        if self._has_enum(type_name):
-            enum_obj = self._get_enum(type_name)
-            if enum_obj:
-                options = []
-                if isinstance(enum_obj, dict):
-                    values_dict = enum_obj.get('values', {})
-                    if values_dict:
-                        options = list(values_dict.keys())
-                elif hasattr(enum_obj, 'values') and enum_obj.values:
-                    options = list(enum_obj.values.keys())
-
-                metadata["fieldType"] = "enum"
-                metadata["options"] = options
-                metadata["default"] = options[0] if options else ""
-            return metadata
-
-        # Handle basic types
-        type_lower = type_name.lower() if type_name else ""
-
-        if 'uint' in type_lower or 'int' in type_lower:
-            metadata["fieldType"] = "integer"
-            metadata["default"] = 0
-
-            # Extract size for range hints
-            if 'uint-8' in type_lower:
-                metadata["min"] = 0
-                metadata["max"] = 255
-            elif 'uint-16' in type_lower:
-                metadata["min"] = 0
-                metadata["max"] = 65535
-            elif 'uint-32' in type_lower:
-                metadata["min"] = 0
-                metadata["max"] = 4294967295
-
-        elif 'boolean' in type_lower:
-            metadata["fieldType"] = "boolean"
-            metadata["default"] = False
-
-        elif 'float' in type_lower:
-            metadata["fieldType"] = "float"
-            metadata["default"] = 0.0
-
-        elif 'ipv4' in type_lower:
-            metadata["fieldType"] = "ipv4"
-            metadata["default"] = "192.168.1.1"
-
-        elif 'ipv6' in type_lower:
-            metadata["fieldType"] = "ipv6"
-            metadata["default"] = "2001:db8::1"
-
-        elif 'string' in type_lower or 'name' in type_lower:
-            metadata["fieldType"] = "string"
-            metadata["default"] = ""
-
-            # Check for fixed-string size
-            if '.' in type_name:
-                namespace, type_local_name = type_name.rsplit('.', 1)
-                if (hasattr(self.schema, 'types') and
-                        hasattr(self.schema.types, 'namespaces') and
-                        namespace in self.schema.types.namespaces):
-                    namespace_obj = self.schema.types.namespaces[namespace]
-                    if type_local_name in namespace_obj and isinstance(namespace_obj[type_local_name], str):
-                        metadata["maxLength"] = 255  # Could extract actual size if needed
-
-        else:
-            # Unknown type - treat as string
-            metadata["fieldType"] = "string"
-            metadata["default"] = ""
-
-        return metadata
-
-    def _process_elements_with_metadata(self, elements, template_dict, schema_dict, array_info=None, interactive=False):
-        """
-        Process elements and build both template (with defaults) and schema (with metadata).
-        """
-        if not elements:
-            return
-
-        if array_info is None:
-            array_info = []
-
-        # Ensure elements is iterable
-        if not isinstance(elements, (list, tuple)):
-            return
-
-        for element in elements:
-            element_type = type(element).__name__
-
-            if element_type == 'DataField':
-                # Simple data field
-                field_name = element.name
-                field_type = element.type
-                default_value = self._get_default_value_for_field(field_name, field_type)
-
-                template_dict[field_name] = default_value
-                schema_dict[field_name] = self._get_field_metadata(field_name, field_type)
-
-            elif element_type == 'IfCondition':
-                # Boolean condition field
-                condition_value = self._get_default_value_for_type(element.condition)
-                template_dict[element.name] = condition_value
-                schema_dict[element.name] = {
-                    "type": element.condition,
-                    "fieldType": "boolean",
-                    "default": condition_value,
-                    "required": True
-                }
-
-                # Process the body if condition is True
-                if condition_value and hasattr(element, 'body') and element.body:
-                    template_dict[element.name] = {}
-                    schema_dict[element.name]["fields"] = {}
-                    self._process_elements_with_metadata(
-                        element.body,
-                        template_dict[element.name],
-                        schema_dict[element.name]["fields"],
-                        array_info,
-                        interactive
-                    )
-
-            elif element_type in ['WhileLoop', 'ForLoop']:
-                # Array structures
-                array_size = self._get_array_size_for_element(element.name, element.name, array_info)
-
-                template_dict[element.name] = []
-                item_template = {}
-                item_schema = {}
-
-                children = self._get_element_children(element)
-                if children:
-                    self._process_elements_with_metadata(children, item_template, item_schema, array_info, interactive)
-
-                    # Add examples to template
-                    for i in range(array_size):
-                        example_iteration = dict(item_template)
-                        # For port-related arrays, increment port numbers
-                        if 'port' in example_iteration:
-                            example_iteration['port'] = i + 1
-                        template_dict[element.name].append(example_iteration)
-
-                schema_dict[element.name] = {
-                    "type": "array",
-                    "fieldType": "array",
-                    "itemSchema": item_schema,
-                    "default": []
-                }
-
-            elif element_type == 'FixedArray':
-                # Fixed-size arrays
-                array_size = getattr(element, 'size', 3)
-                try:
-                    array_size = int(array_size)
-                except:
-                    array_size = 3
-
-                array_type = getattr(element, 'array_type', None) or getattr(element, 'type', 'uint-32')
-                default_value = self._get_default_value_for_type(array_type)
-
-                template_dict[element.name] = [default_value] * array_size
-                schema_dict[element.name] = {
-                    "type": "fixed-array",
-                    "fieldType": "fixed-array",
-                    "itemType": array_type,
-                    "size": array_size,
-                    "default": [default_value] * array_size
-                }
-
-            elif element_type == 'VarArray':
-                # Variable arrays
-                array_size = self._get_array_size_for_element(element.name, element.name, array_info)
-                default_value = self._get_default_value_for_type(getattr(element, 'type', 'uint-32'))
-                template_dict[element.name] = [default_value] * array_size
-                schema_dict[element.name] = {
-                    "type": "var-array",
-                    "fieldType": "array",
-                    "itemType": getattr(element, 'type', 'uint-32'),
-                    "default": []
-                }
-
-            elif element_type == 'Clone':
-                # Clone creates object with enumeration keys
-                if self._has_enum(element.enumeration):
-                    enum_obj = self._get_enum(element.enumeration)
-                    protocols_name = element.enumeration.split('.')[
-                        -1] if '.' in element.enumeration else element.enumeration
-                    template_dict[protocols_name] = {}
-                    schema_dict[protocols_name] = {"type": "clone", "fieldType": "object", "fields": {}}
-
-                    if isinstance(enum_obj, dict):
-                        enum_values = enum_obj.get('values', {})
-                        enum_keys = enum_values.keys() if isinstance(enum_values, dict) else []
-                    else:
-                        enum_keys = enum_obj.values.keys() if hasattr(enum_obj, 'values') and enum_obj.values else []
-
-                    for enum_key in enum_keys:
-                        template_dict[protocols_name][enum_key] = {}
-                        schema_dict[protocols_name]["fields"][enum_key] = {"type": "object", "fields": {}}
-                        self._process_clone_body_with_metadata(
-                            element.body,
-                            template_dict[protocols_name][enum_key],
-                            schema_dict[protocols_name]["fields"][enum_key].get("fields", {})
-                        )
-                else:
-                    # Fallback if enum not found
-                    protocols_name = element.enumeration.split('.')[
-                        -1] if '.' in element.enumeration else element.enumeration
-                    template_dict[protocols_name] = {}
-                    schema_dict[protocols_name] = {"type": "clone", "fieldType": "object", "fields": {}}
-                    example_item = {}
-                    example_schema = {}
-                    self._process_clone_body_with_metadata(element.body, example_item, example_schema)
-                    template_dict[protocols_name]["example"] = example_item
-                    schema_dict[protocols_name]["fields"]["example"] = example_schema
-
-            elif element_type == 'Struct':
-                # Nested structures
-                template_dict[element.name] = {}
-                schema_dict[element.name] = {"type": "object", "fieldType": "object", "fields": {}}
-
-                # Special handling for footprint structures
-                if self._handle_footprint_struct(element.name, element, template_dict, interactive):
-                    # Footprint handled specially - manually build schema since template refs don't resolve properly
-                    schema_dict[element.name] = {
-                        "type": "footprint",
-                        "fieldType": "object",
-                        "fields": {
-                            "relation": {
-                                "type": "vsecure.relation",
-                                "fieldType": "enum",
-                                "options": ["or", "and"],
-                                "default": "or",
-                                "required": True
-                            },
-                            "or": {
-                                "type": "object",
-                                "fieldType": "object",
-                                "fields": {
-                                    "footprint-values": {
-                                        "type": "array",
-                                        "fieldType": "array",
-                                        "default": [],
-                                        "itemSchema": {
-                                            "checksum": {
-                                                "type": "array",
-                                                "fieldType": "array",
-                                                "default": [],
-                                                "itemSchema": {
-                                                    "value": {
-                                                        "type": "uint-32",
-                                                        "fieldType": "integer",
-                                                        "default": 0,
-                                                        "min": 0,
-                                                        "max": 4294967295,
-                                                        "required": True
-                                                    }
-                                                }
-                                            },
-                                            "id-number": {
-                                                "type": "array",
-                                                "fieldType": "array",
-                                                "default": [],
-                                                "itemSchema": {
-                                                    "value": {
-                                                        "type": "uint-32",
-                                                        "fieldType": "integer",
-                                                        "default": 0,
-                                                        "min": 0,
-                                                        "max": 4294967295,
-                                                        "required": True
-                                                    }
-                                                }
-                                            }
-                                        },
-                                        "required": True
-                                    }
-                                }
-                            },
-                            "and": {
-                                "type": "object",
-                                "fieldType": "object",
-                                "fields": {
-                                    "footprint-values": {
-                                        "type": "array",
-                                        "fieldType": "array",
-                                        "default": [],
-                                        "itemSchema": {},
-                                        "required": True
-                                    }
-                                }
-                            }
-                        }
-                    }
-                else:
-                    # Regular struct processing
-                    children = self._get_element_children(element)
-                    if children and isinstance(children, (list, tuple)) and len(children) > 0:
-                        self._process_elements_with_metadata(
-                            children,
-                            template_dict[element.name],
-                            schema_dict[element.name]["fields"],
-                            array_info,
-                            interactive
-                        )
-
-            elif element_type == 'Template':
-                # Template reference - resolve it
-                template_ref = getattr(element, 'instanceof', None)
-                if template_ref:
-                    # Special handling for footprint-values templates at root level
-                    if template_ref == 'vsecure.footprint-values' or template_ref.endswith('.footprint-values'):
-                        # Create empty array structure for footprint-values
-                        template_dict[element.name] = []
-                        schema_dict[element.name] = {
-                            "type": "array",
-                            "fieldType": "array",
-                            "default": [],
-                            "itemSchema": {},
-                            "footprintTypes": True,  # Flag to indicate this is a footprint-values array
-                            "required": True
-                        }
-                    else:
-                        self._resolve_template_with_metadata(
-                            template_ref,
-                            template_dict,
-                            schema_dict
-                        )
-
-            elif element_type == 'Composite':
-                if hasattr(element, 'body') and element.body:
-                    if hasattr(element, 'name') and element.name:
-                        template_dict[element.name] = {}
-                        schema_dict[element.name] = {"type": "composite", "fieldType": "object", "fields": {}}
-                        self._process_elements_with_metadata(
-                            element.body,
-                            template_dict[element.name],
-                            schema_dict[element.name]["fields"],
-                            array_info,
-                            interactive
-                        )
-                    else:
-                        name = element.composite_type.split('.')[1] if hasattr(element,
-                                                                               'composite_type') else 'composite'
-                        template_dict[name] = {}
-                        schema_dict[name] = {"type": "composite", "fieldType": "object", "fields": {}}
-                        self._process_elements_with_metadata(
-                            element.body,
-                            template_dict[name],
-                            schema_dict[name]["fields"],
-                            array_info,
-                            interactive
-                        )
-
-            elif element_type == 'Switch':
-                # Switch handling
-                if hasattr(element, 'selector'):
-                    enum_name = element.selector.split('.')[-1] if '.' in element.selector else element.selector
-                    is_named_switch = hasattr(element, 'name') and element.name
-
-                    if is_named_switch:
-                        # Nested switch - process cases directly
-                        if hasattr(element, 'cases') and element.cases:
-                            for case_element in element.cases:
-                                case_type = type(case_element).__name__
-                                if case_type not in ['Nil', 'Error']:
-                                    self._process_elements_with_metadata([case_element], template_dict, schema_dict,
-                                                                         array_info, interactive)
-                                    break
-                    else:
-                        # Top-level switch
-                        template_dict[enum_name] = {}
-                        schema_dict[enum_name] = {"type": "switch", "fieldType": "object", "selector": element.selector,
-                                                  "fields": {}}
-
-                        enum_values = self._get_enum(element.selector) if self._has_enum(element.selector) else None
-                        if enum_values and hasattr(element, 'cases') and element.cases:
-                            selected_key = next(iter(enum_values.values.keys()))
-                            for case_element in element.cases:
-                                case_name = getattr(case_element, 'name', None)
-                                case_type = type(case_element).__name__
-                                if case_name == selected_key and case_type not in ['Nil', 'Error']:
-                                    template_dict[enum_name][selected_key] = {}
-                                    schema_dict[enum_name]["fields"][selected_key] = {"type": "object", "fields": {}}
-                                    self._process_elements_with_metadata(
-                                        [case_element],
-                                        template_dict[enum_name][selected_key],
-                                        schema_dict[enum_name]["fields"][selected_key]["fields"],
-                                        array_info,
-                                        interactive
-                                    )
-                                    break
-
-            elif element_type == 'Overlap':
-                # Overlap structures
-                template_dict['overlap'] = {}
-                schema_dict['overlap'] = {"type": "overlap", "fieldType": "object", "fields": {}}
-                children = self._get_element_children(element)
-                if children:
-                    self._process_elements_with_metadata(
-                        children,
-                        template_dict['overlap'],
-                        schema_dict['overlap']["fields"],
-                        array_info,
-                        interactive
-                    )
-
-            elif isinstance(element, dict) and 'name' in element:
-                # Dictionary-style elements
-                element_name = element['name']
-                if 'type' in element:
-                    template_dict[element_name] = self._get_default_value_for_type(element['type'])
-                    schema_dict[element_name] = self._get_field_metadata(element_name, element['type'])
-
-            else:
-                # Elements without names but with children
-                children = self._get_element_children(element)
-                if children:
-                    if hasattr(element, 'name') and element.name:
-                        template_dict[element.name] = {}
-                        schema_dict[element.name] = {"type": "unknown", "fieldType": "object", "fields": {}}
-                        self._process_elements_with_metadata(
-                            children,
-                            template_dict[element.name],
-                            schema_dict[element.name]["fields"],
-                            array_info,
-                            interactive
-                        )
-                    else:
-                        self._process_elements_with_metadata(children, template_dict, schema_dict, array_info,
-                                                             interactive)
-
-    def _process_clone_body_with_metadata(self, body, target_dict, target_schema):
-        """Process the body of a clone element with metadata."""
-        if not body:
-            return
-
-        if isinstance(body, list):
-            for item in body:
-                self._process_clone_body_item_with_metadata(item, target_dict, target_schema)
-        else:
-            self._process_clone_body_item_with_metadata(body, target_dict, target_schema)
-
-    def _process_clone_body_item_with_metadata(self, item, target_dict, target_schema):
-        """Process a single item in clone body with metadata."""
-        if hasattr(item, 'instanceof'):
-            self._resolve_template_with_metadata(item.instanceof, target_dict, target_schema)
-        elif hasattr(item, 'name') and hasattr(item, 'type'):
-            target_dict[item.name] = self._get_default_value_for_field(item.name, item.type)
-            target_schema[item.name] = self._get_field_metadata(item.name, item.type)
-        elif hasattr(item, 'data'):
-            if hasattr(item, 'name') and item.name:
-                target_dict[item.name] = {}
-                target_schema[item.name] = {"type": "object", "fields": {}}
-                self._process_elements_with_metadata(item.data, target_dict[item.name],
-                                                     target_schema[item.name]["fields"])
-            else:
-                self._process_elements_with_metadata(item.data, target_dict, target_schema)
-        else:
-            temp_dict = {}
-            temp_schema = {}
-            self._process_elements_with_metadata([item], temp_dict, temp_schema)
-            target_dict.update(temp_dict)
-            target_schema.update(temp_schema)
-
-    def _resolve_template_with_metadata(self, template_name, template_dict, schema_dict):
-        """Resolve template reference and build both template and schema."""
-        # Handle namespace prefixes
-        if '.' in template_name:
-            namespace, template_local_name = template_name.rsplit('.', 1)
-
-            if (hasattr(self.schema, 'templates') and
-                    hasattr(self.schema.templates, 'namespaces') and
-                    namespace in self.schema.templates.namespaces):
-
-                namespace_obj = self.schema.templates.namespaces[namespace]
-
-                # Check for structs
-                if hasattr(namespace_obj, 'structs') and template_local_name in namespace_obj.structs:
-                    template_def = namespace_obj.structs[template_local_name]
-
-                    if hasattr(template_def, 'fields'):
-                        for field in template_def.fields:
-                            if hasattr(field, 'name') and hasattr(field, 'type'):
-                                template_dict[field.name] = self._get_default_value_for_field(field.name, field.type)
-                                schema_dict[field.name] = self._get_field_metadata(field.name, field.type)
-                    elif hasattr(template_def, 'data'):
-                        self._process_elements_with_metadata(template_def.data, template_dict, schema_dict)
-                    return
-
-        # Check global templates
-        if hasattr(self.schema, 'templates') and hasattr(self.schema.templates, 'structs'):
-            if template_name in self.schema.templates.structs:
-                template_def = self.schema.templates.structs[template_name]
-
-                if hasattr(template_def, 'fields') and template_def.fields:
-                    for field in template_def.fields:
-                        field_type = type(field).__name__
-                        if field_type == 'DataField':
-                            template_dict[field.name] = self._get_default_value_for_field(field.name, field.type)
-                            schema_dict[field.name] = self._get_field_metadata(field.name, field.type)
-                elif hasattr(template_def, 'data') and template_def.data:
-                    self._process_elements_with_metadata(template_def.data, template_dict, schema_dict)
-                return
-
-        # Fallback to regular resolution without metadata
-        self._resolve_template_reference(template_name, template_dict)
 
     def _get_array_context(self, element_name, element_type):
         """
@@ -783,7 +228,6 @@ class TemplateGenerator:
     def _process_elements(self, elements, template_dict, array_info=None, interactive=False):
         """
         Process XML elements and populate template dictionary with appropriate structure.
-        ORIGINAL METHOD - preserved for backwards compatibility with generate_template()
         """
         if not elements:
             return
@@ -849,8 +293,11 @@ class TemplateGenerator:
 
             elif element_type == 'Clone':
                 # Clone creates object with enumeration keys
+                print(f"DEBUG Clone: enumeration='{element.enumeration}'")
+                print(f"DEBUG Clone: _has_enum result = {self._has_enum(element.enumeration)}")
                 if self._has_enum(element.enumeration):
                     enum_obj = self._get_enum(element.enumeration)
+                    print(f"DEBUG Clone: enum_obj = {enum_obj}, values = {enum_obj.values if enum_obj else 'None'}")
                     protocols_name = element.enumeration.split('.')[
                         -1] if '.' in element.enumeration else element.enumeration
                     template_dict[protocols_name] = {}
@@ -889,26 +336,14 @@ class TemplateGenerator:
 
             elif element_type == 'Template':
                 # Template reference - resolve it
-                template_ref = getattr(element, 'instanceof', None)
-                if template_ref:
-                    # Special handling for footprint-values templates at root level
-                    if template_ref == 'vsecure.footprint-values' or template_ref.endswith('.footprint-values'):
-                        # Create empty array structure for footprint-values
-                        template_dict[element.name] = []
-                        schema_dict[element.name] = {
-                            "type": "array",
-                            "fieldType": "array",
-                            "default": [],
-                            "itemSchema": {},
-                            "footprintTypes": True,  # Flag to indicate this is a footprint-values array
-                            "required": True
-                        }
+                if hasattr(element, 'instanceof'):
+                    if hasattr(element, 'name') and element.name:
+                        # Named template reference creates a sub-object
+                        template_dict[element.name] = {}
+                        self._resolve_template_reference(element.instanceof, template_dict[element.name])
                     else:
-                        self._resolve_template_with_metadata(
-                            template_ref,
-                            template_dict,
-                            schema_dict
-                        )
+                        # Unnamed template reference merges into current level
+                        self._resolve_template_reference(element.instanceof, template_dict)
             elif element_type == 'Composite':
                 if hasattr(element, 'body') and element.body:
                     if hasattr(element, 'name') and element.name:
@@ -970,8 +405,7 @@ class TemplateGenerator:
                             # Only add content if case is NOT Nil or Error
                             if selected_case and selected_case_type not in ['Nil', 'Error']:
                                 switch_dict[selected_key] = {}
-                                self._process_elements([selected_case], switch_dict[selected_key], array_info,
-                                                       interactive)
+                                self._process_elements([selected_case], switch_dict[selected_key], array_info, interactive)
 
             elif element_type == 'Overlap':
                 # Overlap creates a nested structure to preserve hierarchy
@@ -985,7 +419,7 @@ class TemplateGenerator:
                 # Handle dictionary-style elements (from parsed XML)
                 element_name = element['name']
                 if 'type' in element:
-                    template_dict[element_name] = self._get_default_value_for_field(element_name, element['type'])
+                    template_dict[element_name] = self._get_default_value_for_type(element['type'])
 
             # Handle elements that don't have names but might contain other structures
             else:
@@ -1010,7 +444,6 @@ class TemplateGenerator:
                 self._process_clone_body_item(item, target_dict)
         else:
             self._process_clone_body_item(body, target_dict)
-
     def _process_clone_body_item(self, item, target_dict):
         """
         Process a single item in clone body, handling Template objects.
@@ -1039,6 +472,8 @@ class TemplateGenerator:
         Resolve a template reference and add its structure to the template dictionary.
         Includes specialized handling for footprint structures.
         """
+        print(f"DEBUG: _resolve_template_reference called with template_name='{template_name}'")
+
         # Special handling for footprint-values templates
         if 'footprint-values' in template_name:
             if hasattr(template_dict, 'get') or isinstance(template_dict, dict):
@@ -1064,39 +499,68 @@ class TemplateGenerator:
         # Handle namespace prefixes
         if '.' in template_name:
             namespace, template_local_name = template_name.rsplit('.', 1)
+            print(f"DEBUG: Has namespace prefix. namespace='{namespace}', local='{template_local_name}'")
 
             if hasattr(self.schema, 'templates'):
+                print(f"DEBUG: schema.templates exists, type: {type(self.schema.templates)}")
+
                 if hasattr(self.schema.templates, 'namespaces'):
+                    print(f"DEBUG: Available namespaces: {list(self.schema.templates.namespaces.keys())}")
+
                     if namespace in self.schema.templates.namespaces:
                         namespace_obj = self.schema.templates.namespaces[namespace]
+                        print(f"DEBUG: Found namespace '{namespace}'")
+                        print(f"DEBUG: namespace_obj type: {type(namespace_obj)}")
+                        print(f"DEBUG: namespace_obj attrs: {dir(namespace_obj)}")
 
                         # Check for templates
                         if hasattr(namespace_obj, 'templates'):
+                            print(
+                                f"DEBUG: namespace has 'templates' attr: {list(namespace_obj.templates.keys()) if namespace_obj.templates else 'empty'}")
                             if template_local_name in namespace_obj.templates:
                                 template_def = namespace_obj.templates[template_local_name]
+                                print(f"DEBUG: Found in namespace.templates")
                                 if hasattr(template_def, 'data'):
                                     self._process_elements(template_def.data, template_dict)
                                 return
 
                         # Check for structs
                         if hasattr(namespace_obj, 'structs'):
+                            print(
+                                f"DEBUG: namespace has 'structs' attr: {list(namespace_obj.structs.keys()) if namespace_obj.structs else 'empty'}")
                             if template_local_name in namespace_obj.structs:
                                 template_def = namespace_obj.structs[template_local_name]
+                                print(f"DEBUG: Found in namespace.structs, type: {type(template_def)}")
+                                print(f"DEBUG: template_def attrs: {dir(template_def)}")
 
                                 if hasattr(template_def, 'data'):
+                                    print(f"DEBUG: Processing via data")
                                     self._process_elements(template_def.data, template_dict)
                                 elif hasattr(template_def, 'fields'):
+                                    print(f"DEBUG: Processing via fields")
                                     self._process_elements(template_def.fields, template_dict)
                                 elif hasattr(template_def, 'body'):
+                                    print(f"DEBUG: Processing via body")
                                     self._process_elements([template_def], template_dict)
                                 return
 
+                        print(f"DEBUG: Template '{template_local_name}' not found in namespace '{namespace}'")
                         return
+                    else:
+                        print(f"DEBUG: Namespace '{namespace}' not found in available namespaces")
+                else:
+                    print(f"DEBUG: schema.templates has no 'namespaces' attribute")
+            else:
+                print(f"DEBUG: schema has no 'templates' attribute")
 
         # Check global templates
+        print(f"DEBUG: Checking global templates for '{template_name}'")
         if hasattr(self.schema, 'templates') and hasattr(self.schema.templates, 'structs'):
+            print(f"DEBUG: Global structs available: {list(self.schema.templates.structs.keys())[:10]}")
+
             if template_name in self.schema.templates.structs:
                 template_def = self.schema.templates.structs[template_name]
+                print(f"DEBUG: Found in global structs")
 
                 # Handle templates with 'fields' attribute (ConvertXml.DataField objects)
                 if hasattr(template_def, 'fields') and template_def.fields:
@@ -1120,8 +584,13 @@ class TemplateGenerator:
                 elif hasattr(template_def, 'data'):
                     self._process_elements(template_def.data, template_dict)
                     return
+            else:
+                print(f"DEBUG: '{template_name}' not in global structs")
+        else:
+            print(f"DEBUG: schema.templates or schema.templates.structs not found")
 
         # Fallback - create placeholder for unknown template
+        print(f"DEBUG: FALLBACK - Template '{template_name}' not found anywhere!")
         template_dict[f"template_{template_name.replace('.', '_')}"] = f"TEMPLATE_REF: {template_name}"
 
     def _handle_footprint_struct(self, struct_name, struct_element, template_dict, interactive=False):
@@ -1153,6 +622,7 @@ class TemplateGenerator:
 
                 # Ask for relation type
                 relation_choice = input("Enter relation type (0=or, 1=and, default=0): ")
+
 
                 try:
                     relation = int(relation_choice) if relation_choice else 0
