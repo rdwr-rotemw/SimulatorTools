@@ -22,9 +22,16 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
     <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       <AppBar position="sticky" sx={{ background: 'linear-gradient(135deg, #0052CC 0%, #0066FF 100%)', boxShadow: 'none' }}>
         <Toolbar sx={{ display: 'flex', justifyContent: 'space-between' }}>
-          <Typography variant="h6" sx={{ color: 'white', fontWeight: 600 }}>
-            Radware Simulator Tools
-          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            <img
+              src="/assets/images/radware-logo.jpg"
+              alt="Radware"
+              style={{ height: '32px' }}
+            />
+            <Typography variant="h6" sx={{ color: 'white', fontWeight: 600 }}>
+              Simulator Tools
+            </Typography>
+          </Box>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
             <IconButton onClick={() => navigate(-1)} sx={{ color: 'white' }}>

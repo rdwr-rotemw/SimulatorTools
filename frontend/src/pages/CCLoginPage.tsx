@@ -42,7 +42,13 @@ export const CCLoginPage: React.FC = () => {
     <Layout>
       <Box sx={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', padding: '20px', background: 'linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%)' }}>
         <Paper sx={{ maxWidth: '500px', width: '100%', padding: '60px 40px', borderRadius: '12px', boxShadow: '0 20px 60px rgba(0,0,0,0.15)' }}>
-          <Box sx={{ width: '120px', height: '80px', margin: '0 auto 30px', background: 'linear-gradient(135deg, #0052CC 0%, #0066FF 100%)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'white', fontWeight: 'bold', fontSize: '14px' }}>RADWARE</Box>
+          <Box sx={{ marginBottom: 3, display: 'flex', justifyContent: 'center' }}>
+            <img
+              src="/assets/images/radware-logo.jpg"
+              alt="Radware"
+              style={{ height: '60px' }}
+            />
+          </Box>
 
           <Typography variant="h1" sx={{ fontSize: '42px', fontWeight: 700, color: '#0052CC', textAlign: 'center', marginBottom: '15px', letterSpacing: '-0.5px' }}>CyberController Login</Typography>
 

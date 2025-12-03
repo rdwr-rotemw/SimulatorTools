@@ -35,23 +35,13 @@ export const LoginPage: React.FC = () => {
   return (
     <Box display="flex" justifyContent="center" alignItems="center" minHeight="100vh">
       <Paper elevation={3} sx={{ p: 4, width: 360 }}>
-        {/* Logo Box */}
-        <Box
-          sx={{
-            width: '120px',
-            height: '80px',
-            margin: '0 auto 30px',
-            background: 'linear-gradient(135deg, #0052CC 0%, #0066FF 100%)',
-            borderRadius: '8px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: 'white',
-            fontWeight: 'bold',
-            fontSize: '14px',
-          }}
-        >
-          RADWARE
+        {/* Logo Image (centered) */}
+        <Box sx={{ marginBottom: 3, display: 'flex', justifyContent: 'center' }}>
+          <img
+            src="/assets/images/radware-logo.jpg"
+            alt="Radware"
+            style={{ height: '60px' }}
+          />
         </Box>
 
         {/* Title */}
