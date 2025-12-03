@@ -1,8 +1,3 @@
-"""IRP helper utilities for IdsDataFormat conversion.
-
-This module contains a placeholder conversion function that will be implemented
-by the user to transform IdsDataFormat XML files into JSON-like Python dicts.
-"""
 from typing import Dict, Any, Optional, Union
 from typing import Tuple
 

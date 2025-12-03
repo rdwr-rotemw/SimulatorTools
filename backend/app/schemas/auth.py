@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, Field
 
-from backend.app.schemas.user import UserResponse
+from backend.app.schemas.user import UserWithRolesResponse
 
 
 class LoginRequest(BaseModel):
@@ -17,6 +17,6 @@ class LoginRequest(BaseModel):
 class LoginResponse(BaseModel):
     access_token: str = Field(..., description="JWT access token")
     token_type: str = Field("bearer", description="Token type")
-    user: Optional[UserResponse] = Field(None, description="Optional user object")
+    user: Optional[UserWithRolesResponse] = Field(None, description="Optional user object")
 
     model_config = {"from_attributes": True}

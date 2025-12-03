@@ -71,7 +71,7 @@ class MessageTestingCoordinator:
                     message_id: int,
                     from_ip: str = "127.0.0.1",
                     to_ip: str = "127.0.0.1",
-                    irp_tool_path: str = "irp.py",
+                    irp_tool_path: str = "irp_module.py",
                     timeout: int = 10) -> Dict[str, Any]:
         """
         Complete testing workflow for a single message.
@@ -161,7 +161,7 @@ class MessageTestingCoordinator:
                         from_ip: str,
                         to_ip: str,
                         timeout: int,
-                        irp_tool_path: str = "irp.py") -> Path:
+                        irp_tool_path: str = "irp_module.py") -> Path:
         """
         Capture message using listener - AUTOMATED.
 
@@ -225,7 +225,7 @@ class MessageTestingCoordinator:
                 sender_output["stderr"] = "Process timeout"
             except FileNotFoundError:
                 print(f"[SEND] ERROR irp.py not found at: {irp_tool_path}")
-                sender_output["stderr"] = f"irp.py not found at {irp_tool_path}"
+                sender_output["stderr"] = f"irp_module.py not found at {irp_tool_path}"
             except Exception as e:
                 print(f"[SEND] ERROR Exception: {e}")
                 sender_output["stderr"] = str(e)
