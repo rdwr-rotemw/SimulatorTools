@@ -251,6 +251,40 @@ export const IRPSenderPage: React.FC = () => {
     URL.revokeObjectURL(url)
   }
 
+  // Send Messages
+  const handleSendMessages = async () => {
+    if (!selectedSimulator || !selectedDestinationPort || messages.length === 0) {
+      setSnackbar({ open: true, message: 'Please select simulator, port, and add messages', severity: 'error' })
+      return
+    }
+
+    try {
+      setIsLoading(true)
+
+      // Format messages for backend (remove schema, keep only data)
+      const formattedMessages = messages.map((msg) => ({
+        message: msg.messageName,
+        ...msg.data,
+      }))
+
+      const payload = {
+        mongo_id: schemaId!,
+        message_data: {
+          messages: formattedMessages,
+        },
+      }
+
+      await irpSchemaService.sendMessages(currentCC!, selectedSimulator, payload)
+      setSnackbar({ open: true, message: `Successfully sent ${messages.length} message(s)`, severity: 'success' })
+    } catch (error: any) {
+      console.error('Failed to send messages:', error)
+      const errorMsg = error?.response?.data?.detail || error?.message || 'Failed to send messages'
+      setSnackbar({ open: true, message: errorMsg, severity: 'error' })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
   return (
     <Layout>
       <Box sx={{ height: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column' }}>
@@ -356,9 +390,10 @@ export const IRPSenderPage: React.FC = () => {
             variant="contained"
             color="primary"
             startIcon={<SendIcon />}
-            disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0}
+            disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isLoading}
+            onClick={handleSendMessages}
           >
-            Send Messages ({messages.length})
+            {isLoading ? 'Sending...' : `Send Messages (${messages.length})`}
           </Button>
         </Box>
 
