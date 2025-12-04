@@ -1,6 +1,7 @@
 from typing import List
 from typing import Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 from backend.app.modules.sapro.devices_templates import get_template_by_name
 from backend.app.modules.sapro.src import (
@@ -91,6 +92,7 @@ class SaproCommunicationHandler:
         return bool(self._is_connected)
 
     def get_all_devices(self) -> List[SaproDevice]:
+        start_time = time.time()
         devices = []
         all_maps = getMapListFromServer(self._sapro)
 
@@ -103,7 +105,9 @@ class SaproCommunicationHandler:
             for device in devices_from_map:
                 device_tasks.append((device.devName, map_name, device.devStatus))
 
+        logger.info(f"Starting get_all_devices - total devices to query: {len(device_tasks)}")
         # Query all devices in parallel (max 20 concurrent queries)
+        snmp_start = time.time()
         with ThreadPoolExecutor(max_workers=20) as executor:
             future_to_device = {
                 executor.submit(self.snmp_get_device_info, dev_ip): (dev_ip, map_name, status)
@@ -130,6 +134,10 @@ class SaproCommunicationHandler:
                         type="",
                         version=""
                     ))
+
+        snmp_end = time.time()
+        logger.info(f"SNMP queries completed in {snmp_end - snmp_start:.2f} seconds for {len(devices)} devices")
+        logger.info(f"get_all_devices completed in {time.time() - start_time:.2f} seconds")
 
         return devices
 
