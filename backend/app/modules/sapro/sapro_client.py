@@ -10,11 +10,12 @@ from backend.app.modules.sapro.src import (
 )
 from backend.app.modules.sapro.src.returnTypes.enums import DeviceStatus
 from backend.app.modules.sapro.src.returnTypes.models import SaproDevice
-from backend.app.modules.sapro.src.saproDeviceFunctions import GetDeviceListOfMap, SendTclCmdToDevice
+from backend.app.modules.sapro.src.saproDeviceFunctions import GetDeviceListOfMap
 from backend.app.modules.sapro.src.saproException import SaproException
 from backend.app.modules.sapro.src.saproMapFunctions import getMapListFromServer
 from backend.app.utils.config import settings
 from backend.app.utils.snmp import SnmpClient
+from backend.app.utils.logger import logger
 
 
 class SaproCommunicationHandler:
@@ -135,26 +136,45 @@ class SaproCommunicationHandler:
 
     def snmp_get_device_info(self, device_ip: str) -> Tuple[Optional[str], Optional[str]]:
         """Retrieve device type and version via SNMP."""
+        logger.debug(f"snmp_get_device_info called for {device_ip}")
+
         if settings.ENVIRONMENT == "development":
-            # In development environment, return mock values
+            logger.debug(f"Development mode - returning mock values for {device_ip}")
             return "DefensePro", "10.6.0.0"
-        snmp_client = SnmpClient(device_ip)
 
-        device_type = snmp_client.get("1.3.6.1.2.1.1.1.0")
+        try:
+            logger.debug(f"Creating SNMP client for {device_ip}")
+            snmp_client = SnmpClient(device_ip)
 
-        if device_type and "DefensePro" in device_type:
-            version = snmp_client.get("1.3.6.1.4.1.89.2.13.0")
-            if version and ":" in version:
-                version = version.split(":")[1].strip()
-            device_type = "DefensePro"
-        elif device_type and "Application" in device_type:
-            version = snmp_client.get("1.3.6.1.4.1.1872.2.5.1.1.1.10.0")
-            device_type = "Alteon"
-        else:
-            device_type = None
-            version = None
+            logger.debug(f"Querying device type OID for {device_ip}")
+            device_type = snmp_client.get("1.3.6.1.2.1.1.1.0")
+            logger.debug(f"Device type query result for {device_ip}: {device_type}")
 
-        return device_type, version
+            if device_type and "DefensePro" in device_type:
+                logger.debug(f"DefensePro detected for {device_ip}, querying version")
+                version = snmp_client.get("1.3.6.1.4.1.89.2.13.0")
+                logger.debug(f"Version query result for {device_ip}: {version}")
+                if version and ":" in version:
+                    version = version.split(":")[1].strip()
+                device_type = "DefensePro"
+                logger.info(f"Device {device_ip}: DefensePro {version}")
+                return device_type, version
+
+            elif device_type and "Application" in device_type:
+                logger.debug(f"Alteon detected for {device_ip}, querying version")
+                version = snmp_client.get("1.3.6.1.4.1.1872.2.5.1.1.1.10.0")
+                logger.debug(f"Version query result for {device_ip}: {version}")
+                device_type = "Alteon"
+                logger.info(f"Device {device_ip}: Alteon {version}")
+                return device_type, version
+
+            else:
+                logger.warning(f"Unrecognized device type for {device_ip}: {device_type}")
+                return None, None
+
+        except Exception as e:
+            logger.error(f"SNMP query failed for {device_ip}: {type(e).__name__}: {e}")
+            return None, None
 
     def get_map_by_type(self, device_type: str) -> Optional[str]:
         """Return the map name for a given device type.
