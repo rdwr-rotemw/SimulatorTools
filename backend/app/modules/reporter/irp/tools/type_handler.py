@@ -183,16 +183,27 @@ class TypeHandler:
 
     def _handle_enum(self, enum):
         def handler(value):
+            # Handle both dict format (deserialized) and Enum object format
+            if isinstance(enum, dict):
+                # Dict format: {'type': ..., 'values': {...}, 'name': ...}
+                enum_values = enum.get('values', {})
+                enum_name = enum.get('name', 'unknown')
+                base_type = enum.get('var_type', 'uint-32')
+            else:
+                # Enum object format
+                enum_values = enum.values if hasattr(enum, 'values') else {}
+                enum_name = enum.name if hasattr(enum, 'name') else 'unknown'
+                base_type = enum.var_type if hasattr(enum, 'var_type') else 'uint-32'
+
             # Accept either name or code
-            if value in enum.values:
-                code = enum.values[value]
-            elif value in enum.values.values():
+            if value in enum_values:
+                code = enum_values[value]
+            elif value in enum_values.values():
                 code = value
             else:
-                raise ValueError(f"Invalid enum value: {value} for {enum.name}")
+                raise ValueError(f"Invalid enum value: {value} for {enum_name}")
 
             # Use the underlying type handler
-            base_type = enum.var_type if hasattr(enum, 'var_type') else 'uint-32'
             base_handler = self.get(base_type)
 
             # Apply appropriate mask based on the underlying type
