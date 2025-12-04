@@ -37,6 +37,8 @@ class SnmpClient:
                 # Remove type prefix like "STRING: " or "INTEGER: "
                 if ':' in value:
                     value = value.split(':', 1)[1].strip()
+                # Remove surrounding quotes
+                value = value.strip('"').strip("'")
                 return value
 
             return None
