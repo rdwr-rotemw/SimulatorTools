@@ -47,7 +47,7 @@ class TypeHandler:
         for name, enum in (self.schema_types.enums or {}).items():
             self.register(name, self._handle_enum(enum))
         if self.schema_types.bitmap:
-            self.register(self.schema_types.bitmap['name'], self._handle_bitmap(self.schema_types.bitmap))
+            self.register(self.schema_types.bitmap.name, self._handle_bitmap(self.schema_types.bitmap))
         # Namespace types
         for ns, ns_types in (self.schema_types.namespaces or {}).items():
             for tname, tval in ns_types.items():
