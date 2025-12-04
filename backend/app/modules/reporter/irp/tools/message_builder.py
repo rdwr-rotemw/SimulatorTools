@@ -75,58 +75,59 @@ class MessageBuilder:
         Find and process a field using existing deep traversal logic for templates, clones, etc.
         """
         for element in message_data:
+            current_element = element  # Explicitly capture in local scope
             # Direct field match
-            if hasattr(element, 'name') and element.name == field_name:
-                return self._process_xml_element(element, field_value)
+            if hasattr(current_element, 'name') and current_element.name == field_name:
+                return self._process_xml_element(current_element, field_value)
 
             # Deep search in clones - preserve existing clone processing
-            elif isinstance(element, ConvertXml.Clone):
-                result = self._search_in_clone(element, field_name, field_value)
+            elif isinstance(current_element, ConvertXml.Clone):
+                result = self._search_in_clone(current_element, field_name, field_value)
                 if result is not None:
                     return result
 
             # Deep search in templates - preserve existing template processing
-            elif isinstance(element, ConvertXml.Template):
-                result = self._search_in_template(element, field_name, field_value)
+            elif isinstance(current_element, ConvertXml.Template):
+                result = self._search_in_template(current_element, field_name, field_value)
                 if result is not None:
                     return result
 
             # Deep search in complex structures - preserve existing logic
-            elif hasattr(element, 'data') and element.data:
-                result = self._find_and_process_field(element.data, field_name, field_value)
+            elif hasattr(current_element, 'data') and current_element.data:
+                result = self._find_and_process_field(current_element.data, field_name, field_value)
                 if result is not None:
                     return result
 
-            elif hasattr(element, 'body') and element.body:
-                result = self._find_and_process_field(element.body, field_name, field_value)
+            elif hasattr(current_element, 'body') and current_element.body:
+                result = self._find_and_process_field(current_element.body, field_name, field_value)
                 if result is not None:
                     return result
 
-            elif hasattr(element, 'fields') and element.fields:
-                result = self._find_and_process_field(element.fields, field_name, field_value)
+            elif hasattr(current_element, 'fields') and current_element.fields:
+                result = self._find_and_process_field(current_element.fields, field_name, field_value)
                 if result is not None:
                     return result
 
             # Handle Switch elements - map field name to switch case via selector enum
-            elif type(element).__name__ == 'Switch':
-                if hasattr(element, 'selector') and element.selector:
+            elif type(current_element).__name__ == 'Switch':
+                if hasattr(current_element, 'selector') and current_element.selector:
                     # Extract enum name from selector (e.g., "httpflood.rules-status" -> "rules-status")
-                    enum_name = element.selector.split('.')[-1] if '.' in element.selector else element.selector
+                    enum_name = current_element.selector.split('.')[-1] if '.' in current_element.selector else current_element.selector
 
                     # If field_name matches the enum name, process and return the switch
                     if field_name == enum_name:
-                        return self._process_xml_element(element, field_value)
+                        return self._process_xml_element(current_element, field_value)
 
                     # Also search within switch cases for other fields
-                    elif hasattr(element, 'cases') and element.cases:
-                        result = self._find_and_process_field(element.cases, field_name, field_value)
+                    elif hasattr(current_element, 'cases') and current_element.cases:
+                        result = self._find_and_process_field(current_element.cases, field_name, field_value)
                         if result is not None:
                             return result
 
             # Handle Overlap elements - search their children
-            elif type(element).__name__ == 'Overlap':
-                if hasattr(element, 'data') and element.data:
-                    result = self._find_and_process_field(element.data, field_name, field_value)
+            elif type(current_element).__name__ == 'Overlap':
+                if hasattr(current_element, 'data') and current_element.data:
+                    result = self._find_and_process_field(current_element.data, field_name, field_value)
                     if result is not None:
                         return result
 
@@ -163,12 +164,13 @@ class MessageBuilder:
                     # Search directly in the struct's fields
                     if hasattr(template_def, 'fields') and template_def.fields:
                         for field in template_def.fields:
-                            if hasattr(field, 'name') and field.name == field_name:
-                                return self._process_xml_element(field, field_value)
+                            current_field = field  # Explicitly capture in local scope
+                            if hasattr(current_field, 'name') and current_field.name == field_name:
+                                return self._process_xml_element(current_field, field_value)
 
                             # If field is a nested struct, search recursively
-                            if isinstance(field, ConvertXml.Struct):
-                                result = self._search_in_struct_fields(field, field_name, field_value)
+                            if isinstance(current_field, ConvertXml.Struct):
+                                result = self._search_in_struct_fields(current_field, field_name, field_value)
                                 if result is not None:
                                     return result
         return None
@@ -187,12 +189,13 @@ class MessageBuilder:
         """
         if hasattr(struct, 'fields') and struct.fields:
             for field in struct.fields:
-                if hasattr(field, 'name') and field.name == field_name:
-                    return self._process_xml_element(field, field_value)
+                current_field = field  # Explicitly capture in local scope
+                if hasattr(current_field, 'name') and current_field.name == field_name:
+                    return self._process_xml_element(current_field, field_value)
 
                 # Recursively search in nested structs
-                if isinstance(field, ConvertXml.Struct):
-                    result = self._search_in_struct_fields(field, field_name, field_value)
+                if isinstance(current_field, ConvertXml.Struct):
+                    result = self._search_in_struct_fields(current_field, field_name, field_value)
                     if result is not None:
                         return result
         return None
@@ -255,22 +258,25 @@ class MessageBuilder:
         # Fallback: try all namespaces if direct lookup failed
         elif hasattr(self.schema.templates, 'namespaces'):
             for ns_section, ns_data in self.schema.templates.namespaces.items():
+                current_ns_section = ns_section  # Explicitly capture in local scope
+                current_ns_data = ns_data  # Explicitly capture in local scope
                 # Try both with and without namespace prefix
                 candidates = [
                     instanceof,
-                    f"{ns_section}.{instanceof}",
-                    f"{ns_section}.{instanceof.split('.')[-1]}" if '.' in instanceof else f"{ns_section}.{instanceof}"
+                    f"{current_ns_section}.{instanceof}",
+                    f"{current_ns_section}.{instanceof.split('.')[-1]}" if '.' in instanceof else f"{current_ns_section}.{instanceof}"
                 ]
 
                 for candidate in candidates:
-                    if candidate in self.schema.templates.structs:
-                        template_def = self.schema.templates.structs[candidate]
+                    current_candidate = candidate  # Explicitly capture in local scope
+                    if current_candidate in self.schema.templates.structs:
+                        template_def = self.schema.templates.structs[current_candidate]
                         break
 
                     # Also check in namespace attributes
-                    template_name = candidate.split('.')[-1]
-                    if hasattr(ns_data, template_name):
-                        template_def = getattr(ns_data, template_name)
+                    template_name = current_candidate.split('.')[-1]
+                    if hasattr(current_ns_data, template_name):
+                        template_def = getattr(current_ns_data, template_name)
                         break
 
                 if template_def:
@@ -285,26 +291,27 @@ class MessageBuilder:
                 if hasattr(template_def.data, '__iter__') and not isinstance(template_def.data, (str, ConvertXml.ForLoop, ConvertXml.WhileLoop)):
                     # It's iterable and not a single loop object, so iterate over it
                     for field in template_def.data:
+                        current_field = field  # Explicitly capture in local scope
                         # Check different ways the field might be structured
-                        if hasattr(field, 'name') and hasattr(field, 'type'):
-                            converted_fields.append(ConvertXml.DataField(field.name, field.type))
-                        elif hasattr(field, 'name') and hasattr(field, 'field_type'):
-                            converted_fields.append(ConvertXml.DataField(field.name, field.field_type))
-                        elif isinstance(field, ConvertXml.DataField):
-                            converted_fields.append(field)
-                        elif isinstance(field, ConvertXml.FixedArray):
+                        if hasattr(current_field, 'name') and hasattr(current_field, 'type'):
+                            converted_fields.append(ConvertXml.DataField(current_field.name, current_field.type))
+                        elif hasattr(current_field, 'name') and hasattr(current_field, 'field_type'):
+                            converted_fields.append(ConvertXml.DataField(current_field.name, current_field.field_type))
+                        elif isinstance(current_field, ConvertXml.DataField):
+                            converted_fields.append(current_field)
+                        elif isinstance(current_field, ConvertXml.FixedArray):
                             # Handle FixedArray objects directly
-                            converted_fields.append(field)
-                        elif hasattr(field, 'name') and hasattr(field, 'array_type') and hasattr(field, 'size'):
+                            converted_fields.append(current_field)
+                        elif hasattr(current_field, 'name') and hasattr(current_field, 'array_type') and hasattr(current_field, 'size'):
                             # Handle model FixedArray objects
-                            converted_fields.append(ConvertXml.FixedArray(field.name, field.array_type, field.size))
-                        elif isinstance(field, dict):
-                            if 'name' in field and 'type' in field:
-                                converted_fields.append(ConvertXml.DataField(field['name'], field['type']))
+                            converted_fields.append(ConvertXml.FixedArray(current_field.name, current_field.array_type, current_field.size))
+                        elif isinstance(current_field, dict):
+                            if 'name' in current_field and 'type' in current_field:
+                                converted_fields.append(ConvertXml.DataField(current_field['name'], current_field['type']))
                         else:
                             # Try to convert other field types recursively
-                            converted = self._convert_model_to_convertxml(field)
-                            if converted and converted != field:
+                            converted = self._convert_model_to_convertxml(current_field)
+                            if converted and converted != current_field:
                                 converted_fields.append(converted)
                 else:
                     # It's a single object (like ForLoop), return it directly
@@ -331,16 +338,17 @@ class MessageBuilder:
             converted_fields = []
             if hasattr(model_obj, 'fields') and model_obj.fields:
                 for field in model_obj.fields:
-                    if hasattr(field, 'name') and hasattr(field, 'type'):
-                        converted_fields.append(ConvertXml.DataField(field.name, field.type))
-                    elif hasattr(field, '__class__') and 'DataField' in str(field.__class__):
+                    current_field = field  # Explicitly capture in local scope
+                    if hasattr(current_field, 'name') and hasattr(current_field, 'type'):
+                        converted_fields.append(ConvertXml.DataField(current_field.name, current_field.type))
+                    elif hasattr(current_field, '__class__') and 'DataField' in str(current_field.__class__):
                         # It's already a DataField, keep as-is
-                        converted_fields.append(field)
-                    elif isinstance(field, dict) and 'name' in field and 'type' in field:
-                        converted_fields.append(ConvertXml.DataField(field['name'], field['type']))
+                        converted_fields.append(current_field)
+                    elif isinstance(current_field, dict) and 'name' in current_field and 'type' in current_field:
+                        converted_fields.append(ConvertXml.DataField(current_field['name'], current_field['type']))
                     else:
                         # Try to convert other field types recursively
-                        converted = self._convert_model_to_convertxml(field)
+                        converted = self._convert_model_to_convertxml(current_field)
                         if converted:
                             converted_fields.append(converted)
 
