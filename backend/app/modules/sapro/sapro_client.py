@@ -1,5 +1,6 @@
 from typing import List
 from typing import Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from backend.app.modules.sapro.devices_templates import get_template_by_name
 from backend.app.modules.sapro.src import (
@@ -93,21 +94,43 @@ class SaproCommunicationHandler:
         devices = []
         all_maps = getMapListFromServer(self._sapro)
 
+        # Collect all devices first
+        device_tasks = []
         for sim_map in all_maps:
             map_name = sim_map.mapName.split("/")[-1].replace(".map", "")
             devices_from_map = GetDeviceListOfMap(self._sapro, sim_map.mapPort)
 
             for device in devices_from_map:
-                # Get type/version via SNMP from device.devName (IP)
-                device_type, device_version = self.snmp_get_device_info(device.devName)
+                device_tasks.append((device.devName, map_name, device.devStatus))
 
-                devices.append(SaproDevice(
-                    ip_address=device.devName,
-                    map=map_name,
-                    status=DeviceStatus.get_status(device.devStatus),
-                    type=device_type,
-                    version=device_version
-                ))
+        # Query all devices in parallel (max 20 concurrent queries)
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            future_to_device = {
+                executor.submit(self.snmp_get_device_info, dev_ip): (dev_ip, map_name, status)
+                for dev_ip, map_name, status in device_tasks
+            }
+
+            for future in as_completed(future_to_device):
+                dev_ip, map_name, status = future_to_device[future]
+                try:
+                    device_type, device_version = future.result()
+                    devices.append(SaproDevice(
+                        ip_address=dev_ip,
+                        map=map_name,
+                        status=DeviceStatus.get_status(status),
+                        type=device_type,
+                        version=device_version
+                    ))
+                except Exception as e:
+                    logger.error(f"Failed to query device {dev_ip}: {e}")
+                    devices.append(SaproDevice(
+                        ip_address=dev_ip,
+                        map=map_name,
+                        status=DeviceStatus.get_status(status),
+                        type="",
+                        version=""
+                    ))
+
         return devices
 
     # def snmp_get_device_info(self, device_map: str, device_ip: str) -> Tuple[Optional[str], Optional[str]]:
