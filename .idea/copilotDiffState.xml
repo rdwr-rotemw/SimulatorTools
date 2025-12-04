@@ -3,6 +3,15 @@
   <component name="CopilotDiffPersistence">
     <option name="pendingDiffs">
       <map>
+        <entry key="$PROJECT_DIR$/backend/Dockerfile">
+          <value>
+            <PendingDiffInfo>
+              <option name="filePath" value="$PROJECT_DIR$/backend/Dockerfile" />
+              <option name="originalContent" value="FROM python:3.11-slim&#10;&#10;# Set working directory&#10;WORKDIR /app&#10;&#10;# Install system dependencies&#10;RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \&#10;    curl \&#10;    &amp;&amp; rm -rf /var/lib/apt/lists/*&#10;&#10;# Install Python requirements&#10;COPY requirements.txt .&#10;RUN pip install --no-cache-dir -r requirements.txt&#10;&#10;# Copy the entire backend directory structure&#10;# This creates /app/backend/app/ inside the container&#10;COPY . /app/backend/&#10;&#10;# Create __init__.py for backend package&#10;RUN touch /app/backend/__init__.py&#10;&#10;# Add /app to PYTHONPATH so &quot;from backend.app...&quot; imports work&#10;ENV PYTHONPATH=/app&#10;&#10;# Expose the port&#10;EXPOSE 8000&#10;&#10;# Run uvicorn with the correct module path&#10;CMD [&quot;uvicorn&quot;, &quot;backend.app.main:app&quot;, &quot;--host&quot;, &quot;0.0.0.0&quot;, &quot;--port&quot;, &quot;8000&quot;]&#10;" />
+              <option name="updatedContent" value="FROM python:3.11-slim&#13;&#10;&#13;&#10;# Set working directory&#13;&#10;WORKDIR /app&#13;&#10;&#13;&#10;# Install system dependencies&#13;&#10;RUN apt-get update &amp;&amp; apt-get install -y --no-install-recommends \&#13;&#10;    snmp \&#13;&#10;    curl \&#13;&#10;    &amp;&amp; rm -rf /var/lib/apt/lists/*&#13;&#10;&#13;&#10;# Install Python requirements&#13;&#10;COPY requirements.txt .&#13;&#10;RUN pip install --no-cache-dir -r requirements.txt&#13;&#10;&#13;&#10;# Copy the entire backend directory structure&#13;&#10;# This creates /app/backend/app/ inside the container&#13;&#10;COPY . /app/backend/&#13;&#10;&#13;&#10;# Create __init__.py for backend package&#13;&#10;RUN touch /app/backend/__init__.py&#13;&#10;&#13;&#10;# Add /app to PYTHONPATH so &quot;from backend.app...&quot; imports work&#13;&#10;ENV PYTHONPATH=/app&#13;&#10;&#13;&#10;# Expose the port&#13;&#10;EXPOSE 8000&#13;&#10;&#13;&#10;# Run uvicorn with the correct module path&#13;&#10;CMD [&quot;uvicorn&quot;, &quot;backend.app.main:app&quot;, &quot;--host&quot;, &quot;0.0.0.0&quot;, &quot;--port&quot;, &quot;8000&quot;]" />
+            </PendingDiffInfo>
+          </value>
+        </entry>
         <entry key="$PROJECT_DIR$/simulators-tools/frontend/package.json">
           <value>
             <PendingDiffInfo>

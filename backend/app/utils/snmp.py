@@ -1,5 +1,7 @@
-from pysnmp.hlapi import *
-from typing import Optional, Tuple
+from typing import Optional
+import subprocess
+
+from backend.app.utils.logger import logger
 
 
 class SnmpClient:
@@ -7,45 +9,38 @@ class SnmpClient:
         self.host = host
         self.port = port
         self.community = community
-        self.engine = SnmpEngine()
 
     def get(self, oid: str) -> Optional[str]:
-        """Synchronous SNMP GET"""
+        """Use native snmpget command for speed.
+
+        Returns the value string on success or None on failure/timeouts.
+        """
         try:
-            iterator = getCmd(
-                self.engine,
-                CommunityData(self.community),
-                UdpTransportTarget((self.host, self.port), timeout=2),
-                ContextData(),
-                ObjectType(ObjectIdentity(oid))
+            result = subprocess.run(
+                ['snmpget', '-v2c', '-c', self.community, f'{self.host}:{self.port}', oid],
+                capture_output=True,
+                text=True,
+                timeout=1
             )
 
-            error_indication, error_status, error_index, var_binds = next(iterator)
-
-            if error_indication or error_status:
+            if result.returncode != 0:
+                logger.debug(f"snmpget returned non-zero for {self.host}:{self.port} oid={oid}: {result.stderr.strip()}")
                 return None
 
-            _, value = var_binds[0]
-            return str(value)
-        except Exception as e:
-            print(f"Error: {e}")
+            output = result.stdout.strip()
+            if not output:
+                return None
+
+            # Expected format: "SNMPv2-MIB::sysDescr.0 = STRING: DefensePro ..."
+            if '=' in output:
+                value = output.split('=', 1)[1].strip()
+                # Remove type prefix like "STRING: " or "INTEGER: "
+                if ':' in value:
+                    value = value.split(':', 1)[1].strip()
+                return value
+
             return None
 
-
-# Usage - pure sync, no async needed
-def snmp_get_device_info(self, device_ip: str) -> Tuple[Optional[str], Optional[str]]:
-    """Retrieve device type and version via SNMP."""
-    snmp_client = SnmpClient(device_ip)
-
-    device_type = snmp_client.get("1.3.6.1.2.1.1.1.0")
-    if device_type and "DefensePro" in device_type:
-        version = snmp_client.get("1.3.6.1.2.1.25.3.2.1.5.1")
-        device_type = "DefensePro"
-    elif device_type and "Application" in device_type:
-        version = snmp_client.get("1.3.6.1.2.1.1.1.0")
-        device_type = "Alteon"
-    else:
-        device_type = None
-        version = None
-
-    return device_type, version
+        except Exception as e:
+            logger.debug(f"snmpget failed for {self.host}:{self.port} oid={oid}: {type(e).__name__}: {e}")
+            return None
