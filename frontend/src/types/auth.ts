@@ -33,7 +33,7 @@ export interface AuthState {
   error: string | null;
 
   // Attempts to login and resolves when complete. Should set token/user on success.
-  login: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<boolean>;
 
   // Clears auth state and removes token
   logout: () => void;

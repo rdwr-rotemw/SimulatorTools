@@ -9,7 +9,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   isLoading: false,
   error: null,
 
-  login: async (username: string, password: string) => {
+  login: async (username: string, password: string): Promise<boolean> => {
     set({ isLoading: true, error: null });
     try {
       const res = await authService.login(username, password);
@@ -18,11 +18,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Save user to localStorage for session restore
       localStorage.setItem('user', JSON.stringify(res.user));
       set({ user: res.user, token: res.access_token, isAuthenticated: true, isLoading: false });
-      return;
+      return true;
     } catch (err: any) {
       const message = err?.response?.data?.detail || err?.message || 'Login failed';
       set({ isLoading: false, error: message });
-      throw err;
+      // Don't re-throw the error - it's already stored in state and shown via UI
+      return false;
     }
   },
 

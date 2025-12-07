@@ -30,8 +30,10 @@ export const CCLoginPage: React.FC = () => {
 
   const onSubmit = async (data: FormValues) => {
     try {
-      await login(data.cc_ip, data.username, data.password);
-      navigate('/cc/dashboard');
+      const success = await login(data.cc_ip, data.username, data.password);
+      if (success) {
+        navigate('/cc/dashboard');
+      }
     } catch (err) {
       // store sets error; keep dialog open and show Alert via `error`
       // no additional handling here

@@ -50,7 +50,7 @@ export interface CCState {
   managementPorts: ManagementPort[];
   isLoading: boolean;
   error: string | null;
-  login: (cc_ip: string, username: string, password: string) => Promise<void>;
+  login: (cc_ip: string, username: string, password: string) => Promise<boolean>;
   logout: (cc_ip: string) => Promise<void>;
   fetchDevices: (cc_ip: string) => Promise<void>;
   fetchManagementPorts: (cc_ip: string) => Promise<void>;

@@ -30,21 +30,9 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
-    const status = error.response?.status;
-    if (status === 401) {
-      try {
-        localStorage.removeItem('token');
-      } catch (e) {
-        // ignore
-      }
-      // Redirect to login page
-      if (typeof window !== 'undefined') {
-        window.location.href = '/login';
-      }
-    }
+    // Don't handle 401 here - let auth store / route guards decide what to do.
     return Promise.reject(error);
   }
 );
 
 export default apiClient;
-

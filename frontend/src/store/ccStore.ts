@@ -18,10 +18,12 @@ export const useCCStore = create<CCState>((set, get) => ({
       await get().fetchDevices(cc_ip);
       // Also fetch management ports right after login
       await get().fetchManagementPorts(cc_ip);
+      return true;
     } catch (error: any) {
       const message = error?.response?.data?.message || error?.message || 'Login failed';
       set({ error: message, isLoading: false });
-      throw error;
+      // Return false to indicate login did not succeed. The store records the error message.
+      return false;
     }
   },
 

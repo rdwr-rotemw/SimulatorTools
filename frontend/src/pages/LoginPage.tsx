@@ -26,10 +26,16 @@ export const LoginPage: React.FC = () => {
     return () => {
       clearError();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onSubmit = async (data: LoginRequest) => {
-    await login(data.username, data.password);
+    const success = await login(data.username, data.password);
+    if (success) {
+      console.log('Login succeeded - will redirect');
+    } else {
+      console.log('Login failed - staying on page');
+    }
   };
 
   return (

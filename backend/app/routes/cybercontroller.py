@@ -163,11 +163,11 @@ async def cc_login(
         ok, msg = handler.login()
 
         if not ok:
-            return CCLoginResponse(success=False, message=f"Login failed: {msg}")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Login failed: {msg}")
 
         # Get the JSESSIONID from the handler's credentials
         if not handler._creds or not handler._creds.jsession_id:
-            return CCLoginResponse(success=False, message="Login succeeded but no JSESSIONID found")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Login succeeded but no JSESSIONID found")
 
         jsession_id = handler._creds.jsession_id
 
@@ -189,9 +189,11 @@ async def cc_login(
         db.commit()
 
         return CCLoginResponse(success=True, message="Login successful")
+    except HTTPException:
+        raise
     except Exception as exc:
         db.rollback()
-        return CCLoginResponse(success=False, message=f"Login error: {exc!s}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Login error: {exc!s}")
 
 
 @router.get(
