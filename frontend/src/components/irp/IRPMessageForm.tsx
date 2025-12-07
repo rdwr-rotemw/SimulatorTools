@@ -49,6 +49,8 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
   // Footprint selection dialog state and pending path
   const [footprintTypeDialog, setFootprintTypeDialog] = React.useState(false)
   const [pendingFootprintPath, setPendingFootprintPath] = React.useState<string[] | null>(null)
+  // Available options for discriminated union (switch) arrays
+  const [availableSwitchOptions, setAvailableSwitchOptions] = React.useState<string[]>([])
 
   const footprintTypes = [
     'checksum', 'sequence-number', 'id-number', 'dns-id', 'dns-qname',
@@ -76,6 +78,9 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
     if (value === null || value === undefined) {
       value = fieldSchema?.default ?? ''
     }
+
+    // Common metadata keys to exclude from rendering when iterating schema.fields
+    const metadataKeys = ['type', 'fieldType', 'default', 'min', 'max', 'required', 'itemType', 'itemSchema']
 
     // Boolean → Switch
     if (fieldType === 'boolean') {
@@ -208,18 +213,31 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
       const arrayValue = Array.isArray(value) ? value : []
       const itemSchema = fieldSchema?.itemSchema || {}
       const isFootprintArray = fieldSchema?.footprintTypes === true
+      const isSwitchArray = itemSchema?.fieldType === 'switch'
 
       const handleAddIteration = () => {
-        if (isFootprintArray) {
+        if (isSwitchArray) {
+          // compute available options from schema and existing items
+          const switchOptions = itemSchema?.options || {}
+          const availableOptions = Object.keys(switchOptions).filter((optionKey) => {
+            // Filter out already-selected options in this array
+            return !arrayValue.some((item: any) => Object.keys(item)[0] === optionKey)
+          })
+          setAvailableSwitchOptions(availableOptions)
+          setPendingFootprintPath(currentPath)
+          setFootprintTypeDialog(true)
+        } else if (isFootprintArray) {
           // open dialog to pick footprint type and remember path
           setPendingFootprintPath(currentPath)
           setFootprintTypeDialog(true)
         } else {
           const newItem: any = {}
-          // Initialize with defaults from schema
-          Object.keys(itemSchema).forEach((k) => {
-            newItem[k] = itemSchema[k]?.default ?? ''
-          })
+          // Initialize with defaults from schema (itemSchema may be object of fields)
+          if (itemSchema && typeof itemSchema === 'object' && !Array.isArray(itemSchema)) {
+            Object.keys(itemSchema).forEach((k) => {
+              newItem[k] = itemSchema[k]?.default ?? ''
+            })
+          }
           handleFieldChange(currentPath, [...arrayValue, newItem])
         }
       }
@@ -227,10 +245,12 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
       const handleAddFootprintType = (type: string) => {
         if (!pendingFootprintPath) return
         const existing = getNestedValue(messageData || {}, pendingFootprintPath) || []
+        // For switch arrays we add the selected option as an object with its key
         const newItem = { [type]: [] }
         handleFieldChange(pendingFootprintPath, [...existing, newItem])
         setFootprintTypeDialog(false)
         setPendingFootprintPath(null)
+        setAvailableSwitchOptions([])
       }
 
       const handleRemoveIteration = (idx: number) => {
@@ -250,7 +270,7 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
               onClick={handleAddIteration}
               startIcon={<span>+</span>}
             >
-              Add Iteration
+              {isSwitchArray ? 'Add Footprint' : 'Add Iteration'}
             </Button>
           </Box>
           {arrayValue.length === 0 ? (
@@ -260,7 +280,9 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
               <Accordion key={`${pathString}-${idx}`} sx={{ marginBottom: 1 }}>
                 <AccordionSummary expandIcon={<ExpandMoreIcon />}>
                   <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-                    <Typography variant="body2">Iteration {idx + 1}</Typography>
+                    <Typography variant="body2">
+                      {isSwitchArray ? Object.keys(item)[0] : `Iteration ${idx + 1}`}
+                    </Typography>
                     <IconButton
                       size="small"
                       onClick={(e) => {
@@ -275,7 +297,19 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
                 </AccordionSummary>
                 <AccordionDetails>
                   <Box sx={{ paddingLeft: 2 }}>
-                    {isFootprintArray ? (
+                    {isSwitchArray ? (
+                      // For switch arrays, item has ONE key (the selected option)
+                      (() => {
+                        const selectedOption = Object.keys(item)[0]
+                        const selectedSchema = itemSchema?.options?.[selectedOption]?.schema
+                        return renderField(
+                          selectedOption,
+                          selectedSchema || {},
+                          item[selectedOption],
+                          [...currentPath, idx.toString()]
+                        )
+                      })()
+                    ) : isFootprintArray ? (
                       // For footprint arrays, render the single type that exists
                       Object.keys(item).map((itemKey) =>
                         renderField(
@@ -286,24 +320,106 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
                         )
                       )
                     ) : (
-                      // For regular arrays, render based on itemSchema
-                      Object.keys(itemSchema).map((itemKey) =>
-                        renderField(itemKey, itemSchema[itemKey], item ? item[itemKey] : undefined, [...currentPath, idx.toString()])
-                      )
-                    )}
-                  </Box>
-                </AccordionDetails>
-              </Accordion>
-            ))
-          )}
+                      // For regular arrays, check if itemSchema describes a primitive item (render directly)
+                      (() => {
+                        const itemSchemaFieldType = itemSchema?.fieldType
+                        // Primitive types - render as simple input
+                        if (itemSchemaFieldType && ['integer', 'float', 'string', 'boolean', 'ipv4', 'ipv6', 'enum'].includes(itemSchemaFieldType)) {
+                          const displayValue = item ?? itemSchema?.default ?? ''
+
+                          if (itemSchemaFieldType === 'boolean') {
+                            return (
+                              <FormControlLabel
+                                key={`${pathString}-${idx}`}
+                                control={
+                                  <Switch
+                                    checked={Boolean(displayValue)}
+                                    onChange={(e) => {
+                                      const newArray = [...arrayValue]
+                                      newArray[idx] = e.target.checked
+                                      handleFieldChange(currentPath, newArray)
+                                    }}
+                                  />
+                                }
+                                label={`Value ${idx + 1}`}
+                                sx={{ marginY: 1, display: 'block' }}
+                              />
+                            )
+                          }
+
+                          if (itemSchemaFieldType === 'enum' && Array.isArray(itemSchema?.options)) {
+                            return (
+                              <FormControl key={`${pathString}-${idx}`} fullWidth margin="normal" size="small">
+                                <InputLabel>{`Value ${idx + 1}`}</InputLabel>
+                                <Select
+                                  value={displayValue}
+                                  onChange={(e) => {
+                                    const newArray = [...arrayValue]
+                                    newArray[idx] = e.target.value
+                                    handleFieldChange(currentPath, newArray)
+                                  }}
+                                  label={`Value ${idx + 1}`}
+                                >
+                                  {itemSchema.options.map((opt: string) => (
+                                    <MenuItem key={opt} value={opt}>{opt}</MenuItem>
+                                  ))}
+                                </Select>
+                              </FormControl>
+                            )
+                          }
+
+                          // Number or text input
+                          return (
+                            <TextField
+                              key={`${pathString}-${idx}`}
+                              fullWidth
+                              label={`Value ${idx + 1}`}
+                              type={itemSchemaFieldType === 'integer' || itemSchemaFieldType === 'float' ? 'number' : 'text'}
+                              value={displayValue}
+                              onChange={(e) => {
+                                let newValue: any = e.target.value
+                                if (itemSchemaFieldType === 'integer') {
+                                  const num = parseInt(e.target.value as string, 10)
+                                  newValue = isNaN(num) ? 0 : num
+                                } else if (itemSchemaFieldType === 'float') {
+                                  const num = parseFloat(e.target.value as string)
+                                  newValue = isNaN(num) ? 0.0 : num
+                                }
+                                const newArray = [...arrayValue]
+                                newArray[idx] = newValue
+                                handleFieldChange(currentPath, newArray)
+                              }}
+                              margin="normal"
+                              size="small"
+                              inputProps={{ min: itemSchema?.min, max: itemSchema?.max }}
+                            />
+                          )
+                        }
+
+                        // Complex object - render all fields (existing behavior)
+                        return Object.keys(itemSchema)
+                          .filter((itemKey) => !metadataKeys.includes(itemKey))
+                          .map((itemKey) =>
+                            renderField(itemKey, itemSchema[itemKey], item ? item[itemKey] : undefined, [...currentPath, idx.toString()])
+                          )
+                      })()
+                     )}
+                   </Box>
+                 </AccordionDetails>
+               </Accordion>
+             ))
+           )}
 
           {/* Footprint Type Selection Dialog */}
-          {isFootprintArray && (
+          {(isFootprintArray || isSwitchArray) && (
             <Dialog open={footprintTypeDialog} onClose={() => setFootprintTypeDialog(false)}>
-              <DialogTitle>Select Footprint Type</DialogTitle>
+              <DialogTitle>Select Type</DialogTitle>
               <DialogContent>
                 <List>
-                  {footprintTypes.map((type) => (
+                  {/* Use availableSwitchOptions when this is a switch array, otherwise fallback to footprintTypes */}
+                  {(isSwitchArray ? availableSwitchOptions : footprintTypes).length === 0 ? (
+                    <ListItemText primary="No available options" />
+                  ) : (isSwitchArray ? availableSwitchOptions : footprintTypes).map((type) => (
                     <ListItemButton key={type} onClick={() => handleAddFootprintType(type)}>
                       <ListItemText primary={type} />
                     </ListItemButton>
@@ -326,9 +442,11 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
           </AccordionSummary>
           <AccordionDetails>
             <Box sx={{ paddingLeft: 2 }}>
-              {Object.keys(fieldSchema.fields).map((nestedKey) =>
-                renderField(nestedKey, fieldSchema.fields[nestedKey], nestedValue[nestedKey], currentPath)
-              )}
+              {Object.keys(fieldSchema.fields)
+                .filter((nestedKey) => !metadataKeys.includes(nestedKey))
+                .map((nestedKey) =>
+                  renderField(nestedKey, fieldSchema.fields[nestedKey], nestedValue[nestedKey], currentPath)
+                )}
             </Box>
           </AccordionDetails>
         </Accordion>
