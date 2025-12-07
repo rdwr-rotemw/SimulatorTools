@@ -141,6 +141,10 @@ class MessageBuilder:
             # Look up the template definition in the schema
             template_def = self._resolve_template_definition(template.instanceof)
             if template_def:
+                # CRITICAL: Convert model objects to ConvertXml before processing
+                if hasattr(template_def, '__module__') and 'models.data_format_models' in str(template_def.__class__):
+                    template_def = self._convert_model_to_convertxml(template_def)
+
                 # Check if the template itself matches the field name
                 if hasattr(template_def, 'name') and template_def.name == field_name:
                     return self._process_xml_element(template_def, field_value)
@@ -211,7 +215,7 @@ class MessageBuilder:
         if clone.body:
             if hasattr(clone.body, 'name') and clone.body.name == field_name:
                 return self._process_xml_element(clone.body, field_value)
-            elif hasattr(clone.body, 'data'):
+            elif hasattr(clone.body, 'data') and clone.body.data:
                 return self._find_and_process_field(clone.body.data, field_name, field_value)
             elif hasattr(clone.body, 'fields'):
                 return self._find_and_process_field(clone.body.fields, field_name, field_value)
@@ -276,13 +280,17 @@ class MessageBuilder:
                 if template_def:
                     break
 
+
         # If it's a model struct, convert it properly
         if template_def and hasattr(template_def, '__module__') and 'models.data_format_models' in str(template_def.__class__):
             converted_fields = []
             # Use 'data' attribute instead of 'fields' for model structs
             if hasattr(template_def, 'data') and template_def.data:
+                # Check if data is a model ForLoop or WhileLoop first
+                is_model_loop = hasattr(template_def.data, '__class__') and any(x in str(template_def.data.__class__) for x in ['ForLoop', 'WhileLoop'])
+
                 # Check if data is a single object (like ForLoop) or a list of fields
-                if hasattr(template_def.data, '__iter__') and not isinstance(template_def.data, (str, ConvertXml.ForLoop, ConvertXml.WhileLoop)):
+                if (hasattr(template_def.data, '__iter__') and not isinstance(template_def.data, (str, ConvertXml.ForLoop, ConvertXml.WhileLoop))) and not is_model_loop:
                     # It's iterable and not a single loop object, so iterate over it
                     for field in template_def.data:
                         # Check different ways the field might be structured
@@ -297,54 +305,98 @@ class MessageBuilder:
                             converted_fields.append(field)
                         elif hasattr(field, 'name') and hasattr(field, 'array_type') and hasattr(field, 'size'):
                             # Handle model FixedArray objects
-                            converted_fields.append(ConvertXml.FixedArray(current_field.name, current_field.array_type, current_field.size))
-                        elif isinstance(current_field, dict):
-                            if 'name' in current_field and 'type' in current_field:
-                                converted_fields.append(ConvertXml.DataField(current_field['name'], current_field['type']))
+                            converted_fields.append(ConvertXml.FixedArray(field.name, field.array_type, field.size))
+                        elif isinstance(field, dict):
+                            if 'name' in field and 'type' in field:
+                                converted_fields.append(ConvertXml.DataField(field['name'], field['type']))
                         else:
                             # Try to convert other field types recursively
-                            converted = self._convert_model_to_convertxml(current_field)
-                            if converted and converted != current_field:
+                            converted = self._convert_model_to_convertxml(field)
+                            if converted and converted != field:
                                 converted_fields.append(converted)
                 else:
-                    # It's a single object (like ForLoop), return it directly
+                    # It's a single object (ForLoop, WhileLoop, or model version), return it directly
                     return template_def.data
 
             if converted_fields:
                 converted_struct = ConvertXml.Struct(template_def.name, converted_fields)
                 return converted_struct
+            # If no converted fields but it's a model, still try to convert something
+            # Instead of returning the empty model, return what we can
+            elif hasattr(template_def, '__module__') and 'models.data_format_models' in str(template_def.__class__):
+                # Don't return empty model - at least try basic conversion
+                return self._convert_model_to_convertxml(template_def)
 
         return template_def
 
     def _convert_model_to_convertxml(self, model_obj):
         """
         Convert model objects to ConvertXml objects.
+        Handles model Struct (with 'data' attribute), ForLoop, and WhileLoop.
         """
-        from models.data_format_models import Struct as ModelStruct
+        from backend.app.modules.reporter.irp.models.data_format_models import Struct as ModelStruct
 
         # If it's already a ConvertXml object, return as-is
         if hasattr(model_obj, '__class__') and 'ConvertXml' in str(model_obj.__class__):
             return model_obj
 
-        # Handle model Struct objects
+        # If it's a model ForLoop or WhileLoop, convert it to ConvertXml
+        if hasattr(model_obj, '__class__'):
+            class_name = str(model_obj.__class__)
+            if 'ForLoop' in class_name:
+                # Convert model ForLoop to ConvertXml.ForLoop
+                # Model ForLoop has: name, iterations, data (not body)
+                # ConvertXml.ForLoop needs: name, iterations, transparent, body
+                body = getattr(model_obj, 'data', None) or getattr(model_obj, 'body', None)
+                body_items = body if body else []
+                converted_body = body_items if isinstance(body_items, list) else [body_items] if body_items else []
+
+                return ConvertXml.ForLoop(
+                    name=getattr(model_obj, 'name', 'unknown'),
+                    iterations=getattr(model_obj, 'iterations', 'uint-8'),
+                    transparent=getattr(model_obj, 'transparent', False),
+                    body=converted_body
+                )
+            elif 'WhileLoop' in class_name:
+                # Convert model WhileLoop to ConvertXml.WhileLoop
+                body = getattr(model_obj, 'data', None) or getattr(model_obj, 'body', None)
+                return ConvertXml.WhileLoop(
+                    name=getattr(model_obj, 'name', 'unknown'),
+                    data=body or [],
+                    stop_at=getattr(model_obj, 'stop_at', None)
+                )
+
+        # Handle model Struct objects (they have 'data', not 'fields')
         if isinstance(model_obj, ModelStruct):
-            converted_fields = []
-            if hasattr(model_obj, 'fields') and model_obj.fields:
-                for field in model_obj.fields:
-                    if hasattr(field, 'name') and hasattr(field, 'type'):
-                        converted_fields.append(ConvertXml.DataField(field.name, field.type))
-                    elif hasattr(field, '__class__') and 'DataField' in str(field.__class__):
-                        # It's already a DataField, keep as-is
-                        converted_fields.append(field)
-                    elif isinstance(field, dict) and 'name' in field and 'type' in field:
-                        converted_fields.append(ConvertXml.DataField(field['name'], field['type']))
-                    else:
-                        # Try to convert other field types recursively
-                        converted = self._convert_model_to_convertxml(field)
+            # If the struct's data is a single object (ForLoop, WhileLoop), convert it recursively
+            if hasattr(model_obj, 'data') and model_obj.data:
+                if hasattr(model_obj.data, '__class__') and any(x in str(model_obj.data.__class__) for x in ['ForLoop', 'WhileLoop']):
+                    # Recursively convert the ForLoop/WhileLoop too
+                    return self._convert_model_to_convertxml(model_obj.data)
+
+                # If data is a list/iterable, convert the fields
+                converted_fields = []
+                if hasattr(model_obj.data, '__iter__') and not isinstance(model_obj.data, str):
+                    for field in model_obj.data:
+                        # Recursively convert field if it's a model object
+                        if hasattr(field, '__module__') and 'models.data_format_models' in str(field.__class__):
+                            converted = self._convert_model_to_convertxml(field)
+                        elif hasattr(field, 'name') and hasattr(field, 'type'):
+                            converted = ConvertXml.DataField(field.name, field.type)
+                        elif hasattr(field, '__class__') and 'DataField' in str(field.__class__):
+                            converted = field  # Already a DataField
+                        elif isinstance(field, dict) and 'name' in field and 'type' in field:
+                            converted = ConvertXml.DataField(field['name'], field['type'])
+                        else:
+                            converted = field
+
                         if converted:
                             converted_fields.append(converted)
 
-            return ConvertXml.Struct(model_obj.name, converted_fields)
+                if converted_fields:
+                    return ConvertXml.Struct(model_obj.name, converted_fields)
+            # Empty struct or no data - return empty ConvertXml struct
+            return ConvertXml.Struct(model_obj.name, [])
 
         # Return as-is if we can't convert it
         return model_obj
@@ -947,8 +999,13 @@ class MessageBuilder:
             raise ValueError("Template has no instanceof attribute")
 
         template_def = self._resolve_template_definition(template.instanceof)
+
         if not template_def:
             raise ValueError(f"Template definition not found for: {template.instanceof}")
+
+        # CRITICAL: Convert model objects to ConvertXml before processing
+        if hasattr(template_def, '__module__') and 'models.data_format_models' in str(template_def.__class__):
+            template_def = self._convert_model_to_convertxml(template_def)
 
         # Special handling for vsecure.footprint-values template
         if (template.instanceof == 'vsecure.footprint-values' or
@@ -976,7 +1033,7 @@ class MessageBuilder:
                 return self._process_for_loop(template_def, values)
             elif hasattr(template_def, 'data') and isinstance(template_def.data, ConvertXml.ForLoop):
                 return self._process_for_loop(template_def.data, values)
-            elif hasattr(template_def, 'fields'):
+            elif hasattr(template_def, 'fields') and template_def.fields:
                 for field in template_def.fields:
                     if isinstance(field, ConvertXml.ForLoop) and field.name == 'footprint-values':
                         return self._process_for_loop(field, values)

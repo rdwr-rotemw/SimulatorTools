@@ -193,8 +193,30 @@ async def send_irp_messages_endpoint(
     try:
         results = send_irp_messages(schema_obj, payload.message_data, simulator_ip, cc_ip)
         if isinstance(results, dict):
-            # Success: return per-message results
-            return ReporterResponse(success=True, message="IRP messages processed", messages=results)
+            # The results dict contains per-message tuples/lists like: { name: [bool_success, message_or_error] }
+            all_success = True
+            any_success = False
+            for k, v in results.items():
+                try:
+                    ok = bool(v[0])
+                except Exception:
+                    ok = False
+                if ok:
+                    any_success = True
+                else:
+                    all_success = False
+
+            if all_success:
+                logger.info("All IRP messages succeeded")
+                return ReporterResponse(success=True, message="All IRP messages sent successfully", messages=results)
+            if not any_success:
+                # All failed - treat as server error
+                logger.error(f"All IRP messages failed: {results}")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"All IRP messages failed: {results}")
+
+            # Mixed results - partial success
+            logger.warning(f"Partial IRP results: {results}")
+            return ReporterResponse(success=False, message="Partial failure sending IRP messages", messages=results)
         else:
             # Overall failure
             success, error_msg = results
