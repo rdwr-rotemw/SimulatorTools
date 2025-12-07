@@ -274,7 +274,7 @@ export const IRPSenderPage: React.FC = () => {
         },
       }
 
-      await irpSchemaService.sendMessages(currentCC!, selectedSimulator, payload)
+      await irpSchemaService.sendMessages(selectedDestinationPort, selectedSimulator, payload)
       setSnackbar({ open: true, message: `Successfully sent ${messages.length} message(s)`, severity: 'success' })
     } catch (error: any) {
       console.error('Failed to send messages:', error)
