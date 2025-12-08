@@ -34,6 +34,8 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import DeleteIcon from '@mui/icons-material/Delete'
 import CasinoIcon from '@mui/icons-material/Casino'
+import LoopIcon from '@mui/icons-material/Loop'
+import StopIcon from '@mui/icons-material/Stop'
 
 import Layout from '../components/common/Layout'
 import useCCStore from '../store/ccStore'
@@ -189,6 +191,14 @@ export const IRPSenderPage: React.FC = () => {
   const [savedTemplates, setSavedTemplates] = useState<any[]>([])
   const [loadingTemplates, setLoadingTemplates] = useState(false)
 
+  // Loop functionality state
+  const [loopDialogOpen, setLoopDialogOpen] = useState(false)
+  const [loopDelay, setLoopDelay] = useState<number>(15) // seconds - default 15s
+  const [loopTimeout, setLoopTimeout] = useState<number>(600) // seconds - default 10 minutes, mandatory
+  const [isLooping, setIsLooping] = useState(false)
+  const loopIntervalRef = React.useRef<NodeJS.Timeout | null>(null)
+  const loopTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
+
   // Log render for debugging
   console.log('IRPSenderPage rendered')
 
@@ -198,6 +208,14 @@ export const IRPSenderPage: React.FC = () => {
       navigate('/cc/reporting/irp')
     }
   }, [currentCC, schemaId, navigate])
+
+  // Cleanup loop on unmount
+  useEffect(() => {
+    return () => {
+      if (loopIntervalRef.current) clearInterval(loopIntervalRef.current)
+      if (loopTimeoutRef.current) clearTimeout(loopTimeoutRef.current)
+    }
+  }, [])
 
   const compatibleSimulators = devices.filter((d) => d.version === schemaInfo?.version)
 
@@ -410,6 +428,111 @@ export const IRPSenderPage: React.FC = () => {
     }
   }
 
+  // Send messages once (used by loop)
+  const sendMessagesOnce = async () => {
+    if (!selectedSimulator || !selectedDestinationPort || messages.length === 0) {
+      return false
+    }
+
+    try {
+      const formattedMessages = messages.map((msg) => ({
+        message: msg.messageName,
+        ...msg.data,
+      }))
+
+      const payload = {
+        mongo_id: schemaId!,
+        message_data: {
+          messages: formattedMessages,
+        },
+      }
+
+      await irpSchemaService.sendMessages(selectedDestinationPort, selectedSimulator, payload)
+      return true
+    } catch (error: any) {
+      const errorMsg = error?.response?.data?.detail || error?.message || 'Failed to send messages'
+      setSnackbar({ open: true, message: errorMsg, severity: 'error' })
+      return false
+    }
+  }
+
+  const handleStartLoop = () => {
+    if (!selectedSimulator) {
+      setSnackbar({ open: true, message: 'Please select a simulator', severity: 'error' })
+      return
+    }
+
+    if (!selectedDestinationPort) {
+      setSnackbar({ open: true, message: 'Please select a destination port', severity: 'error' })
+      return
+    }
+
+    if (messages.length === 0) {
+      setSnackbar({ open: true, message: 'Please add at least one message', severity: 'error' })
+      return
+    }
+
+    if (loopDelay < 1) {
+      setSnackbar({ open: true, message: 'Loop delay must be at least 1 second', severity: 'error' })
+      return
+    }
+
+    if (loopTimeout < 1) {
+      setSnackbar({ open: true, message: 'Timeout must be at least 1 second', severity: 'error' })
+      return
+    }
+
+    setLoopDialogOpen(false)
+    setIsLooping(true)
+
+    let messagesSentCount = 0
+    const startTime = Date.now()
+
+    // Send first batch immediately
+    sendMessagesOnce().then(success => {
+      if (success) {
+        messagesSentCount++
+        setSnackbar({ open: true, message: `Loop started - Sent batch #${messagesSentCount}`, severity: 'info' })
+      }
+    })
+
+    // Set up interval for subsequent sends (convert seconds to milliseconds)
+    loopIntervalRef.current = setInterval(async () => {
+      const success = await sendMessagesOnce()
+      if (success) {
+        messagesSentCount++
+        setSnackbar({ open: true, message: `Loop running - Sent batch #${messagesSentCount}`, severity: 'info' })
+      }
+    }, loopDelay * 1000)
+
+    // Set up timeout - always runs since timeout is mandatory
+    loopTimeoutRef.current = setTimeout(() => {
+      handleStopLoop()
+      const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000)
+      setSnackbar({
+        open: true,
+        message: `Loop stopped after ${elapsedSeconds}s - Sent ${messagesSentCount} batch(es)`,
+        severity: 'success'
+      })
+    }, loopTimeout * 1000)
+  }
+
+  const handleStopLoop = () => {
+    if (loopIntervalRef.current) {
+      clearInterval(loopIntervalRef.current)
+      loopIntervalRef.current = null
+    }
+    if (loopTimeoutRef.current) {
+      clearTimeout(loopTimeoutRef.current)
+      loopTimeoutRef.current = null
+    }
+    setIsLooping(false)
+  }
+
+  const handleOpenLoopDialog = () => {
+    setLoopDialogOpen(true)
+  }
+
   return (
     <Layout>
       <Box sx={{ height: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column' }}>
@@ -526,12 +649,68 @@ export const IRPSenderPage: React.FC = () => {
             variant="contained"
             color="primary"
             startIcon={<SendIcon />}
-            disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isLoading}
+            disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isLoading || isLooping}
             onClick={handleSendMessages}
           >
             {isLoading ? 'Sending...' : `Send Messages (${messages.length})`}
           </Button>
+
+          {!isLooping ? (
+            <Button
+              variant="contained"
+              color="secondary"
+              startIcon={<LoopIcon />}
+              onClick={handleOpenLoopDialog}
+              disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isLoading}
+            >
+              Send Loop
+            </Button>
+          ) : (
+            <Button
+              variant="contained"
+              color="error"
+              startIcon={<StopIcon />}
+              onClick={handleStopLoop}
+            >
+              Stop Loop
+            </Button>
+          )}
         </Box>
+
+        {/* Loop Configuration Dialog */}
+        <Dialog open={loopDialogOpen} onClose={() => setLoopDialogOpen(false)} maxWidth="sm" fullWidth>
+          <DialogTitle>Configure Send Loop</DialogTitle>
+          <DialogContent>
+            <TextField
+              autoFocus
+              margin="dense"
+              label="Loop Delay (seconds)"
+              type="number"
+              fullWidth
+              value={loopDelay}
+              onChange={(e) => setLoopDelay(Math.floor(parseInt(e.target.value) || 0))}
+              helperText="Time between sending messages (minimum 1 second)"
+              inputProps={{ min: 1, step: 1 }}
+            />
+            <TextField
+              margin="dense"
+              label="Timeout (seconds)"
+              type="number"
+              fullWidth
+              required
+              value={loopTimeout}
+              onChange={(e) => setLoopTimeout(Math.floor(parseInt(e.target.value) || 0))}
+              helperText="Loop will automatically stop after this duration (required, minimum 1 second)"
+              inputProps={{ min: 1, step: 1 }}
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setLoopDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleStartLoop} variant="contained" color="secondary">
+              Start Loop
+            </Button>
+          </DialogActions>
+        </Dialog>
 
         {/* Save Template Dialog */}
         <Dialog open={saveDialogOpen} onClose={() => setSaveDialogOpen(false)}>

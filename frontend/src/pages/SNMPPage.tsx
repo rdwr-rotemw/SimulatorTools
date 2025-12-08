@@ -30,6 +30,8 @@ import UploadIcon from '@mui/icons-material/Upload';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import DeleteIcon from '@mui/icons-material/Delete';
+import LoopIcon from '@mui/icons-material/Loop';
+import StopIcon from '@mui/icons-material/Stop';
 
 import Layout from '../components/common/Layout';
 import useCCStore from '../store/ccStore';
@@ -56,6 +58,14 @@ export const SNMPPage: React.FC = () => {
   const [errors, setErrors] = useState<{ [key: number]: SNMPFormErrors }>({});
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({ open: false, message: '', severity: 'success' });
 
+  // Loop functionality state
+  const [loopDialogOpen, setLoopDialogOpen] = useState(false);
+  const [loopDelay, setLoopDelay] = useState<number>(15); // seconds - default 15s
+  const [loopTimeout, setLoopTimeout] = useState<number>(600); // seconds - default 10 minutes, mandatory
+  const [isLooping, setIsLooping] = useState(false);
+  const loopIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const loopTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Dialog / templates state
@@ -69,6 +79,14 @@ export const SNMPPage: React.FC = () => {
       navigate('/cc/login');
     }
   }, [currentCC, navigate]);
+
+  // Cleanup loop on unmount
+  useEffect(() => {
+    return () => {
+      if (loopIntervalRef.current) clearInterval(loopIntervalRef.current);
+      if (loopTimeoutRef.current) clearTimeout(loopTimeoutRef.current);
+    };
+  }, []);
 
   // When management ports update, pick a sensible default (prefer G2, then G1)
   useEffect(() => {
@@ -248,6 +266,94 @@ export const SNMPPage: React.FC = () => {
     return Object.keys(newErrors).length === 0;
   };
 
+  const sendTrapsOnce = async () => {
+    try {
+      await snmpTemplateService.sendTraps(selectedDestinationPort, selectedSimulator, traps);
+      return true;
+    } catch (error: any) {
+      const errorMsg = error.response?.data?.detail || error.message || 'Failed to send traps';
+      setSnackbar({ open: true, message: errorMsg, severity: 'error' });
+      return false;
+    }
+  };
+
+  const handleStartLoop = () => {
+    if (!selectedSimulator) {
+      setSnackbar({ open: true, message: 'Please select a simulator', severity: 'error' });
+      return;
+    }
+
+    if (!selectedDestinationPort) {
+      setSnackbar({ open: true, message: 'Please select a destination port', severity: 'error' });
+      return;
+    }
+
+    if (!validateAll()) {
+      setSnackbar({ open: true, message: 'Please fix validation errors', severity: 'error' });
+      return;
+    }
+
+    if (loopDelay < 1) {
+      setSnackbar({ open: true, message: 'Loop delay must be at least 1 second', severity: 'error' });
+      return;
+    }
+
+    if (loopTimeout < 1) {
+      setSnackbar({ open: true, message: 'Timeout must be at least 1 second', severity: 'error' });
+      return;
+    }
+
+    setLoopDialogOpen(false);
+    setIsLooping(true);
+
+    let trapsSentCount = 0;
+    const startTime = Date.now();
+
+    // Send first trap immediately
+    sendTrapsOnce().then(success => {
+      if (success) {
+        trapsSentCount++;
+        setSnackbar({ open: true, message: `Loop started - Sent batch #${trapsSentCount}`, severity: 'info' });
+      }
+    });
+
+    // Set up interval for subsequent sends (convert seconds to milliseconds)
+    loopIntervalRef.current = setInterval(async () => {
+      const success = await sendTrapsOnce();
+      if (success) {
+        trapsSentCount++;
+        setSnackbar({ open: true, message: `Loop running - Sent batch #${trapsSentCount}`, severity: 'info' });
+      }
+    }, loopDelay * 1000);
+
+    // Set up timeout - always runs since timeout is mandatory
+    loopTimeoutRef.current = setTimeout(() => {
+      handleStopLoop();
+      const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+      setSnackbar({
+        open: true,
+        message: `Loop stopped after ${elapsedSeconds}s - Sent ${trapsSentCount} batch(es)`,
+        severity: 'success'
+      });
+    }, loopTimeout * 1000);
+  };
+
+  const handleStopLoop = () => {
+    if (loopIntervalRef.current) {
+      clearInterval(loopIntervalRef.current);
+      loopIntervalRef.current = null;
+    }
+    if (loopTimeoutRef.current) {
+      clearTimeout(loopTimeoutRef.current);
+      loopTimeoutRef.current = null;
+    }
+    setIsLooping(false);
+  };
+
+  const handleOpenLoopDialog = () => {
+    setLoopDialogOpen(true);
+  };
+
   return (
     <Layout>
       <Box sx={{ height: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column' }}>
@@ -348,12 +454,68 @@ export const SNMPPage: React.FC = () => {
             color="primary"
             startIcon={<SendIcon />}
             onClick={handleSend}
-            disabled={!selectedSimulator || !selectedDestinationPort}
+            disabled={!selectedSimulator || !selectedDestinationPort || isLooping}
           >
             Send Traps ({traps.length})
           </Button>
+
+          {!isLooping ? (
+            <Button
+              variant="contained"
+              color="secondary"
+              startIcon={<LoopIcon />}
+              onClick={handleOpenLoopDialog}
+              disabled={!selectedSimulator || !selectedDestinationPort}
+            >
+              Send Loop
+            </Button>
+          ) : (
+            <Button
+              variant="contained"
+              color="error"
+              startIcon={<StopIcon />}
+              onClick={handleStopLoop}
+            >
+              Stop Loop
+            </Button>
+          )}
         </Box>
       </Box>
+
+      {/* Loop Configuration Dialog */}
+      <Dialog open={loopDialogOpen} onClose={() => setLoopDialogOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Configure Send Loop</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="Loop Delay (seconds)"
+            type="number"
+            fullWidth
+            value={loopDelay}
+            onChange={(e) => setLoopDelay(Math.floor(parseInt(e.target.value) || 0))}
+            helperText="Time between sending traps (minimum 1 second)"
+            inputProps={{ min: 1, step: 1 }}
+          />
+          <TextField
+            margin="dense"
+            label="Timeout (seconds)"
+            type="number"
+            fullWidth
+            required
+            value={loopTimeout}
+            onChange={(e) => setLoopTimeout(Math.floor(parseInt(e.target.value) || 0))}
+            helperText="Loop will automatically stop after this duration (required, minimum 1 second)"
+            inputProps={{ min: 1, step: 1 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setLoopDialogOpen(false)}>Cancel</Button>
+          <Button onClick={handleStartLoop} variant="contained" color="secondary">
+            Start Loop
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Save Template Dialog */}
       <Dialog open={saveDialogOpen} onClose={() => setSaveDialogOpen(false)}>
