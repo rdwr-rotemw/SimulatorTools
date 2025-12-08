@@ -45,10 +45,16 @@ import IRPMessageForm from '../components/irp/IRPMessageForm'
 // Utility function to generate random data based on schema
 // Schema-driven recursion: Uses schema to understand and randomize all nested types
 function generateRandomData(schema: Record<string, any>, currentData?: Record<string, any>): Record<string, any> {
-  const randomizeValue = (fieldSchema: any, currentValue?: any): any => {
+  const randomizeValue = (fieldSchema: any, currentValue?: any, fieldKey?: string): any => {
     if (!fieldSchema) return currentValue ?? ''
 
     const fieldType = fieldSchema?.fieldType || fieldSchema?.type || 'string'
+
+    // Special case: policy-name field should be pol1 to pol30
+    if (fieldKey === 'policy-name' && fieldType === 'string') {
+      const policyNumber = Math.floor(Math.random() * 30) + 1 // 1-30
+      return `pol${policyNumber}`
+    }
 
     // Primitive types - return early
     if (fieldType === 'integer') {
@@ -85,14 +91,14 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
             if (selectedOption && itemSchema.options[selectedOption]) {
               const optionSchema = itemSchema.options[selectedOption]?.schema || itemSchema.options[selectedOption]
               const currentOptionValue = item[selectedOption]
-              return { [selectedOption]: randomizeValue(optionSchema, currentOptionValue) }
+              return { [selectedOption]: randomizeValue(optionSchema, currentOptionValue, selectedOption) }
             }
             return item // Fallback if option not found
           }
 
           // If itemSchema has fieldType (and it's a primitive), use it directly
           if (itemSchema?.fieldType && itemSchema.fieldType !== 'object' && itemSchema.fieldType !== 'clone' && itemSchema.fieldType !== 'switch') {
-            return randomizeValue(itemSchema, item)
+            return randomizeValue(itemSchema, item, fieldKey)
           }
 
           // Otherwise, itemSchema is a flat object where each key is a field schema
@@ -102,7 +108,7 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
             if (['type', 'fieldType', 'default', 'required'].includes(key)) return
             const fieldDef = itemSchema[key]
             const currentFieldValue = (typeof item === 'object' && item !== null) ? item[key] : undefined
-            result[key] = randomizeValue(fieldDef, currentFieldValue)
+            result[key] = randomizeValue(fieldDef, currentFieldValue, key)
           })
           return result
         })
@@ -110,12 +116,12 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       const arraySize = Math.floor(Math.random() * 2) + 1
       return Array.from({ length: arraySize }, () => {
         if (itemSchema?.fieldType && itemSchema.fieldType !== 'object' && itemSchema.fieldType !== 'clone' && itemSchema.fieldType !== 'switch') {
-          return randomizeValue(itemSchema)
+          return randomizeValue(itemSchema, undefined, fieldKey)
         }
         const result: Record<string, any> = {}
         Object.keys(itemSchema || {}).forEach((key) => {
           if (['type', 'fieldType', 'default', 'required'].includes(key)) return
-          result[key] = randomizeValue(itemSchema[key])
+          result[key] = randomizeValue(itemSchema[key], undefined, key)
         })
         return result
       })
@@ -127,7 +133,7 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       Object.keys(fieldSchema.fields).forEach((key) => {
         const nestedValue = (typeof currentValue === 'object' && currentValue !== null) ? currentValue[key] : undefined
         // Recursively randomize using the schema definition for this field
-        result[key] = randomizeValue(fieldSchema.fields[key], nestedValue)
+        result[key] = randomizeValue(fieldSchema.fields[key], nestedValue, key)
       })
       return result
     }
@@ -137,7 +143,7 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       const result: Record<string, any> = {}
       Object.keys(fieldSchema.fields).forEach((optionKey) => {
         const optionValue = (typeof currentValue === 'object' && currentValue !== null) ? currentValue[optionKey] : undefined
-        result[optionKey] = randomizeValue(fieldSchema.fields[optionKey], optionValue)
+        result[optionKey] = randomizeValue(fieldSchema.fields[optionKey], optionValue, optionKey)
       })
       return result
     }
@@ -148,7 +154,7 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       Object.keys(currentValue).forEach((key) => {
         const propValue = currentValue[key]
         // Recursively process this property - pass empty schema so it infers from value type
-        result[key] = randomizeValue({}, propValue)
+        result[key] = randomizeValue({}, propValue, key)
       })
       return result
     }
@@ -159,7 +165,7 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
 
   const result: Record<string, any> = {}
   Object.keys(schema).forEach((key) => {
-    result[key] = randomizeValue(schema[key], currentData?.[key])
+    result[key] = randomizeValue(schema[key], currentData?.[key], key)
   })
 
   return result
