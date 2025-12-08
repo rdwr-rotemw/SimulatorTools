@@ -708,25 +708,6 @@ class TemplateGenerator:
 
     def _resolve_template_with_metadata(self, template_name, template_dict, schema_dict):
         """Resolve template reference and build both template and schema."""
-        # Debug logging: show inputs before resolution
-        try:
-            print(f"DEBUG: Resolving template '{template_name}'")
-        except Exception:
-            pass
-        try:
-            print(f"DEBUG: Template dict before: {list(template_dict.keys())}")
-        except Exception:
-            try:
-                print(f"DEBUG: Template dict before (repr): {repr(template_dict)}")
-            except Exception:
-                pass
-        try:
-            print(f"DEBUG: Schema dict before: {list(schema_dict.keys())}")
-        except Exception:
-            try:
-                print(f"DEBUG: Schema dict before (repr): {repr(schema_dict)}")
-            except Exception:
-                pass
         # Handle namespace prefixes
         if '.' in template_name:
             namespace, template_local_name = template_name.rsplit('.', 1)
@@ -746,26 +727,9 @@ class TemplateGenerator:
                             if hasattr(field, 'name') and hasattr(field, 'type'):
                                 template_dict[field.name] = self._get_default_value_for_field(field.name, field.type)
                                 schema_dict[field.name] = self._get_field_metadata(field.name, field.type)
-                        # Debug after resolving namespaced struct fields
-                        try:
-                            print(f"DEBUG: Template dict after (namespaced struct fields): {list(template_dict.keys())}")
-                        except Exception:
-                            pass
-                        try:
-                            print(f"DEBUG: Schema dict after (namespaced struct fields): {list(schema_dict.keys())}")
-                        except Exception:
-                            pass
                         return
                     elif hasattr(template_def, 'data'):
                         self._process_elements_with_metadata(template_def.data, template_dict, schema_dict)
-                        try:
-                            print(f"DEBUG: Template dict after (namespaced data): {list(template_dict.keys())}")
-                        except Exception:
-                            pass
-                        try:
-                            print(f"DEBUG: Schema dict after (namespaced data): {list(schema_dict.keys())}")
-                        except Exception:
-                            pass
                         return
 
         # Check global templates
@@ -779,44 +743,13 @@ class TemplateGenerator:
                         if field_type == 'DataField':
                             template_dict[field.name] = self._get_default_value_for_field(field.name, field.type)
                             schema_dict[field.name] = self._get_field_metadata(field.name, field.type)
-                    try:
-                        print(f"DEBUG: Template dict after (global fields): {list(template_dict.keys())}")
-                    except Exception:
-                        pass
-                    try:
-                        print(f"DEBUG: Schema dict after (global fields): {list(schema_dict.keys())}")
-                    except Exception:
-                        pass
                     return
                 elif hasattr(template_def, 'data') and template_def.data:
                     self._process_elements_with_metadata(template_def.data, template_dict, schema_dict)
-                    try:
-                        print(f"DEBUG: Template dict after (global data): {list(template_dict.keys())}")
-                    except Exception:
-                        pass
-                    try:
-                        print(f"DEBUG: Schema dict after (global data): {list(schema_dict.keys())}")
-                    except Exception:
-                        pass
                     return
 
         # Fallback to regular resolution without metadata
         self._resolve_template_reference(template_name, template_dict)
-        # Debug after fallback resolution
-        try:
-            print(f"DEBUG: Template dict after: {list(template_dict.keys())}")
-        except Exception:
-            try:
-                print(f"DEBUG: Template dict after (repr): {repr(template_dict)}")
-            except Exception:
-                pass
-        try:
-            print(f"DEBUG: Schema dict after: {list(schema_dict.keys())}")
-        except Exception:
-            try:
-                print(f"DEBUG: Schema dict after (repr): {repr(schema_dict)}")
-            except Exception:
-                pass
 
     def _get_array_context(self, element_name, element_type):
         """

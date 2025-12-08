@@ -398,38 +398,22 @@ class ConvertXml:
                         if template_elements:
                             parsed_elements = self._create_elements_from_ordered_data(template_elements)
 
-                            # DEBUG: Log what's being created for footprint-values
-                            if struct_key == 'footprint-values':
-                                print(f"\n=== PARSING footprint-values template ===")
-                                print(f"  struct_key: {struct_key}")
-                                print(f"  full_name: {full_name}")
-                                print(f"  template_elements count: {len(template_elements)}")
-                                print(f"  parsed_elements count: {len(parsed_elements)}")
-                                for i, elem in enumerate(parsed_elements):
-                                    print(f"    Element {i}: {type(elem)} - {elem.__class__}")
-                                    if hasattr(elem, 'name'):
-                                        print(f"      name: {elem.name}")
-                                    if hasattr(elem, 'body'):
-                                        print(f"      body type: {type(elem.body)}")
-                                        print(f"      body: {elem.body}")
-
-                            # ALWAYS wrap in Struct with data attribute for namespace templates
-                            # This ensures model objects have consistent structure with .data attribute
                             if len(parsed_elements) == 1:
-                                # Single element (like ForLoop) - store as Struct.data (not directly)
-                                if struct_key == 'footprint-values':
-                                    print(f"  >>> Wrapping single element in Struct with data attribute")
-                                    print(f"  Element type: {type(parsed_elements[0])}")
-                                # Store the single element (ForLoop, Switch, etc.) as the data attribute
-                                ns_structs[struct_key] = Struct(full_name, parsed_elements[0])
+                                single_element = parsed_elements[0]
+
+                                # Check if the single element is a ConvertXml.Struct (has 'fields' attribute)
+                                # vs model Struct (has 'data' attribute only)
+                                if hasattr(single_element, 'fields') and not hasattr(single_element, 'data'):
+                                    # ConvertXml.Struct - extract its fields and wrap in model Struct with fields as data
+                                    # This avoids double-nesting while maintaining model Struct structure
+                                    ns_structs[struct_key] = Struct(full_name, single_element.fields)
+                                else:
+                                    # ForLoop, WhileLoop, or other element - wrap in model Struct with element as data
+                                    ns_structs[struct_key] = Struct(full_name, single_element)
                             else:
-                                # Multiple elements, wrap list in Struct.data
-                                if struct_key == 'footprint-values':
-                                    print(f"  >>> Wrapping {len(parsed_elements)} elements in Struct")
+                                # Multiple elements, wrap list in model Struct.data
                                 ns_structs[struct_key] = Struct(full_name, parsed_elements)
                         else:
-                            if struct_key == 'footprint-values':
-                                print(f"  >>> Creating empty Struct (no template_elements)")
                             ns_structs[struct_key] = Struct(full_name, [])
 
                     namespaces[ns_name] = Namespace(ns_name, ns_structs)
