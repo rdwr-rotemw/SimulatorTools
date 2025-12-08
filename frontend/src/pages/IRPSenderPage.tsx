@@ -23,6 +23,7 @@ import {
   ListItemText,
   ListItem,
   TextField,
+  Tooltip,
 } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import AddIcon from '@mui/icons-material/Add'
@@ -32,11 +33,135 @@ import UploadIcon from '@mui/icons-material/Upload'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import DeleteIcon from '@mui/icons-material/Delete'
+import CasinoIcon from '@mui/icons-material/Casino'
 
 import Layout from '../components/common/Layout'
 import useCCStore from '../store/ccStore'
 import { irpSchemaService, SchemaMessage } from '../api/services/irpSchema.service'
 import IRPMessageForm from '../components/irp/IRPMessageForm'
+
+// Utility function to generate random data based on schema
+// Schema-driven recursion: Uses schema to understand and randomize all nested types
+function generateRandomData(schema: Record<string, any>, currentData?: Record<string, any>): Record<string, any> {
+  const randomizeValue = (fieldSchema: any, currentValue?: any): any => {
+    if (!fieldSchema) return currentValue ?? ''
+
+    const fieldType = fieldSchema?.fieldType || fieldSchema?.type || 'string'
+
+    // Primitive types - return early
+    if (fieldType === 'integer') {
+      const min = fieldSchema?.min ?? 0
+      const max = fieldSchema?.max ?? 1000
+      return Math.floor(Math.random() * (max - min + 1)) + min
+    }
+    if (fieldType === 'float') return Math.random() * 1000
+    if (fieldType === 'boolean') return Math.random() > 0.5
+    if (fieldType === 'enum' && Array.isArray(fieldSchema?.options)) {
+      return fieldSchema.options[Math.floor(Math.random() * fieldSchema.options.length)]
+    }
+    if (fieldType === 'ipv4') {
+      return `${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`
+    }
+    if (fieldType === 'ipv6') {
+      return Array.from({ length: 8 }, () => Math.floor(Math.random() * 0xffff).toString(16)).join(':')
+    }
+    if (fieldType === 'string') {
+      return Math.random().toString(36).substring(2, 12)
+    }
+
+    // Array - preserve iterations, recursively randomize each item using itemSchema
+    if (fieldType === 'array' || fieldType === 'fixed-array') {
+      const itemSchema = fieldSchema?.itemSchema
+      const existingArray = Array.isArray(currentValue) ? currentValue : []
+      if (existingArray.length > 0) {
+        // Use itemSchema to randomize each existing item
+        return existingArray.map((item: any) => {
+          // Check if this is a switch/discriminated union (itemSchema has fieldType: 'switch')
+          if (itemSchema?.fieldType === 'switch' && itemSchema?.options && typeof item === 'object' && item !== null) {
+            // Switch type: item is { "selectedOption": value }
+            const selectedOption = Object.keys(item)[0]
+            if (selectedOption && itemSchema.options[selectedOption]) {
+              const optionSchema = itemSchema.options[selectedOption]?.schema || itemSchema.options[selectedOption]
+              const currentOptionValue = item[selectedOption]
+              return { [selectedOption]: randomizeValue(optionSchema, currentOptionValue) }
+            }
+            return item // Fallback if option not found
+          }
+
+          // If itemSchema has fieldType (and it's a primitive), use it directly
+          if (itemSchema?.fieldType && itemSchema.fieldType !== 'object' && itemSchema.fieldType !== 'clone' && itemSchema.fieldType !== 'switch') {
+            return randomizeValue(itemSchema, item)
+          }
+
+          // Otherwise, itemSchema is a flat object where each key is a field schema
+          const result: Record<string, any> = {}
+          Object.keys(itemSchema || {}).forEach((key) => {
+            // Skip metadata keys
+            if (['type', 'fieldType', 'default', 'required'].includes(key)) return
+            const fieldDef = itemSchema[key]
+            const currentFieldValue = (typeof item === 'object' && item !== null) ? item[key] : undefined
+            result[key] = randomizeValue(fieldDef, currentFieldValue)
+          })
+          return result
+        })
+      }
+      const arraySize = Math.floor(Math.random() * 2) + 1
+      return Array.from({ length: arraySize }, () => {
+        if (itemSchema?.fieldType && itemSchema.fieldType !== 'object' && itemSchema.fieldType !== 'clone' && itemSchema.fieldType !== 'switch') {
+          return randomizeValue(itemSchema)
+        }
+        const result: Record<string, any> = {}
+        Object.keys(itemSchema || {}).forEach((key) => {
+          if (['type', 'fieldType', 'default', 'required'].includes(key)) return
+          result[key] = randomizeValue(itemSchema[key])
+        })
+        return result
+      })
+    }
+
+    // Object with fields - this is the KEY: use schema.fields to randomize nested properties
+    if (fieldSchema?.fields && typeof fieldSchema.fields === 'object') {
+      const result: Record<string, any> = {}
+      Object.keys(fieldSchema.fields).forEach((key) => {
+        const nestedValue = (typeof currentValue === 'object' && currentValue !== null) ? currentValue[key] : undefined
+        // Recursively randomize using the schema definition for this field
+        result[key] = randomizeValue(fieldSchema.fields[key], nestedValue)
+      })
+      return result
+    }
+
+    // Clone/enumeration - recursively randomize each option
+    if ((fieldType === 'clone' || fieldSchema?.type === 'clone') && fieldSchema?.fields) {
+      const result: Record<string, any> = {}
+      Object.keys(fieldSchema.fields).forEach((optionKey) => {
+        const optionValue = (typeof currentValue === 'object' && currentValue !== null) ? currentValue[optionKey] : undefined
+        result[optionKey] = randomizeValue(fieldSchema.fields[optionKey], optionValue)
+      })
+      return result
+    }
+
+    // If current value is an object but we don't have schema for it, try to infer from current data
+    if (typeof currentValue === 'object' && currentValue !== null && !Array.isArray(currentValue)) {
+      const result: Record<string, any> = {}
+      Object.keys(currentValue).forEach((key) => {
+        const propValue = currentValue[key]
+        // Recursively process this property - pass empty schema so it infers from value type
+        result[key] = randomizeValue({}, propValue)
+      })
+      return result
+    }
+
+    // Fallback: random string
+    return Math.random().toString(36).substring(2, 12)
+  }
+
+  const result: Record<string, any> = {}
+  Object.keys(schema).forEach((key) => {
+    result[key] = randomizeValue(schema[key], currentData?.[key])
+  })
+
+  return result
+}
 
 export const IRPSenderPage: React.FC = () => {
   const navigate = useNavigate()
@@ -340,6 +465,17 @@ export const IRPSenderPage: React.FC = () => {
                     <IconButton onClick={() => toggleMessage(index)}>
                       {expandedMessages.includes(index) ? <ExpandLessIcon /> : <ExpandMoreIcon />}
                     </IconButton>
+                    <Tooltip title="Generate random values">
+                      <IconButton
+                        onClick={() => {
+                          const randomData = generateRandomData(msg.schema, msg.data)
+                          updateMessage(index, randomData)
+                        }}
+                        size="small"
+                      >
+                        <CasinoIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
                     <IconButton onClick={() => deleteMessage(index)} color="error">
                       <DeleteIcon />
                     </IconButton>
