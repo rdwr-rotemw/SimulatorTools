@@ -56,6 +56,13 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       return `pol${policyNumber}`
     }
 
+    // Special case: attack-id field should be cnt-time format
+    if (fieldKey === 'attack-id' && fieldType === 'string') {
+      const cnt = Math.floor(Math.random() * 10000) // Random cnt 0-9999
+      const time = Math.floor(Date.now() / 1000) // Current epoch time in seconds
+      return `${cnt}-${time}`
+    }
+
     // Primitive types - return early
     if (fieldType === 'integer') {
       const min = fieldSchema?.min ?? 0
@@ -82,29 +89,21 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       const itemSchema = fieldSchema?.itemSchema
       const existingArray = Array.isArray(currentValue) ? currentValue : []
       if (existingArray.length > 0) {
-        // Use itemSchema to randomize each existing item
         return existingArray.map((item: any) => {
-          // Check if this is a switch/discriminated union (itemSchema has fieldType: 'switch')
           if (itemSchema?.fieldType === 'switch' && itemSchema?.options && typeof item === 'object' && item !== null) {
-            // Switch type: item is { "selectedOption": value }
             const selectedOption = Object.keys(item)[0]
             if (selectedOption && itemSchema.options[selectedOption]) {
               const optionSchema = itemSchema.options[selectedOption]?.schema || itemSchema.options[selectedOption]
               const currentOptionValue = item[selectedOption]
               return { [selectedOption]: randomizeValue(optionSchema, currentOptionValue, selectedOption) }
             }
-            return item // Fallback if option not found
+            return item
           }
-
-          // If itemSchema has fieldType (and it's a primitive), use it directly
           if (itemSchema?.fieldType && itemSchema.fieldType !== 'object' && itemSchema.fieldType !== 'clone' && itemSchema.fieldType !== 'switch') {
             return randomizeValue(itemSchema, item, fieldKey)
           }
-
-          // Otherwise, itemSchema is a flat object where each key is a field schema
           const result: Record<string, any> = {}
           Object.keys(itemSchema || {}).forEach((key) => {
-            // Skip metadata keys
             if (['type', 'fieldType', 'default', 'required'].includes(key)) return
             const fieldDef = itemSchema[key]
             const currentFieldValue = (typeof item === 'object' && item !== null) ? item[key] : undefined
@@ -127,18 +126,15 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       })
     }
 
-    // Object with fields - this is the KEY: use schema.fields to randomize nested properties
     if (fieldSchema?.fields && typeof fieldSchema.fields === 'object') {
       const result: Record<string, any> = {}
       Object.keys(fieldSchema.fields).forEach((key) => {
         const nestedValue = (typeof currentValue === 'object' && currentValue !== null) ? currentValue[key] : undefined
-        // Recursively randomize using the schema definition for this field
         result[key] = randomizeValue(fieldSchema.fields[key], nestedValue, key)
       })
       return result
     }
 
-    // Clone/enumeration - recursively randomize each option
     if ((fieldType === 'clone' || fieldSchema?.type === 'clone') && fieldSchema?.fields) {
       const result: Record<string, any> = {}
       Object.keys(fieldSchema.fields).forEach((optionKey) => {
@@ -148,18 +144,15 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       return result
     }
 
-    // If current value is an object but we don't have schema for it, try to infer from current data
     if (typeof currentValue === 'object' && currentValue !== null && !Array.isArray(currentValue)) {
       const result: Record<string, any> = {}
       Object.keys(currentValue).forEach((key) => {
         const propValue = currentValue[key]
-        // Recursively process this property - pass empty schema so it infers from value type
         result[key] = randomizeValue({}, propValue, key)
       })
       return result
     }
 
-    // Fallback: random string
     return Math.random().toString(36).substring(2, 12)
   }
 
@@ -169,6 +162,156 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
   })
 
   return result
+}
+
+// Transform time + cnt fields into attack-id for UI display
+function transformToAttackId(data: any, schema: any): any {
+  if (!data || typeof data !== 'object') return data
+  if (Array.isArray(data)) {
+    return data.map((item, idx) => {
+      const itemSchema = schema?.itemSchema || schema
+      return transformToAttackId(item, itemSchema)
+    })
+  }
+
+  const result: any = {}
+  const hasTimeAndCnt = 'time' in data && 'cnt' in data &&
+                        schema?.time && schema?.cnt
+
+  if (hasTimeAndCnt) {
+    // Merge time and cnt into attack-id
+    result['attack-id'] = `${data.cnt}-${data.time}`
+
+    // Copy all other fields except time and cnt
+    Object.keys(data).forEach(key => {
+      if (key !== 'time' && key !== 'cnt') {
+        const fieldSchema = schema?.[key] || schema?.fields?.[key]
+        result[key] = transformToAttackId(data[key], fieldSchema)
+      }
+    })
+  } else {
+    // No time/cnt pair, process normally
+    Object.keys(data).forEach(key => {
+      const fieldSchema = schema?.[key] || schema?.fields?.[key]
+      result[key] = transformToAttackId(data[key], fieldSchema)
+    })
+  }
+
+  return result
+}
+
+// Transform attack-id back to time + cnt fields for backend
+function transformFromAttackId(data: any, originalSchema: any): any {
+  if (!data || typeof data !== 'object') return data
+  if (Array.isArray(data)) {
+    return data.map((item, idx) => {
+      const itemSchema = originalSchema?.itemSchema || originalSchema
+      return transformFromAttackId(item, itemSchema)
+    })
+  }
+
+  const result: any = {}
+  const hasAttackId = 'attack-id' in data
+  const schemaHasTimeAndCnt = originalSchema?.time && originalSchema?.cnt
+
+  if (hasAttackId && schemaHasTimeAndCnt) {
+    // Split attack-id back into time and cnt
+    const attackId = data['attack-id'] || ''
+    const parts = attackId.toString().split('-')
+
+    if (parts.length === 2) {
+      result.cnt = parseInt(parts[0]) || 0
+      result.time = parseInt(parts[1]) || 0
+    } else {
+      result.cnt = 0
+      result.time = 0
+    }
+
+    // Copy all other fields except attack-id
+    Object.keys(data).forEach(key => {
+      if (key !== 'attack-id') {
+        const fieldSchema = originalSchema?.[key] || originalSchema?.fields?.[key]
+        result[key] = transformFromAttackId(data[key], fieldSchema)
+      }
+    })
+  } else {
+    // No attack-id, process normally
+    Object.keys(data).forEach(key => {
+      const fieldSchema = originalSchema?.[key] || originalSchema?.fields?.[key]
+      result[key] = transformFromAttackId(data[key], fieldSchema)
+    })
+  }
+
+  return result
+}
+
+// Transform schema to replace time + cnt with attack-id
+function transformSchemaForAttackId(schema: any): any {
+  if (!schema || typeof schema !== 'object') return schema
+
+  const hasTimeAndCnt = schema.time && schema.cnt
+
+  if (hasTimeAndCnt) {
+    const result: any = {}
+
+    // Add attack-id field
+    result['attack-id'] = {
+      type: 'string',
+      fieldType: 'string',
+      default: `${schema.cnt.default || 0}-${schema.time.default || 0}`,
+      required: true
+    }
+
+    // Copy all other fields except time and cnt
+    Object.keys(schema).forEach(key => {
+      if (key !== 'time' && key !== 'cnt') {
+        result[key] = transformSchemaForAttackId(schema[key])
+      }
+    })
+
+    return result
+  }
+
+  // Handle nested structures
+  if (schema.fields && typeof schema.fields === 'object') {
+    return {
+      ...schema,
+      fields: transformSchemaForAttackId(schema.fields)
+    }
+  }
+
+  if (schema.itemSchema) {
+    return {
+      ...schema,
+      itemSchema: transformSchemaForAttackId(schema.itemSchema)
+    }
+  }
+
+  // If this looks like a field definition (has fieldType), return as-is
+  // Don't recurse into field metadata like options, min, max, etc.
+  if (schema.fieldType) {
+    return schema
+  }
+
+  // Handle object with nested field definitions
+  // Only recurse if this looks like a container of field definitions
+  const result: any = {}
+  let hasFieldDefinitions = false
+
+  Object.keys(schema).forEach(key => {
+    const value = schema[key]
+    // Check if this value looks like a field definition (has type or fieldType)
+    if (value && typeof value === 'object' && (value.type || value.fieldType || value.fields || value.itemSchema)) {
+      hasFieldDefinitions = true
+      result[key] = transformSchemaForAttackId(value)
+    } else {
+      result[key] = value
+    }
+  })
+
+  // If we found field definitions, return the transformed result
+  // Otherwise, return the original schema unchanged
+  return hasFieldDefinitions ? result : schema
 }
 
 export const IRPSenderPage: React.FC = () => {
@@ -183,7 +326,13 @@ export const IRPSenderPage: React.FC = () => {
   const [schemaInfo, setSchemaInfo] = useState<{ name: string; version: string } | null>(null)
   const [selectedSimulator, setSelectedSimulator] = useState<string>('')
   const [selectedDestinationPort, setSelectedDestinationPort] = useState<string>('')
-  const [messages, setMessages] = useState<Array<{ messageType: string; messageName: string; data: Record<string, any>; schema: Record<string, any> }>>([])
+  const [messages, setMessages] = useState<Array<{
+    messageType: string;
+    messageName: string;
+    data: Record<string, any>;
+    schema: Record<string, any>;
+    originalSchema: Record<string, any>; // Store original schema for transformation back
+  }>>([])
   const [expandedMessages, setExpandedMessages] = useState<number[]>([])
   const [availableMessages, setAvailableMessages] = useState<SchemaMessage[]>([])
   const [addMessageDialogOpen, setAddMessageDialogOpen] = useState(false)
@@ -270,11 +419,17 @@ export const IRPSenderPage: React.FC = () => {
       console.log('About to call getMessageTemplate')
       const template = await irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageType)
       console.log('getMessageTemplate returned:', template)
+
+      // Transform time+cnt to attack-id for UI
+      const transformedData = transformToAttackId(template.template, template.schema)
+      const transformedSchema = transformSchemaForAttackId(template.schema)
+
       setMessages((prev) => [...prev, {
         messageType,
         messageName,
-        data: template.template,
-        schema: template.schema,
+        data: transformedData,
+        schema: transformedSchema,
+        originalSchema: template.schema, // Store original schema for transformation back
       }])
       setExpandedMessages((prev) => [...prev, messages.length])
       setAddMessageDialogOpen(false)
@@ -350,8 +505,31 @@ export const IRPSenderPage: React.FC = () => {
       const result = await irpSchemaService.loadTemplate(currentCC!, templateId)
       const template = result.template
 
-      // Update page state with loaded template
-      setMessages(template.messages)
+      // Fetch schemas for each message and transform
+      const messagesWithSchemas = await Promise.all(
+        template.messages.map(async (msg: any) => {
+          try {
+            const templateData = await irpSchemaService.getMessageTemplate(currentCC!, schemaId!, msg.messageType)
+            const transformedData = transformToAttackId(msg.data, templateData.schema)
+            const transformedSchema = transformSchemaForAttackId(templateData.schema)
+            return {
+              ...msg,
+              data: transformedData,
+              schema: transformedSchema,
+              originalSchema: templateData.schema
+            }
+          } catch {
+            // If we can't get the schema, keep the message as-is with empty schemas
+            return {
+              ...msg,
+              schema: {},
+              originalSchema: {}
+            }
+          }
+        })
+      )
+
+      setMessages(messagesWithSchemas)
       setLoadDialogOpen(false)
       alert('Template loaded successfully')
     } catch (error) {
@@ -410,11 +588,14 @@ export const IRPSenderPage: React.FC = () => {
     try {
       setIsLoading(true)
 
-      // Format messages for backend (remove schema, keep only data)
-      const formattedMessages = messages.map((msg) => ({
-        message: msg.messageName,
-        ...msg.data,
-      }))
+      // Format messages for backend - transform attack-id back to time+cnt
+      const formattedMessages = messages.map((msg) => {
+        const backendData = transformFromAttackId(msg.data, msg.originalSchema)
+        return {
+          message: msg.messageName,
+          ...backendData,
+        }
+      })
 
       const payload = {
         mongo_id: schemaId!,
@@ -441,10 +622,14 @@ export const IRPSenderPage: React.FC = () => {
     }
 
     try {
-      const formattedMessages = messages.map((msg) => ({
-        message: msg.messageName,
-        ...msg.data,
-      }))
+      // Transform attack-id back to time+cnt before sending
+      const formattedMessages = messages.map((msg) => {
+        const backendData = transformFromAttackId(msg.data, msg.originalSchema)
+        return {
+          message: msg.messageName,
+          ...backendData,
+        }
+      })
 
       const payload = {
         mongo_id: schemaId!,
