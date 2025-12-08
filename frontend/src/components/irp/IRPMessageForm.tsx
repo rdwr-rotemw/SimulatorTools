@@ -432,6 +432,46 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
       )
     }
 
+    // Clone → Render enumeration values as nested objects with collapsible sections
+    // CHECK THIS FIRST because fieldType might be 'object' even for clone fields
+    if (fieldSchema?.type === 'clone' && fieldSchema?.fields && typeof fieldSchema.fields === 'object') {
+      const cloneValue = value ?? {}
+      const cloneOptions = fieldSchema.fields
+
+      return (
+        <Box key={pathString} sx={{ marginY: 2, border: '1px solid #E0E0E0', padding: 2, borderRadius: 1 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 'bold', marginBottom: 1 }}>
+            {key}
+          </Typography>
+          {Object.keys(cloneOptions).map((optionKey) => {
+            const optionSchema = cloneOptions[optionKey]
+            const optionValue = cloneValue[optionKey] ?? {}
+
+            return (
+              <Accordion key={`${pathString}-${optionKey}`} sx={{ marginBottom: 1 }}>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Typography variant="body2">{optionKey}</Typography>
+                </AccordionSummary>
+                <AccordionDetails>
+                  <Box sx={{ paddingLeft: 2 }}>
+                    {optionSchema && typeof optionSchema === 'object' && optionSchema.fields ? (
+                      Object.keys(optionSchema.fields)
+                        .filter((nestedKey) => !metadataKeys.includes(nestedKey))
+                        .map((nestedKey) =>
+                          renderField(nestedKey, optionSchema.fields[nestedKey], optionValue[nestedKey], [...currentPath, optionKey])
+                        )
+                    ) : (
+                      <Typography variant="body2" color="textSecondary">No fields available</Typography>
+                    )}
+                  </Box>
+                </AccordionDetails>
+              </Accordion>
+            )
+          })}
+        </Box>
+      )
+    }
+
     // Object → Render nested fields in Accordion
     if (fieldType === 'object' && fieldSchema?.fields && typeof fieldSchema.fields === 'object') {
       const nestedValue = value ?? {}
@@ -446,6 +486,28 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
                 .filter((nestedKey) => !metadataKeys.includes(nestedKey))
                 .map((nestedKey) =>
                   renderField(nestedKey, fieldSchema.fields[nestedKey], nestedValue[nestedKey], currentPath)
+                )}
+            </Box>
+          </AccordionDetails>
+        </Accordion>
+      )
+    }
+
+    // Fallback: If value is an object and fieldSchema is an object with fields, render as object
+    if (typeof value === 'object' && value !== null && !Array.isArray(value) &&
+        fieldSchema && typeof fieldSchema === 'object' && fieldSchema.fields && fieldSchema.type !== 'clone') {
+      const nestedValue = value
+      return (
+        <Accordion key={pathString} sx={{ marginY: 1 }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>{key}</Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Box sx={{ paddingLeft: 2 }}>
+              {Object.keys(fieldSchema.fields)
+                .filter((nestedKey) => !metadataKeys.includes(nestedKey))
+                .map((nestedKey) =>
+                  renderField(nestedKey, fieldSchema.fields[nestedKey], nestedValue?.[nestedKey], currentPath)
                 )}
             </Box>
           </AccordionDetails>
