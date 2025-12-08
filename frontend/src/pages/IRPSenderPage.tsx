@@ -56,11 +56,10 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       return `pol${policyNumber}`
     }
 
-    // Special case: attack-id field should be cnt-time format
+    // Special case: attack-id field should NOT be randomized by general randomize
+    // Keep current value unchanged
     if (fieldKey === 'attack-id' && fieldType === 'string') {
-      const cnt = Math.floor(Math.random() * 10000) // Random cnt 0-9999
-      const time = Math.floor(Date.now() / 1000) // Current epoch time in seconds
-      return `${cnt}-${time}`
+      return currentValue ?? `0-${Math.floor(Date.now() / 1000)}`
     }
 
     // Primitive types - return early
@@ -311,7 +310,14 @@ function transformSchemaForAttackId(schema: any): any {
 
   // If we found field definitions, return the transformed result
   // Otherwise, return the original schema unchanged
-  return hasFieldDefinitions ? result : schema
+  return result
+}
+
+// Generate random attack-id in cnt-time format
+export function generateAttackId(): string {
+  const cnt = Math.floor(Math.random() * 10000) // Random cnt 0-9999
+  const time = Math.floor(Date.now() / 1000) // Current epoch time in seconds
+  return `${cnt}-${time}`
 }
 
 export const IRPSenderPage: React.FC = () => {

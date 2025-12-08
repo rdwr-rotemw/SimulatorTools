@@ -20,8 +20,12 @@ import {
   List,
   ListItemButton,
   ListItemText,
+  InputAdornment,
+  Tooltip,
 } from '@mui/material'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import CasinoIcon from '@mui/icons-material/Casino'
+import { generateAttackId } from '../../pages/IRPSenderPage'
 
 interface IRPMessageFormProps {
   messageData: Record<string, any>
@@ -516,6 +520,40 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
     }
 
     // String (default) → Text input
+    // Special handling for attack-id field - add randomize button
+    if (key === 'attack-id') {
+      return (
+        <TextField
+          key={pathString}
+          fullWidth
+          label={key}
+          value={value}
+          onChange={(e) => handleFieldChange(currentPath, e.target.value)}
+          margin="normal"
+          size="small"
+          InputProps={{
+            endAdornment: (
+              <InputAdornment position="end">
+                <Tooltip title="Generate random attack-id">
+                  <IconButton
+                    size="small"
+                    onClick={() => {
+                      const newAttackId = generateAttackId()
+                      handleFieldChange(currentPath, newAttackId)
+                    }}
+                    edge="end"
+                  >
+                    <CasinoIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </InputAdornment>
+            ),
+          }}
+        />
+      )
+    }
+
+    // Regular string field
     return (
       <TextField
         key={pathString}
