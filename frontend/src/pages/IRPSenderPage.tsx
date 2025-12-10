@@ -80,7 +80,30 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       // If no min/max provided and schema type suggests uint-64, use large range
       if (fieldSchema?.type && (fieldSchema.type.includes('uint-64') || fieldSchema.type.includes('int-64'))) {
         if (fieldSchema?.min === undefined) min = 0
-        if (fieldSchema?.max === undefined) max = 18446744073709551615
+        if (fieldSchema?.max === undefined) max = 9223372036854775807  // Signed 64-bit max
+      }
+
+      // For very large ranges, use a different approach to avoid precision loss
+      // Generate numbers with varying digit counts instead of always reaching max
+      if (max > 1000000) {
+        // Generate a random exponent (digit count) and then a random mantissa
+        const maxDigits = Math.floor(Math.log10(max)) + 1
+        const minDigits = Math.max(1, Math.floor(Math.log10(min)) + 1)
+
+        // Randomly pick a number of digits between min and max
+        const digits = Math.floor(Math.random() * (maxDigits - minDigits + 1)) + minDigits
+
+        // Generate a random number with that many digits
+        let result
+        if (digits === 1) {
+          result = Math.floor(Math.random() * 10) + min
+        } else {
+          const lowerBound = Math.pow(10, digits - 1)
+          const upperBound = Math.min(Math.pow(10, digits) - 1, max)
+          result = Math.floor(Math.random() * (upperBound - lowerBound + 1)) + lowerBound
+        }
+
+        return Math.min(result, max)
       }
 
       return Math.floor(Math.random() * (max - min + 1)) + min
