@@ -202,13 +202,13 @@ class TemplateGenerator:
             # Extract size for range hints
             if 'uint-8' in type_lower:
                 metadata["min"] = 0
-                metadata["max"] = 255
+                metadata["max"] = 127
             elif 'uint-16' in type_lower:
                 metadata["min"] = 0
-                metadata["max"] = 65535
+                metadata["max"] = 32767
             elif 'uint-32' in type_lower:
                 metadata["min"] = 0
-                metadata["max"] = 4294967295
+                metadata["max"] = 2147483647
 
         elif 'boolean' in type_lower:
             metadata["fieldType"] = "boolean"
