@@ -45,15 +45,24 @@ import IRPMessageForm from '../components/irp/IRPMessageForm'
 // Utility function to generate random data based on schema
 // Schema-driven recursion: Uses schema to understand and randomize all nested types
 function generateRandomData(schema: Record<string, any>, currentData?: Record<string, any>): Record<string, any> {
-  const randomizeValue = (fieldSchema: any, currentValue?: any, fieldKey?: string): any => {
+  const randomizeValue = (fieldSchema: any, currentValue?: any, fieldKey?: string, iterationIndex?: number): any => {
     if (!fieldSchema) return currentValue ?? ''
 
     const fieldType = fieldSchema?.fieldType || fieldSchema?.type || 'string'
 
-    // Special case: policy-name field should be pol1 to pol30
+    // Special case: policy-name field
+    // If in an array iteration (iterationIndex provided), increment: pol1, pol2, pol3...
+    // Otherwise, random: pol1-pol30
     if (fieldKey === 'policy-name' && fieldType === 'string') {
-      const policyNumber = Math.floor(Math.random() * 30) + 1 // 1-30
-      return `pol${policyNumber}`
+      if (typeof iterationIndex === 'number') {
+        // Inside array - use incremental numbering
+        const policyNumber = iterationIndex + 1
+        return `pol${policyNumber}`
+      } else {
+        // Not in array - use random pol1-30
+        const policyNumber = Math.floor(Math.random() * 30) + 1
+        return `pol${policyNumber}`
+      }
     }
 
     // Special case: attack-id field should NOT be randomized by general randomize
@@ -88,38 +97,50 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       const itemSchema = fieldSchema?.itemSchema
       const existingArray = Array.isArray(currentValue) ? currentValue : []
       if (existingArray.length > 0) {
-        return existingArray.map((item: any) => {
+        return existingArray.map((item: any, itemIndex: number) => {
           if (itemSchema?.fieldType === 'switch' && itemSchema?.options && typeof item === 'object' && item !== null) {
             const selectedOption = Object.keys(item)[0]
             if (selectedOption && itemSchema.options[selectedOption]) {
               const optionSchema = itemSchema.options[selectedOption]?.schema || itemSchema.options[selectedOption]
               const currentOptionValue = item[selectedOption]
-              return { [selectedOption]: randomizeValue(optionSchema, currentOptionValue, selectedOption) }
+              return { [selectedOption]: randomizeValue(optionSchema, currentOptionValue, selectedOption, itemIndex) }
             }
             return item
           }
           if (itemSchema?.fieldType && itemSchema.fieldType !== 'object' && itemSchema.fieldType !== 'clone' && itemSchema.fieldType !== 'switch') {
-            return randomizeValue(itemSchema, item, fieldKey)
+            return randomizeValue(itemSchema, item, fieldKey, itemIndex)
           }
           const result: Record<string, any> = {}
           Object.keys(itemSchema || {}).forEach((key) => {
             if (['type', 'fieldType', 'default', 'required'].includes(key)) return
             const fieldDef = itemSchema[key]
             const currentFieldValue = (typeof item === 'object' && item !== null) ? item[key] : undefined
-            result[key] = randomizeValue(fieldDef, currentFieldValue, key)
+            // For existing items, preserve port field or regenerate sequentially
+            if (key === 'port' && typeof currentFieldValue === 'number') {
+              result[key] = currentFieldValue
+            } else if (key === 'port' && itemSchema[key]?.fieldType === 'integer') {
+              result[key] = randomizeValue(fieldDef, currentFieldValue, key, itemIndex)
+            } else {
+              result[key] = randomizeValue(fieldDef, currentFieldValue, key, itemIndex)
+            }
           })
           return result
         })
       }
       const arraySize = Math.floor(Math.random() * 2) + 1
-      return Array.from({ length: arraySize }, () => {
+      return Array.from({ length: arraySize }, (_, index) => {
         if (itemSchema?.fieldType && itemSchema.fieldType !== 'object' && itemSchema.fieldType !== 'clone' && itemSchema.fieldType !== 'switch') {
-          return randomizeValue(itemSchema, undefined, fieldKey)
+          return randomizeValue(itemSchema, undefined, fieldKey, index)
         }
         const result: Record<string, any> = {}
         Object.keys(itemSchema || {}).forEach((key) => {
           if (['type', 'fieldType', 'default', 'required'].includes(key)) return
-          result[key] = randomizeValue(itemSchema[key], undefined, key)
+          // Auto-increment port field in array iterations
+          if (key === 'port' && itemSchema[key]?.fieldType === 'integer') {
+            result[key] = index + 1
+          } else {
+            result[key] = randomizeValue(itemSchema[key], undefined, key, index)
+          }
         })
         return result
       })

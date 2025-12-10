@@ -242,6 +242,35 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
               newItem[k] = itemSchema[k]?.default ?? ''
             })
           }
+
+          // Auto-increment port field if it exists in the item schema
+          if (itemSchema && typeof itemSchema === 'object' && 'port' in itemSchema) {
+            // Find the highest port number in existing items
+            let maxPort = 0
+            arrayValue.forEach((item: any) => {
+              if (item && typeof item === 'object' && typeof item.port === 'number') {
+                maxPort = Math.max(maxPort, item.port)
+              }
+            })
+            newItem.port = maxPort + 1
+          }
+
+          // Auto-increment policy-name field if it exists in the item schema
+          if (itemSchema && typeof itemSchema === 'object' && 'policy-name' in itemSchema) {
+            // Find the highest policy number in existing items
+            let maxPolicyNum = 0
+            arrayValue.forEach((item: any) => {
+              if (item && typeof item === 'object' && typeof item['policy-name'] === 'string') {
+                const match = item['policy-name'].match(/pol(\d+)/)
+                if (match) {
+                  const policyNum = parseInt(match[1], 10)
+                  maxPolicyNum = Math.max(maxPolicyNum, policyNum)
+                }
+              }
+            })
+            newItem['policy-name'] = `pol${maxPolicyNum + 1}`
+          }
+
           handleFieldChange(currentPath, [...arrayValue, newItem])
         }
       }
