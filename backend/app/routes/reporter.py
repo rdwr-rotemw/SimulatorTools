@@ -275,6 +275,49 @@ async def create_irp_template_endpoint(
                             detail=f"Template generation failed: {exc!s}")
 
 
+# Utility function to sanitize data for MongoDB storage
+def sanitize_for_mongo(data: Any) -> Any:
+    """
+    Recursively sanitize data for MongoDB storage.
+    Converts very large integers (> 2^53) to strings to preserve precision.
+    MongoDB has limits on integer representation.
+    """
+    if isinstance(data, dict):
+        return {k: sanitize_for_mongo(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_for_mongo(item) for item in data]
+    elif isinstance(data, int):
+        # MongoDB safely stores integers up to 2^53 (9007199254740992)
+        # For larger integers, convert to string to preserve precision
+        if data > 9007199254740992 or data < -9007199254740992:
+            return str(data)
+        return data
+    else:
+        return data
+
+
+def deserialize_from_mongo(data: Any) -> Any:
+    """
+    Recursively deserialize data from MongoDB storage.
+    Converts numeric strings back to integers where appropriate.
+    """
+    if isinstance(data, dict):
+        return {k: deserialize_from_mongo(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [deserialize_from_mongo(item) for item in data]
+    elif isinstance(data, str):
+        # Try to convert string back to integer if it looks like a number
+        try:
+            # Check if string is purely numeric (including negative)
+            if data.lstrip('-').isdigit():
+                return int(data)
+        except (ValueError, AttributeError):
+            pass
+        return data
+    else:
+        return data
+
+
 # IRP Template Management
 @router.post("/cc/{cc_ip}/irp/templates")
 async def save_irp_template(
@@ -286,13 +329,16 @@ async def save_irp_template(
     try:
         db = get_mongo_db()
 
+        # Sanitize data to handle large integers
+        sanitized_messages = sanitize_for_mongo(template_data.get("messages", {}))
+
         template_doc = {
             "user_id": current_user.get("sub") or current_user.get("id"),
             "cc_ip": cc_ip,
             "name": template_data["name"],
             "schema_id": template_data["schema_id"],
             "schema_name": template_data["schema_name"],
-            "messages": template_data.get("messages", {}),
+            "messages": sanitized_messages,
             "created_at": datetime.now(timezone.utc)
         }
 
@@ -351,6 +397,10 @@ async def load_irp_template(
             raise HTTPException(status_code=404, detail="Template not found")
 
         template["id"] = str(template.pop("_id"))
+
+        # Deserialize numeric strings back to integers
+        if "messages" in template:
+            template["messages"] = deserialize_from_mongo(template["messages"])
 
         return {"success": True, "template": template}
     except HTTPException:
