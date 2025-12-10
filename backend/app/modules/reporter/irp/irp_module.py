@@ -1,3 +1,4 @@
+from time import sleep
 from typing import Dict, Any, Optional, Union
 from typing import Tuple
 
@@ -604,6 +605,7 @@ def send_irp_messages(schema_obj, message_data, from_ip: str, to_ip: str) -> Uni
             del message['message']
             ok, msg = send_irp_message(schema_obj, name, message, from_ip, to_ip)
             results[name] = ok, msg
+            sleep(0.5)
         return results
     except Exception as exc:
         return False, f"send_irp_message error: {exc!s}"
