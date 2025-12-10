@@ -385,7 +385,9 @@ class TemplateGenerator:
                 }
 
             elif element_type == 'FixedArray':
-                # Fixed-size arrays
+                # Fixed-size arrays - don't pre-generate all items
+                # UI will decide how many items to include (up to max size)
+                # Backend will pad with defaults
                 array_size = getattr(element, 'size', 3)
                 try:
                     array_size = int(array_size)
@@ -395,13 +397,21 @@ class TemplateGenerator:
                 array_type = getattr(element, 'array_type', None) or getattr(element, 'type', 'uint-32')
                 default_value = self._get_default_value_for_type(array_type)
 
-                template_dict[element.name] = [default_value] * array_size
+                # Start with empty array - UI controls count up to max size
+                template_dict[element.name] = []
+
+                # Create itemSchema so UI can render editable items
+                item_schema = self._get_field_metadata(element.name, array_type)
+
                 schema_dict[element.name] = {
                     "type": "fixed-array",
                     "fieldType": "fixed-array",
                     "itemType": array_type,
+                    "itemSchema": item_schema,
                     "size": array_size,
-                    "default": [default_value] * array_size
+                    "maxItems": array_size,
+                    "editable": True,
+                    "default": []
                 }
 
             elif element_type == 'VarArray':
@@ -959,17 +969,17 @@ class TemplateGenerator:
                     template_dict[element.name].append(example_iteration)
 
             elif element_type == 'FixedArray':
-                # Fixed arrays with predetermined size
+                # Fixed arrays - don't pre-generate all items
+                # Start with empty array, UI decides count up to max size
                 array_size = getattr(element, 'size', 3)
                 try:
                     array_size = int(array_size)
                 except:
                     array_size = 3
 
-                # Create array with default values based on the array type
+                # Create empty array - backend will pad with defaults
                 array_type = getattr(element, 'array_type', None) or getattr(element, 'type', 'uint-32')
-                default_value = self._get_default_value_for_type(array_type)
-                template_dict[element.name] = [default_value] * array_size
+                template_dict[element.name] = []
 
             elif element_type == 'VarArray':
                 # Variable arrays need size specification

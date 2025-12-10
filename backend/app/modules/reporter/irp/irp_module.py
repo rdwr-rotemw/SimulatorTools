@@ -314,9 +314,8 @@ def _reconstruct_templates_object(templates_dict):
             else:
                 converted_fields = fields
             s = Struct(struct_name, converted_fields)
-            # Provide both 'data' and 'fields' attributes for compatibility
-            setattr(s, 'data', converted_fields)
-            setattr(s, 'fields', converted_fields)
+            # Only set the attribute that was originally in the struct
+            # Don't artificially provide both for compatibility
             structs_out[struct_name] = s
 
     templates.set_structs(structs_out)
@@ -348,13 +347,14 @@ def _reconstruct_templates_object(templates_dict):
                     else:
                         converted_data = raw_data
 
-                    # Prefer converted_data for the Struct.body if present, otherwise use converted_fields
-                    struct_body = converted_data if isinstance(converted_data, list) else converted_fields
+                    # Use whichever one is actually present - data takes precedence since it's for complex elements
+                    if converted_data is not None:
+                        s = Struct(sname, converted_data)
+                    elif converted_fields is not None:
+                        s = Struct(sname, converted_fields)
+                    else:
+                        s = Struct(sname, [])
 
-                    s = Struct(sname, struct_body)
-                    # Ensure both attributes are available for TemplateGenerator compatibility
-                    setattr(s, 'data', converted_data if converted_data is not None else converted_fields)
-                    setattr(s, 'fields', converted_fields if converted_fields is not None else converted_data)
                     ns_structs_out[sname] = s
             namespaces_out[ns_name] = Namespace(ns_name, ns_structs_out)
 

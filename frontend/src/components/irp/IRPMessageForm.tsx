@@ -220,6 +220,11 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
       const isSwitchArray = itemSchema?.fieldType === 'switch'
 
       const handleAddIteration = () => {
+        // Check if fixed array has reached max size
+        if (fieldType === 'fixed-array' && fieldSchema?.maxItems && arrayValue.length >= fieldSchema.maxItems) {
+          return
+        }
+
         if (isSwitchArray) {
           // compute available options from schema and existing items
           const switchOptions = itemSchema?.options || {}
@@ -301,6 +306,7 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
               size="small"
               variant="outlined"
               onClick={handleAddIteration}
+              disabled={fieldType === 'fixed-array' && fieldSchema?.maxItems && arrayValue.length >= fieldSchema.maxItems}
               startIcon={<span>+</span>}
             >
               {isSwitchArray ? 'Add Footprint' : 'Add Iteration'}
