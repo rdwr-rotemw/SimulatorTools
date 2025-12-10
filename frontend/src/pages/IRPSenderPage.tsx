@@ -73,8 +73,16 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
 
     // Primitive types - return early
     if (fieldType === 'integer') {
-      const min = fieldSchema?.min ?? 0
-      const max = fieldSchema?.max ?? 1000
+      let min = fieldSchema?.min ?? 0
+      let max = fieldSchema?.max ?? 1000
+
+      // For large numbers (uint-64 range), use larger default
+      // If no min/max provided and schema type suggests uint-64, use large range
+      if (fieldSchema?.type && (fieldSchema.type.includes('uint-64') || fieldSchema.type.includes('int-64'))) {
+        if (fieldSchema?.min === undefined) min = 0
+        if (fieldSchema?.max === undefined) max = 18446744073709551615
+      }
+
       return Math.floor(Math.random() * (max - min + 1)) + min
     }
     if (fieldType === 'float') return Math.random() * 1000

@@ -209,6 +209,9 @@ class TemplateGenerator:
             elif 'uint-32' in type_lower:
                 metadata["min"] = 0
                 metadata["max"] = 2147483647
+            elif 'uint-64' in type_lower:
+                metadata["min"] = 0
+                metadata["max"] = 9223372036854775807
 
         elif 'boolean' in type_lower:
             metadata["fieldType"] = "boolean"

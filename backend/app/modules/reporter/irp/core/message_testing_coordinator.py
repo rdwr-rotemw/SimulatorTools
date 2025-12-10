@@ -80,7 +80,7 @@ class MessageTestingCoordinator:
             message_id: Message ID to test
             from_ip: Source IP for IRP message
             to_ip: Destination IP for listening
-            irp_tool_path: Path to irp.py
+            irp_tool_path: Path to irp_bckp.py
             timeout: Timeout for listening
 
         Returns:
@@ -224,7 +224,7 @@ class MessageTestingCoordinator:
                 print(f"[SEND] ERROR Process timeout after 10 seconds")
                 sender_output["stderr"] = "Process timeout"
             except FileNotFoundError:
-                print(f"[SEND] ERROR irp.py not found at: {irp_tool_path}")
+                print(f"[SEND] ERROR irp_bckp.py not found at: {irp_tool_path}")
                 sender_output["stderr"] = f"irp_module.py not found at {irp_tool_path}"
             except Exception as e:
                 print(f"[SEND] ERROR Exception: {e}")
