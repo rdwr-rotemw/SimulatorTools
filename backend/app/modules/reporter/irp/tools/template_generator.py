@@ -399,15 +399,10 @@ class TemplateGenerator:
 
                 # Start with empty array - UI controls count up to max size
                 template_dict[element.name] = []
-
-                # Create itemSchema so UI can render editable items
-                item_schema = self._get_field_metadata(element.name, array_type)
-
                 schema_dict[element.name] = {
                     "type": "fixed-array",
                     "fieldType": "fixed-array",
                     "itemType": array_type,
-                    "itemSchema": item_schema,
                     "size": array_size,
                     "maxItems": array_size,
                     "editable": True,
@@ -673,14 +668,14 @@ class TemplateGenerator:
                     is_named_switch = hasattr(element, 'name') and element.name
 
                     if is_named_switch:
-                        # Nested switch - process cases directly
+                        # Nested switch - process all cases directly
                         if hasattr(element, 'cases') and element.cases:
                             for case_element in element.cases:
                                 case_type = type(case_element).__name__
                                 if case_type not in ['Nil', 'Error']:
                                     self._process_elements_with_metadata([case_element], template_dict, schema_dict,
                                                                          array_info, interactive)
-                                    break
+                                    # NOTE: Don't break - process all children for named switches
                     else:
                         # Top-level switch
                         template_dict[enum_name] = {}
@@ -689,21 +684,55 @@ class TemplateGenerator:
 
                         enum_values = self._get_enum(element.selector) if self._has_enum(element.selector) else None
                         if enum_values and hasattr(element, 'cases') and element.cases:
-                            selected_key = next(iter(enum_values.values.keys()))
+                            # Handle both dict and object enum formats
+                            if isinstance(enum_values, dict):
+                                enum_dict = enum_values.get('values', {})
+                                enum_keys = enum_dict.keys() if isinstance(enum_dict, dict) else []
+                            else:
+                                enum_keys = enum_values.values.keys() if hasattr(enum_values, 'values') and enum_values.values else []
+
+                            # Find first non-Nil/Error case to use as default
+                            selected_key = None
                             for case_element in element.cases:
                                 case_name = getattr(case_element, 'name', None)
                                 case_type = type(case_element).__name__
-                                if case_name == selected_key and case_type not in ['Nil', 'Error']:
-                                    template_dict[enum_name][selected_key] = {}
-                                    schema_dict[enum_name]["fields"][selected_key] = {"type": "object", "fields": {}}
-                                    self._process_elements_with_metadata(
-                                        [case_element],
-                                        template_dict[enum_name][selected_key],
-                                        schema_dict[enum_name]["fields"][selected_key]["fields"],
-                                        array_info,
-                                        interactive
-                                    )
+                                if case_name and case_type not in ['Nil', 'Error']:
+                                    selected_key = case_name
                                     break
+
+                            # If no non-Nil/Error case, use first enum key as fallback
+                            if not selected_key:
+                                selected_key = next(iter(enum_keys)) if enum_keys else None
+
+                            # Build template and schema for cases
+                            for case_element in element.cases:
+                                case_name = getattr(case_element, 'name', None)
+                                case_type = type(case_element).__name__
+
+                                if case_name:
+                                    # Populate template for the selected case
+                                    if case_name == selected_key:
+                                        template_dict[enum_name][case_name] = {}
+                                        # Only build schema/process content if not Nil/Error
+                                        if case_type not in ['Nil', 'Error']:
+                                            schema_dict[enum_name]["fields"][case_name] = {"type": "object", "fields": {}}
+                                            self._process_elements_with_metadata(
+                                                [case_element],
+                                                template_dict[enum_name][case_name],
+                                                schema_dict[enum_name]["fields"][case_name]["fields"],
+                                                array_info,
+                                                interactive
+                                            )
+                                    elif case_type not in ['Nil', 'Error']:
+                                        # Build schema and template for non-selected cases so UI can switch to them
+                                        schema_dict[enum_name]["fields"][case_name] = {"type": "object", "fields": {}}
+                                        self._process_elements_with_metadata(
+                                            [case_element],
+                                            {},  # Don't populate template
+                                            schema_dict[enum_name]["fields"][case_name]["fields"],
+                                            array_info,
+                                            interactive
+                                        )
 
             elif element_type == 'Overlap':
                 # Overlap structures
@@ -1075,12 +1104,12 @@ class TemplateGenerator:
                                 if case_type in ['Nil', 'Error']:
                                     continue
 
-                                # Process this case as a field with its name
+                                # Process all non-Nil/Error elements
                                 if case_name:
                                     # Process the case element's fields directly into template_dict
                                     # Don't nest the case element itself
                                     self._process_elements([case_element], template_dict, array_info, interactive)
-                                    break  # Only process first non-empty case as example
+                                    # NOTE: Don't break - process all children for named switches
                     else:
                         # Top-level switch - use FIRST enum value as default
                         template_dict[enum_name] = {}
@@ -1088,23 +1117,31 @@ class TemplateGenerator:
 
                         enum_values = self._get_enum(element.selector) if self._has_enum(element.selector) else None
                         if enum_values and hasattr(element, 'cases') and element.cases:
-                            # Use FIRST enum value (default, usually "none")
-                            selected_key = next(iter(enum_values.values.keys()))
-                            selected_case = None
-                            selected_case_type = None
+                            # Handle both dict and object enum formats
+                            if isinstance(enum_values, dict):
+                                enum_dict = enum_values.get('values', {})
+                                enum_keys = enum_dict.keys() if isinstance(enum_dict, dict) else []
+                            else:
+                                enum_keys = enum_values.values.keys() if hasattr(enum_values, 'values') and enum_values.values else []
 
-                            # Find matching case element
-                            for case_element in element.cases:
-                                case_name = getattr(case_element, 'name', None)
-                                if case_name == selected_key:
-                                    selected_case = case_element
-                                    selected_case_type = type(case_element).__name__
-                                    break
+                            selected_key = next(iter(enum_keys)) if enum_keys else None
 
-                            # Only add content if case is NOT Nil or Error
-                            if selected_case and selected_case_type not in ['Nil', 'Error']:
-                                switch_dict[selected_key] = {}
-                                self._process_elements([selected_case], switch_dict[selected_key], array_info,
+                            if selected_key:
+                                selected_case = None
+                                selected_case_type = None
+
+                                # Find matching case element
+                                for case_element in element.cases:
+                                    case_name = getattr(case_element, 'name', None)
+                                    if case_name == selected_key:
+                                        selected_case = case_element
+                                        selected_case_type = type(case_element).__name__
+                                        break
+
+                                # Only add content if case is NOT Nil or Error
+                                if selected_case and selected_case_type not in ['Nil', 'Error']:
+                                    switch_dict[selected_key] = {}
+                                    self._process_elements([selected_case], switch_dict[selected_key], array_info,
                                                        interactive)
 
             elif element_type == 'Overlap':

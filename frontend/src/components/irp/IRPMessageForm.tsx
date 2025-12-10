@@ -522,10 +522,101 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
           <AccordionDetails>
             <Box sx={{ paddingLeft: 2 }}>
               {Object.keys(fieldSchema.fields)
-                .filter((nestedKey) => !metadataKeys.includes(nestedKey))
+                .filter((nestedKey) => {
+                  if (metadataKeys.includes(nestedKey)) return false
+
+                  // Check if this is a switch field with a selector
+                  const fieldDef = fieldSchema.fields[nestedKey]
+                  if (fieldDef?.type === 'switch' && fieldDef?.selector) {
+                    // Extract enum name from selector (e.g., "httpflood.rules-status" -> "rules-status")
+                    const selectorEnumName = fieldDef.selector.split('.').pop()
+
+                    // Find corresponding enum field in schema
+                    const enumField = Object.keys(fieldSchema.fields).find(k => {
+                      const f = fieldSchema.fields[k]
+                      return f?.fieldType === 'enum' && f?.type?.endsWith(selectorEnumName)
+                    })
+
+                    // Only show switch if the enum value is "changed"
+                    if (enumField) {
+                      const enumValue = nestedValue[enumField]
+                      return enumValue === 'changed'
+                    }
+                  }
+
+                  return true
+                })
                 .map((nestedKey) =>
                   renderField(nestedKey, fieldSchema.fields[nestedKey], nestedValue[nestedKey], currentPath)
                 )}
+            </Box>
+          </AccordionDetails>
+        </Accordion>
+      )
+    }
+
+    // Switch → Render with selector and case fields
+    if (fieldType === 'switch' && fieldSchema?.fields && typeof fieldSchema.fields === 'object') {
+      const nestedValue = value ?? {}
+      const selectorEnum = fieldSchema?.selector
+
+      // Get the selector field from parent if needed, or use the current value's key as selector
+      const selectedCase = Object.keys(nestedValue).length > 0 ? Object.keys(nestedValue)[0] : Object.keys(fieldSchema.fields)[0]
+      const selectedCaseData = nestedValue[selectedCase] ?? {}
+
+      return (
+        <Accordion key={pathString} sx={{ marginY: 1 }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 'bold' }}>{key}</Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Box sx={{ paddingLeft: 2 }}>
+              {/* Selector dropdown to choose case */}
+              <FormControl fullWidth margin="normal" size="small">
+                <InputLabel>Case</InputLabel>
+                <Select
+                  value={selectedCase || ''}
+                  onChange={(e) => {
+                    const newCase = e.target.value
+                    // Initialize with proper structure based on schema
+                    const caseSchema = fieldSchema.fields[newCase]
+                    const newCaseData: any = {}
+
+                    if (caseSchema?.fields) {
+                      // Initialize nested fields with defaults
+                      Object.keys(caseSchema.fields).forEach((fieldKey) => {
+                        const fieldDef = caseSchema.fields[fieldKey]
+                        if (fieldDef?.default !== undefined) {
+                          newCaseData[fieldKey] = fieldDef.default
+                        }
+                      })
+                    }
+
+                    handleFieldChange(currentPath, { [newCase]: newCaseData })
+                  }}
+                  label="Case"
+                >
+                  {Object.keys(fieldSchema.fields).map((caseKey) => (
+                    <MenuItem key={caseKey} value={caseKey}>{caseKey}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              {/* Render fields for selected case */}
+              {selectedCase && fieldSchema.fields[selectedCase]?.fields && (
+                <Box sx={{ marginTop: 2, paddingLeft: 2 }}>
+                  {Object.keys(fieldSchema.fields[selectedCase].fields)
+                    .filter((nestedKey) => !metadataKeys.includes(nestedKey))
+                    .map((nestedKey) =>
+                      renderField(
+                        nestedKey,
+                        fieldSchema.fields[selectedCase].fields[nestedKey],
+                        selectedCaseData[nestedKey],
+                        [...currentPath, selectedCase]
+                      )
+                    )}
+                </Box>
+              )}
             </Box>
           </AccordionDetails>
         </Accordion>
