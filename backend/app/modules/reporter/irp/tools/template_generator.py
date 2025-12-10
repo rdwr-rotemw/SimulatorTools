@@ -567,8 +567,66 @@ class TemplateGenerator:
                 if template_ref:
                     # Special handling for footprint-values templates at root level
                     if template_ref == 'vsecure.footprint-values' or template_ref.endswith('.footprint-values'):
-                        # Create empty array structure for footprint-values in the simple template
-                        template_dict[element.name] = []
+                        # Generate footprint-values template with actual data
+                        footprint_template = self.footprint_generator.generate_footprint_template(relation=0)
+                        # Extract the footprint-values array from the generated template
+                        if 'or' in footprint_template and 'footprint-values' in footprint_template['or']:
+                            template_dict[element.name] = footprint_template['or']['footprint-values']
+                        else:
+                            template_dict[element.name] = []
+
+                        # Build schema for footprint-values array with switch items
+                        options = {}
+                        fp_types = getattr(self.footprint_generator, 'FOOTPRINT_TYPES', {})
+                        fp_examples = getattr(self.footprint_generator, 'FOOTPRINT_VALUE_EXAMPLES', {})
+
+                        for code, name in fp_types.items():
+                            # Determine item type based on example value
+                            example_val = fp_examples.get(name, None)
+                            if isinstance(example_val, int):
+                                item_type = 'uint-32'
+                                item_schema = {
+                                    "type": item_type,
+                                    "fieldType": "integer",
+                                    "default": 0,
+                                    "min": 0,
+                                    "max": 4294967295,
+                                    "required": True
+                                }
+                            else:
+                                item_type = 'string'
+                                item_schema = {
+                                    "type": item_type,
+                                    "fieldType": "string",
+                                    "default": ""
+                                }
+
+                            case_schema = {
+                                "type": "var-array",
+                                "fieldType": "array",
+                                "itemType": item_type,
+                                "default": []
+                            }
+                            if item_type == 'uint-32':
+                                case_schema["itemSchema"] = item_schema
+
+                            options[name] = {
+                                "label": name.replace('-', ' ').title(),
+                                "schema": case_schema
+                            }
+
+                        footprint_item_schema = {
+                            "fieldType": "switch",
+                            "discriminator": "vsecure.footprint-types",
+                            "options": options
+                        }
+
+                        schema_dict[element.name] = {
+                            "type": "array",
+                            "fieldType": "array",
+                            "itemSchema": footprint_item_schema,
+                            "default": []
+                        }
                     else:
                         # Resolve template into the simple template dict (no schema available)
                         self._resolve_template_with_metadata(template_ref, template_dict, schema_dict)
@@ -965,8 +1023,13 @@ class TemplateGenerator:
                 if template_ref:
                     # Special handling for footprint-values templates at root level
                     if template_ref == 'vsecure.footprint-values' or template_ref.endswith('.footprint-values'):
-                        # Create empty array structure for footprint-values in the simple template
-                        template_dict[element.name] = []
+                        # Generate footprint-values template with actual data
+                        footprint_template = self.footprint_generator.generate_footprint_template(relation=0)
+                        # Extract the footprint-values array from the generated template
+                        if 'or' in footprint_template and 'footprint-values' in footprint_template['or']:
+                            template_dict[element.name] = footprint_template['or']['footprint-values']
+                        else:
+                            template_dict[element.name] = []
                     else:
                         # Resolve template into the simple template dict (no schema available)
                         self._resolve_template_reference(template_ref, template_dict)
