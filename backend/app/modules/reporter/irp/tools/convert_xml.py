@@ -296,6 +296,12 @@ class ConvertXml:
                 switch_children = [process_element(child_info) for child_info in children]
                 return self.Switch(attributes.get('selector'), switch_children, name=name)
 
+            elif tag == 'nil':
+                return self.Nil(name)
+
+            elif tag == 'error':
+                return self.Error(name)
+
             elif tag == 'var-array':
                 return self.VarArray(name, attributes.get('type'), attributes.get('size'))
 

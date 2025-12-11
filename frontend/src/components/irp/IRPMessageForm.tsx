@@ -123,6 +123,49 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
       )
     }
 
+    // Bitmap → Multi-select checkboxes (tcp-flags, etc.)
+    if (fieldType === 'bitmap' && Array.isArray(fieldSchema?.options)) {
+      const selectedFlags = Array.isArray(value) ? value : []
+      const numericValue = typeof value === 'number' ? value : 0
+
+      return (
+        <Box key={pathString} sx={{ marginY: 2, border: '1px solid #E0E0E0', padding: 2, borderRadius: 1 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 'bold', marginBottom: 1 }}>
+            {key} (bitmap)
+          </Typography>
+          {fieldSchema.options.map((option: string, idx: number) => {
+            // Calculate if this bit is set (assuming bit positions from 0-7 for size 1 bitmap)
+            const bitPosition = idx
+            const isChecked = (numericValue & (1 << bitPosition)) !== 0
+
+            return (
+              <FormControlLabel
+                key={`${pathString}-${option}`}
+                control={
+                  <Switch
+                    checked={isChecked}
+                    onChange={(e) => {
+                      let newValue = numericValue
+                      if (e.target.checked) {
+                        // Set bit
+                        newValue |= (1 << bitPosition)
+                      } else {
+                        // Clear bit
+                        newValue &= ~(1 << bitPosition)
+                      }
+                      handleFieldChange(currentPath, newValue)
+                    }}
+                  />
+                }
+                label={option}
+                sx={{ display: 'block', marginY: 0.5 }}
+              />
+            )
+          })}
+        </Box>
+      )
+    }
+
     // Integer → Number input with validation
     if (fieldType === 'integer') {
       const min = fieldSchema?.min
@@ -514,6 +557,10 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
     // Object → Render nested fields in Accordion
     if (fieldType === 'object' && fieldSchema?.fields && typeof fieldSchema.fields === 'object') {
       const nestedValue = value ?? {}
+
+      // Special handling for overlap structures
+      const isOverlap = fieldSchema.type === 'overlap'
+
       return (
         <Accordion key={pathString} sx={{ marginY: 1 }}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
@@ -528,6 +575,16 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
                   // Check if this is a switch field with a selector
                   const fieldDef = fieldSchema.fields[nestedKey]
                   if (fieldDef?.type === 'switch' && fieldDef?.selector) {
+                    // For overlap structures, check if selectorField is specified
+                    if (isOverlap && fieldDef?.selectorField) {
+                      // Find the selector field value in the current overlap value
+                      const selectorValue = nestedValue[fieldDef.selectorField]
+
+                      // Only show the switch fields, not the switch wrapper itself
+                      // The switch will be handled by renderSwitchBasedOnSelector below
+                      return false
+                    }
+
                     // Extract enum name from selector (e.g., "httpflood.rules-status" -> "rules-status")
                     const selectorEnumName = fieldDef.selector.split('.').pop()
 
@@ -549,6 +606,107 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
                 .map((nestedKey) =>
                   renderField(nestedKey, fieldSchema.fields[nestedKey], nestedValue[nestedKey], currentPath)
                 )}
+
+              {/* Special rendering for overlap switches based on selector */}
+              {isOverlap && Object.keys(fieldSchema.fields).map((nestedKey) => {
+                const fieldDef = fieldSchema.fields[nestedKey]
+                if (fieldDef?.type === 'switch' && fieldDef?.selectorField && fieldDef?.selector) {
+                  const switchValue = nestedValue[nestedKey] ?? {}
+                  const availableCases = Object.keys(fieldDef.fields || {})
+
+                  // When selectorField matches the switch field name, the selected case is determined by which key exists in switchValue
+                  let selectorValue: string | undefined
+                  if (fieldDef.selectorField === nestedKey) {
+                    // Merged selector/switch pattern - find which case is currently selected
+                    selectorValue = availableCases.find(caseName => caseName in switchValue)
+
+                    // Render a selector dropdown for choosing the case
+                    if (!selectorValue && availableCases.length > 0) {
+                      selectorValue = availableCases[0]
+                    }
+                  } else {
+                    // Separate selector field
+                    selectorValue = nestedValue[fieldDef.selectorField]
+                  }
+
+                  // Render the selected case's fields directly (not wrapped in switch accordion)
+                  if (!selectorValue || !fieldDef.fields || !fieldDef.fields[selectorValue]) {
+                    return null
+                  }
+
+                  // TypeScript type narrowing - store in const with explicit type
+                  const selectedCase: string = selectorValue
+                  const caseSchema = fieldDef.fields[selectedCase]
+                  const caseValue = switchValue[selectedCase] ?? {}
+
+                  // For merged pattern, render selector dropdown
+                  const isMergedPattern = fieldDef.selectorField === nestedKey
+                  const hasFields = caseSchema?.fields && Object.keys(caseSchema.fields).length > 0
+
+                  // For merged pattern, always render (to show dropdown), but only show fields if they exist
+                  if (isMergedPattern || hasFields) {
+                      return (
+                        <Box key={`${pathString}-${nestedKey}-case`} sx={{ marginTop: 2 }}>
+                          {/* For merged pattern, show dropdown to select case */}
+                          {isMergedPattern && availableCases.length > 1 && (
+                            <FormControl fullWidth sx={{ marginBottom: 2 }}>
+                              <InputLabel>{nestedKey}</InputLabel>
+                              <Select
+                                value={selectedCase}
+                                label={nestedKey}
+                                onChange={(e) => {
+                                  const newCase = e.target.value
+                                  // Switch to the new case
+                                  const oldCase = selectedCase
+                                  const newValue = { ...nestedValue }
+
+                                  // Remove old case data
+                                  if (oldCase && newValue[nestedKey]) {
+                                    delete newValue[nestedKey][oldCase]
+                                  }
+
+                                  // Initialize new case with empty object
+                                  if (!newValue[nestedKey]) {
+                                    newValue[nestedKey] = {}
+                                  }
+                                  newValue[nestedKey][newCase] = {}
+
+                                  handleFieldChange(currentPath, newValue)
+                                }}
+                              >
+                                {availableCases.map((caseName) => (
+                                  <MenuItem key={caseName} value={caseName}>
+                                    {caseName}
+                                  </MenuItem>
+                                ))}
+                              </Select>
+                            </FormControl>
+                          )}
+
+                          {/* Only show fields section if case has fields */}
+                          {hasFields && (
+                            <>
+                              <Typography variant="caption" color="textSecondary" sx={{ display: 'block', marginBottom: 1 }}>
+                                {selectedCase} fields:
+                              </Typography>
+                              {Object.keys(caseSchema.fields)
+                                .filter((caseFieldKey) => !metadataKeys.includes(caseFieldKey))
+                                .map((caseFieldKey) =>
+                                  renderField(
+                                    caseFieldKey,
+                                    caseSchema.fields[caseFieldKey],
+                                    caseValue[caseFieldKey],
+                                    [...currentPath, nestedKey, selectedCase]
+                                  )
+                                )}
+                            </>
+                          )}
+                        </Box>
+                      )
+                  }
+                }
+                return null
+              })}
             </Box>
           </AccordionDetails>
         </Accordion>

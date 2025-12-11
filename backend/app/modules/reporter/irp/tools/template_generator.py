@@ -175,6 +175,24 @@ class TemplateGenerator:
             "required": True
         }
 
+        # Check if it's a bitmap (treat as enum with multiple selection support)
+        if self._is_bitmap(type_name):
+            bitmap_obj = self._get_enum(type_name)  # Bitmaps stored as enums
+            options = []
+            if bitmap_obj:
+                if isinstance(bitmap_obj, dict):
+                    values_dict = bitmap_obj.get('values', {})
+                    if values_dict:
+                        options = list(values_dict.keys())
+                elif hasattr(bitmap_obj, 'values') and bitmap_obj.values:
+                    options = list(bitmap_obj.values.keys())
+
+            # Always set bitmap metadata when detected as bitmap
+            metadata["fieldType"] = "bitmap"
+            metadata["options"] = options if options else []
+            metadata["default"] = 0  # 0 represents no flags set
+            return metadata
+
         # Check if it's an enum
         if self._has_enum(type_name):
             enum_obj = self._get_enum(type_name)
@@ -267,14 +285,15 @@ class TemplateGenerator:
         for element in elements:
             element_type = type(element).__name__
 
-            if element_type == 'DataField':
+            if element_type == 'DataField' or element_type == 'Data':
                 # Simple data field
-                field_name = element.name
-                field_type = element.type
-                default_value = self._get_default_value_for_field(field_name, field_type)
+                field_name = element.name if hasattr(element, 'name') else None
+                field_type = element.type if hasattr(element, 'type') else None
 
-                template_dict[field_name] = default_value
-                schema_dict[field_name] = self._get_field_metadata(field_name, field_type)
+                if field_name and field_type:
+                    default_value = self._get_default_value_for_field(field_name, field_type)
+                    template_dict[field_name] = default_value
+                    schema_dict[field_name] = self._get_field_metadata(field_name, field_type)
 
             elif element_type == 'IfCondition':
                 # Boolean condition field
@@ -735,18 +754,147 @@ class TemplateGenerator:
                                         )
 
             elif element_type == 'Overlap':
-                # Overlap structures
+                # Overlap structures - special handling for selector/switch pattern
                 template_dict['overlap'] = {}
                 schema_dict['overlap'] = {"type": "overlap", "fieldType": "object", "fields": {}}
                 children = self._get_element_children(element)
+
+                # Detect if this overlap contains a selector (data field) followed by a switch
+                selector_field_name = None
+                selector_field_type = None
+                switch_element = None
+                selector_is_switch_type = False
+
                 if children:
-                    self._process_elements_with_metadata(
-                        children,
-                        template_dict['overlap'],
-                        schema_dict['overlap']["fields"],
-                        array_info,
-                        interactive
-                    )
+                    for child in children:
+                        child_type = type(child).__name__
+                        if (child_type == 'Data' or child_type == 'DataField') and hasattr(child, 'name') and hasattr(child, 'type'):
+                            # Found potential selector field
+                            selector_field_name = child.name
+                            selector_field_type = child.type
+                        elif child_type == 'Switch' and selector_field_name:
+                            # Found switch after selector - this is the pattern
+                            switch_element = child
+                            # Check if the selector field type matches the switch selector
+                            if hasattr(switch_element, 'selector') and selector_field_type == switch_element.selector:
+                                selector_is_switch_type = True
+                            break
+
+                    # If selector field is the same type as switch selector, process switch with selector merged
+                    if selector_is_switch_type and switch_element:
+                        # Process the switch element, but use the data field name as the switch name
+                        switch_selector = switch_element.selector
+                        enum_name = selector_field_name  # Use the data field name instead of enum name
+
+                        template_dict['overlap'][enum_name] = {}
+                        schema_dict['overlap']['fields'][enum_name] = {
+                            "type": "switch",
+                            "fieldType": "object",
+                            "selector": switch_selector,
+                            "fields": {},
+                            "selectorField": selector_field_name  # Mark that this field is also the selector
+                        }
+
+                        enum_values = self._get_enum(switch_selector) if self._has_enum(switch_selector) else None
+                        if enum_values and hasattr(switch_element, 'cases') and switch_element.cases:
+                            # Handle both dict and object enum formats
+                            if isinstance(enum_values, dict):
+                                enum_dict = enum_values.get('values', {})
+                                enum_keys = enum_dict.keys() if isinstance(enum_dict, dict) else []
+                            else:
+                                enum_keys = enum_values.values.keys() if hasattr(enum_values, 'values') and enum_values.values else []
+
+                            # Find first non-Nil/Error case to use as default
+                            selected_key = None
+                            for case_element in switch_element.cases:
+                                case_name = getattr(case_element, 'name', None)
+                                case_type = type(case_element).__name__
+                                if case_name and case_type not in ['Nil', 'Error']:
+                                    selected_key = case_name
+                                    break
+
+                            # If no non-Nil/Error case, use first enum key as fallback
+                            if not selected_key:
+                                selected_key = next(iter(enum_keys)) if enum_keys else None
+
+                            # Build template and schema for cases
+                            for case_element in switch_element.cases:
+                                case_name = getattr(case_element, 'name', None)
+                                case_type = type(case_element).__name__
+
+                                if case_name:
+                                    # Populate template for the selected case
+                                    if case_name == selected_key:
+                                        template_dict['overlap'][enum_name][case_name] = {}
+                                        # Build schema for all cases (including Nil/Error for dropdown)
+                                        if case_type in ['Nil', 'Error']:
+                                            # Nil/Error cases have no fields but should be in schema for dropdown
+                                            schema_dict['overlap']['fields'][enum_name]["fields"][case_name] = {
+                                                "type": case_type.lower(),
+                                                "fields": {}
+                                            }
+                                        else:
+                                            schema_dict['overlap']['fields'][enum_name]["fields"][case_name] = {"type": "object", "fields": {}}
+                                            self._process_elements_with_metadata(
+                                                [case_element],
+                                                template_dict['overlap'][enum_name][case_name],
+                                                schema_dict['overlap']['fields'][enum_name]["fields"][case_name]["fields"],
+                                                array_info,
+                                                interactive
+                                            )
+                                    else:
+                                        # Build schema for non-selected cases so UI can switch to them
+                                        if case_type in ['Nil', 'Error']:
+                                            # Nil/Error cases have no fields but should be in schema for dropdown
+                                            schema_dict['overlap']['fields'][enum_name]["fields"][case_name] = {
+                                                "type": case_type.lower(),
+                                                "fields": {}
+                                            }
+                                        else:
+                                            schema_dict['overlap']['fields'][enum_name]["fields"][case_name] = {"type": "object", "fields": {}}
+                                            self._process_elements_with_metadata(
+                                                [case_element],
+                                                {},  # Don't populate template
+                                                schema_dict['overlap']['fields'][enum_name]["fields"][case_name]["fields"],
+                                                array_info,
+                                                interactive
+                                            )
+
+                        # Process remaining children (excluding the data field and switch we already handled)
+                        remaining_children = [c for c in children if c != switch_element and not (
+                            hasattr(c, 'name') and c.name == selector_field_name and
+                            hasattr(c, 'type') and c.type == selector_field_type
+                        )]
+                        if remaining_children:
+                            self._process_elements_with_metadata(
+                                remaining_children,
+                                template_dict['overlap'],
+                                schema_dict['overlap']["fields"],
+                                array_info,
+                                interactive
+                            )
+                    else:
+                        # Normal overlap processing (selector and switch are separate)
+                        self._process_elements_with_metadata(
+                            children,
+                            template_dict['overlap'],
+                            schema_dict['overlap']["fields"],
+                            array_info,
+                            interactive
+                        )
+
+                        # If we found a selector/switch pattern, add metadata to the switch field
+                        if selector_field_name and switch_element and hasattr(switch_element, 'selector'):
+                            switch_selector = switch_element.selector
+                            # The switch is stored with enum_name key (last part of selector)
+                            enum_name = switch_selector.split('.')[-1] if '.' in switch_selector else switch_selector
+
+                            # Look for the switch using enum_name
+                            if enum_name in schema_dict['overlap']["fields"]:
+                                field_def = schema_dict['overlap']["fields"][enum_name]
+                                if field_def.get('type') == 'switch':
+                                    # Add selector field reference
+                                    field_def['selectorField'] = selector_field_name
 
             elif isinstance(element, dict) and 'name' in element:
                 # Dictionary-style elements
@@ -1423,6 +1571,10 @@ class TemplateGenerator:
             namespace = None
             type_local_name = type_name
 
+        # Check if it's a bitmap (return 0 for bitmap, which represents no flags set)
+        if self._is_bitmap(type_name):
+            return 0  # No flags set by default
+
         # Check if it's an enumeration
         if self._has_enum(type_name):
             enum_obj = self._get_enum(type_name)
@@ -1473,6 +1625,48 @@ class TemplateGenerator:
             # For unknown types, return 0 as safe default
             return 0
 
+    def _is_bitmap(self, type_name):
+        """
+        Check if a type is a bitmap (bitmaps are stored as enums but have special behavior).
+        Bitmaps use 'size' (numeric) for var_type while enums use type strings.
+        """
+        try:
+            # Check if it's in the enums dict and has a numeric var_type (indicates bitmap)
+            enum_obj = self._get_enum(type_name)
+            if enum_obj:
+                # Handle both object (with attributes) and dict formats
+                var_type = None
+                if isinstance(enum_obj, dict):
+                    var_type = enum_obj.get('var_type')
+                elif hasattr(enum_obj, 'var_type'):
+                    var_type = enum_obj.var_type
+
+                if var_type:
+                    # Bitmaps have numeric size (e.g., "1", "2") while enums have type strings (e.g., "uint-8")
+                    try:
+                        int(var_type)
+                        return True  # It's a bitmap (var_type is a size number)
+                    except (ValueError, TypeError):
+                        # var_type is not numeric, so it's an enum with a type string
+                        return False
+        except Exception:
+            # If error accessing enum, continue to check bitmap reference
+            pass
+
+        # Also check in schema bitmap reference if available
+        try:
+            if hasattr(self.schema, 'types') and hasattr(self.schema.types, 'bitmap'):
+                bitmap = self.schema.types.bitmap
+                if bitmap:
+                    # Handle both object and dict formats
+                    bitmap_name = bitmap.get('name') if isinstance(bitmap, dict) else getattr(bitmap, 'name', None)
+                    if bitmap_name == type_name:
+                        return True
+        except Exception:
+            pass
+
+        return False
+
     def _has_enum(self, enum_name):
         """
         Check if an enumeration exists in the schema.
@@ -1500,6 +1694,7 @@ class TemplateGenerator:
     def _get_enum(self, enum_name):
         """
         Get enumeration object from schema.
+        Also checks bitmap storage for bitmap types like tcp-flags.
         """
         if '.' in enum_name:
             namespace, enum_local_name = enum_name.rsplit('.', 1)
@@ -1516,6 +1711,20 @@ class TemplateGenerator:
                 hasattr(self.schema.types, 'enums') and
                 enum_name in self.schema.types.enums):
             return self.schema.types.enums[enum_name]
+
+        # Check bitmap storage (bitmaps are stored separately, not in enums dict)
+        if hasattr(self.schema, 'types') and hasattr(self.schema.types, 'bitmap'):
+            bitmap = self.schema.types.bitmap
+            if bitmap:
+                # Handle both dict and Enum object formats
+                bitmap_name = None
+                if isinstance(bitmap, dict) and 'name' in bitmap:
+                    bitmap_name = bitmap['name']
+                elif hasattr(bitmap, 'name'):
+                    bitmap_name = bitmap.name
+
+                if bitmap_name == enum_name:
+                    return bitmap
 
         return None
 

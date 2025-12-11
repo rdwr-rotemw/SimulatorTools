@@ -53,3 +53,36 @@ bash -lc "python scripts/compile_backend.py"
 and the assistant will run it after confirming the exact command with you.
 
 (End of assistant session rules)
+
+## IRP Template Generator Testing
+
+When debugging or modifying the IRP template generator (`backend/app/modules/reporter/irp/tools/template_generator.py`), use the comprehensive test suite:
+
+### Test All Messages
+```bash
+python backend/app/modules/reporter/irp/tests/test_template_generator.py
+```
+
+### Test Specific Message
+```bash
+python backend/app/modules/reporter/irp/tests/test_template_generator.py --message 12
+```
+
+### Verbose Output
+```bash
+python backend/app/modules/reporter/irp/tests/test_template_generator.py -v
+```
+
+### Test Only Bitmap Detection
+```bash
+python backend/app/modules/reporter/irp/tests/test_template_generator.py --test-bitmaps
+```
+
+The test suite validates:
+- All messages can generate templates without errors
+- Bitmap fields (e.g., tcp-flags) are correctly detected with options
+- Overlap/switch patterns are properly merged (no field duplication)
+- Schema metadata is correctly structured
+
+Always run these tests after modifying template_generator.py to ensure no regressions.
+
