@@ -108,8 +108,30 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
 
       return Math.floor(Math.random() * (max - min + 1)) + min
     }
-    if (fieldType === 'float') return Math.random() * 1000
-    if (fieldType === 'boolean') return Math.random() > 0.5
+    if (fieldType === 'float') return parseFloat((Math.random() * 1000).toFixed(2))
+    if (fieldType === 'boolean') {
+      const hasConditionalFields = fieldSchema?.fields && Object.keys(fieldSchema.fields).length > 0
+
+      // For if-then pattern: ALWAYS preserve current state, never toggle
+      if (hasConditionalFields) {
+        const isCurrentlyEnabled = currentValue && typeof currentValue === 'object'
+
+        if (isCurrentlyEnabled) {
+          // Keep enabled and randomize nested fields
+          const result: any = {}
+          Object.keys(fieldSchema.fields).forEach(key => {
+            result[key] = randomizeValue(fieldSchema.fields[key], currentValue?.[key], key)
+          })
+          return result
+        } else {
+          // Keep disabled
+          return currentValue !== undefined ? currentValue : false
+        }
+      }
+
+      // Plain boolean without conditional fields - randomize normally
+      return Math.random() > 0.5
+    }
     if (fieldType === 'enum' && Array.isArray(fieldSchema?.options)) {
       return fieldSchema.options[Math.floor(Math.random() * fieldSchema.options.length)]
     }

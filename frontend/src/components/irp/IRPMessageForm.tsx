@@ -86,20 +86,57 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
     // Common metadata keys to exclude from rendering when iterating schema.fields
     const metadataKeys = ['type', 'fieldType', 'default', 'min', 'max', 'required', 'itemType', 'itemSchema']
 
-    // Boolean → Switch
+    // Boolean → Switch (with optional conditional fields)
     if (fieldType === 'boolean') {
+      const hasConditionalFields = fieldSchema?.fields && Object.keys(fieldSchema.fields).length > 0
+      const boolValue = Boolean(value)
+
       return (
-        <FormControlLabel
-          key={pathString}
-          control={
-            <Switch
-              checked={Boolean(value)}
-              onChange={(e) => handleFieldChange(currentPath, e.target.checked)}
-            />
-          }
-          label={key}
-          sx={{ marginY: 1, display: 'block' }}
-        />
+        <Box key={pathString}>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={boolValue}
+                onChange={(e) => {
+                  const newValue = e.target.checked
+                  // When toggling to true and has fields, initialize with defaults from schema
+                  if (newValue && hasConditionalFields) {
+                    const initialValue: any = {}
+                    // Initialize each nested field with its default value
+                    Object.keys(fieldSchema.fields).forEach((nestedKey) => {
+                      const nestedFieldSchema = fieldSchema.fields[nestedKey]
+                      const nestedFieldType = nestedFieldSchema?.fieldType
+
+                      // Initialize arrays as empty arrays
+                      if (nestedFieldType === 'array' || nestedFieldType === 'fixed-array') {
+                        initialValue[nestedKey] = []
+                      } else if (nestedFieldSchema?.default !== undefined) {
+                        initialValue[nestedKey] = nestedFieldSchema.default
+                      }
+                    })
+                    handleFieldChange(currentPath, initialValue)
+                  } else {
+                    handleFieldChange(currentPath, newValue)
+                  }
+                }}
+              />
+            }
+            label={key}
+            sx={{ marginY: 1, display: 'block' }}
+          />
+
+          {/* Render conditional fields when boolean is true */}
+          {hasConditionalFields && boolValue && typeof value === 'object' && (
+            <Box sx={{ marginLeft: 4, marginTop: 1, marginBottom: 2, paddingLeft: 2, borderLeft: '2px solid #ddd' }}>
+              {Object.keys(fieldSchema.fields).map((nestedKey) => {
+                const nestedFieldSchema = fieldSchema.fields[nestedKey]
+                const nestedValue = value[nestedKey]
+                // Don't include nestedKey in path - renderField will add it
+                return renderField(nestedKey, nestedFieldSchema, nestedValue, currentPath)
+              })}
+            </Box>
+          )}
+        </Box>
       )
     }
 

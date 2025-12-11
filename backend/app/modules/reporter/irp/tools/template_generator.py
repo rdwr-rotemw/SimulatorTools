@@ -296,27 +296,30 @@ class TemplateGenerator:
                     schema_dict[field_name] = self._get_field_metadata(field_name, field_type)
 
             elif element_type == 'IfCondition':
-                # Boolean condition field
+                # Boolean condition field with optional body
                 condition_value = self._get_default_value_for_type(element.condition)
-                template_dict[element.name] = condition_value
+
+                # Always build schema with fields (so UI knows what to render when true)
                 schema_dict[element.name] = {
                     "type": element.condition,
                     "fieldType": "boolean",
                     "default": condition_value,
-                    "required": True
+                    "required": True,
+                    "fields": {}
                 }
 
-                # Process the body if condition is True
-                if condition_value and hasattr(element, 'body') and element.body:
-                    template_dict[element.name] = {}
-                    schema_dict[element.name]["fields"] = {}
+                # Always process body to generate schema for UI
+                if hasattr(element, 'body') and element.body:
                     self._process_elements_with_metadata(
                         element.body,
-                        template_dict[element.name],
+                        {},  # Don't populate template (will be empty object when false)
                         schema_dict[element.name]["fields"],
                         array_info,
                         interactive
                     )
+
+                # Template value: false by default (no body), or object with body if true
+                template_dict[element.name] = condition_value
 
             elif element_type in ['WhileLoop', 'ForLoop']:
                 # Array structures

@@ -406,46 +406,9 @@ def load_schema_from_mongo(mongo_db, document_id) -> Any:
     types_raw = _deserialize_object(schema_blob.get('types'))
     templates_raw = _deserialize_object(schema_blob.get('templates'))
 
-    # DEBUG: Check what's in templates_raw before reconstruction
-    if templates_raw and isinstance(templates_raw, dict):
-        if 'namespaces' in templates_raw and 'trafmon' in templates_raw['namespaces']:
-            trafmon_ns = templates_raw['namespaces']['trafmon']
-            print(f"DEBUG load_schema: trafmon namespace in raw deserialized data (templates):")
-            print(f"  - Type: {type(trafmon_ns)}")
-            print(f"  - Keys/attrs: {list(trafmon_ns.keys()) if isinstance(trafmon_ns, dict) else dir(trafmon_ns)}")
-            if isinstance(trafmon_ns, dict):
-                print(f"  - Content: {list(trafmon_ns.items())[:5]}")
-
-    # DEBUG: Check types namespaces too
-    if types_raw and isinstance(types_raw, dict):
-        if 'namespaces' in types_raw:
-            print(f"DEBUG load_schema: types.namespaces keys: {list(types_raw['namespaces'].keys())}")
-            if 'trafmon' in types_raw['namespaces']:
-                trafmon_types = types_raw['namespaces']['trafmon']
-                print(f"DEBUG load_schema: trafmon in types.namespaces:")
-                print(f"  - Type: {type(trafmon_types)}")
-                print(f"  - Keys: {list(trafmon_types.keys()) if isinstance(trafmon_types, dict) else 'not a dict'}")
-                if isinstance(trafmon_types, dict):
-                    print(f"  - Content (first 5 items): {list(trafmon_types.items())[:5]}")
-            else:
-                print(f"DEBUG load_schema: trafmon NOT in types.namespaces")
-        else:
-            print(f"DEBUG load_schema: types has no 'namespaces' key")
-    else:
-        print(f"DEBUG load_schema: types_raw is None or not a dict")
-
     # Reconstruct templates into a proper Templates object with Struct/Namespace instances
     templates = _reconstruct_templates_object(templates_raw)
 
-    # DEBUG: Check after reconstruction
-    if templates and hasattr(templates, 'namespaces'):
-        trafmon_ns_after = templates.namespaces.get('trafmon')
-        if trafmon_ns_after:
-            print(f"DEBUG load_schema: trafmon namespace AFTER reconstruction:")
-            print(f"  - Type: {type(trafmon_ns_after)}")
-            print(f"  - Has structs: {hasattr(trafmon_ns_after, 'structs')}")
-            if hasattr(trafmon_ns_after, 'structs'):
-                print(f"  - Structs: {list(trafmon_ns_after.structs.keys()) if trafmon_ns_after.structs else 'empty'}")
 
     # Convert template structs to have properly typed fields
     if templates and hasattr(templates, 'structs'):
