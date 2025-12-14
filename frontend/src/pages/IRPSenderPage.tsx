@@ -149,6 +149,35 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
     if (fieldType === 'array' || fieldType === 'fixed-array') {
       const itemSchema = fieldSchema?.itemSchema
       const existingArray = Array.isArray(currentValue) ? currentValue : []
+
+      // Special handling for footprint-values arrays: if empty, randomly select one footprint type
+      const isFootprintValuesArray = itemSchema?.discriminator === 'vsecure.footprint-types'
+      if (isFootprintValuesArray && existingArray.length === 0) {
+        // Get available footprint types from itemSchema options
+        const footprintOptions = itemSchema?.options ? Object.keys(itemSchema.options) : []
+        if (footprintOptions.length > 0) {
+          // Randomly select one footprint type
+          const randomFootprintType = footprintOptions[Math.floor(Math.random() * footprintOptions.length)]
+          const footprintSchema = itemSchema.options[randomFootprintType]
+
+          // Create a footprint item with the selected type
+          const footprintItem: any = { [randomFootprintType]: {} }
+
+          // Randomize the fields for this footprint type
+          if (footprintSchema && footprintSchema.fields) {
+            Object.keys(footprintSchema.fields).forEach((fieldKey) => {
+              footprintItem[randomFootprintType][fieldKey] = randomizeValue(
+                footprintSchema.fields[fieldKey],
+                undefined,
+                fieldKey
+              )
+            })
+          }
+
+          return [footprintItem]
+        }
+      }
+
       if (existingArray.length > 0) {
         return existingArray.map((item: any, itemIndex: number) => {
           if (itemSchema?.fieldType === 'switch' && itemSchema?.options && typeof item === 'object' && item !== null) {

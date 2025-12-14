@@ -609,6 +609,13 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
                 .filter((nestedKey) => {
                   if (metadataKeys.includes(nestedKey)) return false
 
+                  // Special handling for footprint structure: hide 'and' field when relation is 'or'
+                  if (fieldSchema.type === 'footprint' && nestedKey === 'and') {
+                    const relationValue = nestedValue['relation']
+                    // Only show 'and' field when relation is 'and'
+                    return relationValue === 'and'
+                  }
+
                   // Check if this is a switch field with a selector
                   const fieldDef = fieldSchema.fields[nestedKey]
                   if (fieldDef?.type === 'switch' && fieldDef?.selector) {
