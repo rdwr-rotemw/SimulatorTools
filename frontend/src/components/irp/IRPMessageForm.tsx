@@ -31,9 +31,10 @@ interface IRPMessageFormProps {
   messageData: Record<string, any>
   schema: Record<string, any>
   onChange: (data: Record<string, any>) => void
+  onValidationChange?: (isValid: boolean) => void
 }
 
-const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, onChange }) => {
+const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, onChange, onValidationChange }) => {
   const handleFieldChange = (path: string[], value: any) => {
     // Deep clone to avoid mutating props
     const newData: Record<string, any> = JSON.parse(JSON.stringify(messageData || {}))
@@ -72,6 +73,75 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
     }
     return cur
   }
+
+  // Validate all fields recursively
+  const validateForm = React.useCallback((data: any, schemaObj: any): boolean => {
+    if (!data || !schemaObj) return true
+
+    const validateValue = (value: any, fieldSchema: any): boolean => {
+      const fieldType = fieldSchema?.fieldType
+
+      // Integer validation
+      if (fieldType === 'integer') {
+        const numValue = typeof value === 'number' ? value : 0
+        const min = fieldSchema?.min
+        const max = fieldSchema?.max
+        if ((typeof min === 'number' && numValue < min) || (typeof max === 'number' && numValue > max)) {
+          return false
+        }
+      }
+
+      // Float validation
+      if (fieldType === 'float') {
+        const numValue = typeof value === 'number' ? value : 0
+        const min = fieldSchema?.min
+        const max = fieldSchema?.max
+        if ((typeof min === 'number' && numValue < min) || (typeof max === 'number' && numValue > max)) {
+          return false
+        }
+      }
+
+      // Array validation
+      if ((fieldType === 'array' || fieldType === 'fixed-array') && Array.isArray(value)) {
+        const itemSchema = fieldSchema?.itemSchema
+        if (itemSchema) {
+          for (const item of value) {
+            if (!validateValue(item, itemSchema)) {
+              return false
+            }
+          }
+        }
+      }
+
+      // Object validation
+      if (fieldType === 'object' && fieldSchema?.fields && typeof value === 'object') {
+        for (const key in fieldSchema.fields) {
+          if (!validateValue(value[key], fieldSchema.fields[key])) {
+            return false
+          }
+        }
+      }
+
+      return true
+    }
+
+    // Validate all schema fields
+    for (const key in schemaObj) {
+      if (!validateValue(data[key], schemaObj[key])) {
+        return false
+      }
+    }
+
+    return true
+  }, [])
+
+  // Notify parent of validation state whenever data changes
+  React.useEffect(() => {
+    if (onValidationChange) {
+      const isValid = validateForm(messageData, schema)
+      onValidationChange(isValid)
+    }
+  }, [messageData, schema, onValidationChange, validateForm])
 
   const renderField = (key: string, fieldSchema: any, value: any, path: string[] = []): React.ReactNode => {
     const currentPath = [...path, key]
@@ -218,15 +288,8 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
           type="number"
           value={value}
           onChange={(e) => {
-            let num = parseInt(e.target.value as string, 10)
-            if (isNaN(num)) {
-              num = 0
-            } else {
-              // Clamp value to min/max range
-              if (typeof min === 'number' && num < min) num = min
-              if (typeof max === 'number' && num > max) num = max
-            }
-            handleFieldChange(currentPath, num)
+            const num = parseInt(e.target.value as string, 10)
+            handleFieldChange(currentPath, isNaN(num) ? 0 : num)
           }}
           margin="normal"
           size="small"
@@ -247,6 +310,8 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
     if (fieldType === 'float') {
       const min = fieldSchema?.min
       const max = fieldSchema?.max
+      const numValue = typeof value === 'number' ? value : 0
+      const hasError = (typeof min === 'number' && numValue < min) || (typeof max === 'number' && numValue > max)
 
       return (
         <TextField
@@ -256,23 +321,19 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
           type="number"
           value={value}
           onChange={(e) => {
-            let num = parseFloat(e.target.value as string)
-            if (isNaN(num)) {
-              num = 0.0
-            } else {
-              // Clamp value to min/max range
-              if (typeof min === 'number' && num < min) num = min
-              if (typeof max === 'number' && num > max) num = max
-            }
-            handleFieldChange(currentPath, num)
+            const num = parseFloat(e.target.value as string)
+            handleFieldChange(currentPath, isNaN(num) ? 0.0 : num)
           }}
           margin="normal"
           size="small"
+          error={hasError}
           inputProps={{ step: 0.01, min: min, max: max }}
           helperText={
-            typeof min === 'number'
+            hasError
+              ? `Must be between ${min ?? '-inf'} and ${max ?? 'inf'}`
+              : typeof min === 'number'
               ? `Range: ${min} - ${max ?? 'max'}`
-              : undefined
+              : ''
           }
         />
       )
@@ -519,6 +580,11 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
                           }
 
                           // Number or text input
+                          const numValue = typeof displayValue === 'number' ? displayValue : 0
+                          const hasItemError = (itemSchemaFieldType === 'integer' || itemSchemaFieldType === 'float') &&
+                                               ((typeof itemSchema?.min === 'number' && numValue < itemSchema.min) ||
+                                                (typeof itemSchema?.max === 'number' && numValue > itemSchema.max))
+
                           return (
                             <TextField
                               key={`${pathString}-${idx}`}
@@ -529,29 +595,11 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
                               onChange={(e) => {
                                 let newValue: any = e.target.value
                                 if (itemSchemaFieldType === 'integer') {
-                                  let num = parseInt(e.target.value as string, 10)
-                                  if (isNaN(num)) {
-                                    num = 0
-                                  } else {
-                                    // Clamp to min/max
-                                    const min = itemSchema?.min
-                                    const max = itemSchema?.max
-                                    if (typeof min === 'number' && num < min) num = min
-                                    if (typeof max === 'number' && num > max) num = max
-                                  }
-                                  newValue = num
+                                  const num = parseInt(e.target.value as string, 10)
+                                  newValue = isNaN(num) ? 0 : num
                                 } else if (itemSchemaFieldType === 'float') {
-                                  let num = parseFloat(e.target.value as string)
-                                  if (isNaN(num)) {
-                                    num = 0.0
-                                  } else {
-                                    // Clamp to min/max
-                                    const min = itemSchema?.min
-                                    const max = itemSchema?.max
-                                    if (typeof min === 'number' && num < min) num = min
-                                    if (typeof max === 'number' && num > max) num = max
-                                  }
-                                  newValue = num
+                                  const num = parseFloat(e.target.value as string)
+                                  newValue = isNaN(num) ? 0.0 : num
                                 }
                                 const newArray = [...arrayValue]
                                 newArray[idx] = newValue
@@ -559,13 +607,16 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
                               }}
                               margin="normal"
                               size="small"
+                              error={hasItemError}
                               inputProps={{
                                 min: itemSchema?.min,
                                 max: itemSchema?.max,
                                 step: itemSchemaFieldType === 'float' ? 0.01 : undefined
                               }}
                               helperText={
-                                typeof itemSchema?.min === 'number'
+                                hasItemError
+                                  ? `Must be between ${itemSchema?.min ?? '-inf'} and ${itemSchema?.max ?? 'inf'}`
+                                  : typeof itemSchema?.min === 'number'
                                   ? `Range: ${itemSchema.min} - ${itemSchema?.max ?? 'max'}`
                                   : undefined
                               }

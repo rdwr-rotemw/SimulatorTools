@@ -479,6 +479,10 @@ export const IRPSenderPage: React.FC = () => {
   const [savedTemplates, setSavedTemplates] = useState<any[]>([])
   const [loadingTemplates, setLoadingTemplates] = useState(false)
 
+  // Validation state - track which messages have validation errors
+  const [messageValidationState, setMessageValidationState] = useState<Map<number, boolean>>(new Map())
+  const hasValidationErrors = Array.from(messageValidationState.values()).some(isValid => !isValid)
+
   // Loop functionality state
   const [loopDialogOpen, setLoopDialogOpen] = useState(false)
   const [loopDelay, setLoopDelay] = useState<number>(15) // seconds - default 15s
@@ -933,6 +937,13 @@ export const IRPSenderPage: React.FC = () => {
                     messageData={msg.data}
                     schema={msg.schema}
                     onChange={(data) => updateMessage(index, data)}
+                    onValidationChange={(isValid) => {
+                      setMessageValidationState(prev => {
+                        const newMap = new Map(prev)
+                        newMap.set(index, isValid)
+                        return newMap
+                      })
+                    }}
                   />
                 </Collapse>
               </Paper>
@@ -949,7 +960,7 @@ export const IRPSenderPage: React.FC = () => {
             variant="contained"
             color="secondary"
             onClick={() => setSaveDialogOpen(true)}
-            disabled={messages.length === 0}
+            disabled={messages.length === 0 || hasValidationErrors}
           >
             Save Template
           </Button>
@@ -957,7 +968,7 @@ export const IRPSenderPage: React.FC = () => {
             variant="contained"
             color="secondary"
             onClick={handleDownloadJSON}
-            disabled={messages.length === 0}
+            disabled={messages.length === 0 || hasValidationErrors}
           >
             Download JSON
           </Button>
@@ -973,7 +984,7 @@ export const IRPSenderPage: React.FC = () => {
             variant="contained"
             color="primary"
             startIcon={<SendIcon />}
-            disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isLoading || isLooping}
+            disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isLoading || isLooping || hasValidationErrors}
             onClick={handleSendMessages}
           >
             {isLoading ? 'Sending...' : `Send Messages (${messages.length})`}
@@ -985,7 +996,7 @@ export const IRPSenderPage: React.FC = () => {
               color="secondary"
               startIcon={<LoopIcon />}
               onClick={handleOpenLoopDialog}
-              disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isLoading}
+              disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isLoading || hasValidationErrors}
             >
               Send Loop
             </Button>
