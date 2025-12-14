@@ -30,7 +30,15 @@ apiClient.interceptors.request.use(
 apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
-    // Don't handle 401 here - let auth store / route guards decide what to do.
+    // Handle 401 Token Expired - redirect to login
+    if (error.response?.status === 401) {
+      const errorData = error.response.data as any;
+      if (errorData?.detail === 'Token has expired') {
+        // Clear token and redirect to login
+        localStorage.removeItem('token');
+        window.location.href = '/login';
+      }
+    }
     return Promise.reject(error);
   }
 );
