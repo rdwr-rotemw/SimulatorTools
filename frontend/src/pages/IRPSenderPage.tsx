@@ -243,9 +243,20 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
 
     if (fieldSchema?.fields && typeof fieldSchema.fields === 'object') {
       const result: Record<string, any> = {}
+
+      // Special handling for footprint structure: preserve relation field
+      const isFootprint = fieldSchema.type === 'footprint'
+
       Object.keys(fieldSchema.fields).forEach((key) => {
         const nestedValue = (typeof currentValue === 'object' && currentValue !== null) ? currentValue[key] : undefined
-        result[key] = randomizeValue(fieldSchema.fields[key], nestedValue, key)
+
+        // For footprint, preserve the relation field (don't randomize it)
+        if (isFootprint && key === 'relation') {
+          // Keep current value or use default "or"
+          result[key] = nestedValue !== undefined ? nestedValue : 'or'
+        } else {
+          result[key] = randomizeValue(fieldSchema.fields[key], nestedValue, key)
+        }
       })
       return result
     }
