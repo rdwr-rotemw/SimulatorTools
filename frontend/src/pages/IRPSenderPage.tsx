@@ -142,6 +142,10 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       return Array.from({ length: 8 }, () => Math.floor(Math.random() * 0xffff).toString(16)).join(':')
     }
     if (fieldType === 'string') {
+      // Special handling: if field name contains 'url', generate https://radware.com
+      if (fieldKey && fieldKey.toLowerCase().includes('url')) {
+        return 'https://radware.com'
+      }
       return Math.random().toString(36).substring(2, 12)
     }
 
