@@ -146,6 +146,13 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       if (fieldKey && fieldKey.toLowerCase().includes('url')) {
         return 'https://radware.com'
       }
+      // Special handling: if field name contains 'fqdn', generate valid FQDN
+      if (fieldKey && fieldKey.toLowerCase().includes('fqdn')) {
+        const tlds = ['.com', '.org', '.net', '.io', '.co', '.info', '.biz']
+        const randomTld = tlds[Math.floor(Math.random() * tlds.length)]
+        const randomDomain = Math.random().toString(36).substring(2, 10)
+        return `${randomDomain}${randomTld}`
+      }
       return Math.random().toString(36).substring(2, 12)
     }
 

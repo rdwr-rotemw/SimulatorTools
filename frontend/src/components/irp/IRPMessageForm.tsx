@@ -101,6 +101,15 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
         }
       }
 
+      // String maxLength validation
+      if (fieldType === 'string' || !fieldType) {
+        const stringValue = typeof value === 'string' ? value : ''
+        const maxLength = fieldSchema?.maxLength
+        if (typeof maxLength === 'number' && stringValue.length > maxLength) {
+          return false
+        }
+      }
+
       // Array validation
       if ((fieldType === 'array' || fieldType === 'fixed-array') && Array.isArray(value)) {
         const itemSchema = fieldSchema?.itemSchema
@@ -135,11 +144,18 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
     return true
   }, [])
 
+  // Track previous validation state to avoid infinite loops
+  const prevValidationRef = React.useRef<boolean | null>(null)
+
   // Notify parent of validation state whenever data changes
   React.useEffect(() => {
     if (onValidationChange) {
       const isValid = validateForm(messageData, schema)
-      onValidationChange(isValid)
+      // Only call onValidationChange if the validation state has actually changed
+      if (prevValidationRef.current !== isValid) {
+        prevValidationRef.current = isValid
+        onValidationChange(isValid)
+      }
     }
   }, [messageData, schema, onValidationChange, validateForm])
 
@@ -991,6 +1007,10 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
     }
 
     // Regular string field
+    const maxLength = fieldSchema?.maxLength
+    const stringValue = typeof value === 'string' ? value : ''
+    const hasLengthError = typeof maxLength === 'number' && stringValue.length > maxLength
+
     return (
       <TextField
         key={pathString}
@@ -1000,7 +1020,14 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
         onChange={(e) => handleFieldChange(currentPath, e.target.value)}
         margin="normal"
         size="small"
-        inputProps={{ maxLength: fieldSchema?.maxLength }}
+        error={hasLengthError}
+        helperText={
+          hasLengthError
+            ? `Maximum length is ${maxLength} characters (current: ${stringValue.length})`
+            : typeof maxLength === 'number'
+            ? `Max length: ${maxLength}`
+            : ''
+        }
       />
     )
   }

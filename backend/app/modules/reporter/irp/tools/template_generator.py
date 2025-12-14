@@ -251,20 +251,22 @@ class TemplateGenerator:
             metadata["fieldType"] = "string"
             metadata["default"] = ""
 
-            # Check for fixed-string size
-            if '.' in type_name:
-                namespace, type_local_name = type_name.rsplit('.', 1)
-                if (hasattr(self.schema, 'types') and
-                        hasattr(self.schema.types, 'namespaces') and
-                        namespace in self.schema.types.namespaces):
-                    namespace_obj = self.schema.types.namespaces[namespace]
-                    if type_local_name in namespace_obj and isinstance(namespace_obj[type_local_name], str):
-                        metadata["maxLength"] = 255  # Could extract actual size if needed
-
         else:
             # Unknown type - treat as string
             metadata["fieldType"] = "string"
             metadata["default"] = ""
+
+        # Check for fixed-string size (do this AFTER setting fieldType to string)
+        # This handles both simple names and namespaced names
+        if metadata.get("fieldType") == "string":
+            if hasattr(self.schema, 'types') and hasattr(self.schema.types, 'fixed_strings'):
+                fixed_strings = self.schema.types.fixed_strings
+                if isinstance(fixed_strings, dict) and type_name in fixed_strings:
+                    try:
+                        metadata["maxLength"] = int(fixed_strings[type_name])
+                    except (ValueError, TypeError):
+                        metadata["maxLength"] = 255
+
 
         return metadata
 
@@ -278,9 +280,9 @@ class TemplateGenerator:
         if array_info is None:
             array_info = []
 
-        # Ensure elements is iterable
+        # Ensure elements is iterable - wrap single element in list
         if not isinstance(elements, (list, tuple)):
-            return
+            elements = [elements]
 
         for element in elements:
             element_type = type(element).__name__
