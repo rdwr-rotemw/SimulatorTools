@@ -158,20 +158,29 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
         if (footprintOptions.length > 0) {
           // Randomly select one footprint type
           const randomFootprintType = footprintOptions[Math.floor(Math.random() * footprintOptions.length)]
-          const footprintSchema = itemSchema.options[randomFootprintType]
+          const footprintOption = itemSchema.options[randomFootprintType]
+          const footprintSchema = footprintOption?.schema
 
-          // Create a footprint item with the selected type
-          const footprintItem: any = { [randomFootprintType]: {} }
+          // Each footprint is a var-array, so create an array with one random value
+          const footprintItem: any = { [randomFootprintType]: [] }
 
-          // Randomize the fields for this footprint type
-          if (footprintSchema && footprintSchema.fields) {
-            Object.keys(footprintSchema.fields).forEach((fieldKey) => {
-              footprintItem[randomFootprintType][fieldKey] = randomizeValue(
-                footprintSchema.fields[fieldKey],
-                undefined,
-                fieldKey
-              )
-            })
+          // Generate one iteration with a random value based on the footprint's itemType
+          if (footprintSchema) {
+            const itemType = footprintSchema.itemType || 'uint-32'
+            const nestedItemSchema = footprintSchema.itemSchema
+
+            // Generate one random value based on type
+            let randomValue: any
+            if (nestedItemSchema) {
+              randomValue = randomizeValue(nestedItemSchema, undefined, randomFootprintType)
+            } else if (itemType === 'string') {
+              randomValue = Math.random().toString(36).substring(2, 12)
+            } else {
+              // Default to random integer
+              randomValue = Math.floor(Math.random() * 65535)
+            }
+
+            footprintItem[randomFootprintType] = [randomValue]
           }
 
           return [footprintItem]
