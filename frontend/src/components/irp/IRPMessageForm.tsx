@@ -320,11 +320,20 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
           setPendingFootprintPath(currentPath)
           setFootprintTypeDialog(true)
         } else {
-          const newItem: any = {}
-          // Initialize with defaults from schema (itemSchema may be object of fields)
-          if (itemSchema && typeof itemSchema === 'object' && !Array.isArray(itemSchema)) {
+          let newItem: any = {}
+
+          // Check if itemSchema represents a primitive type (has fieldType property)
+          const isPrimitiveItem = itemSchema?.fieldType && ['integer', 'float', 'string', 'boolean', 'ipv4', 'ipv6', 'enum'].includes(itemSchema.fieldType)
+
+          if (isPrimitiveItem) {
+            // For primitive types, use the default value directly
+            newItem = itemSchema?.default ?? 0
+          } else if (itemSchema && typeof itemSchema === 'object' && !Array.isArray(itemSchema)) {
+            // For complex objects, initialize fields from schema
             Object.keys(itemSchema).forEach((k) => {
-              newItem[k] = itemSchema[k]?.default ?? ''
+              if (!['type', 'fieldType', 'default', 'min', 'max', 'required'].includes(k)) {
+                newItem[k] = itemSchema[k]?.default ?? ''
+              }
             })
           }
 

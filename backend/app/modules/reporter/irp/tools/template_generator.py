@@ -421,10 +421,15 @@ class TemplateGenerator:
 
                 # Start with empty array - UI controls count up to max size
                 template_dict[element.name] = []
+
+                # Generate itemSchema with field metadata for UI rendering
+                item_metadata = self._get_field_metadata(element.name, array_type)
+
                 schema_dict[element.name] = {
                     "type": "fixed-array",
                     "fieldType": "fixed-array",
                     "itemType": array_type,
+                    "itemSchema": item_metadata,
                     "size": array_size,
                     "maxItems": array_size,
                     "editable": True,
