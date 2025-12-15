@@ -1,16 +1,19 @@
-FROM python:3.11-slim
+FROM eclipse-temurin:17-jre-jammy
 
 WORKDIR /app
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-pip \
+    python3-distutils \
     snmp \
     curl \
-    openjdk-11-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
-# Verify Java works
-RUN java -version
+# Set python3.11 as default
+RUN ln -s /usr/bin/python3.11 /usr/bin/python3 && \
+    ln -s /usr/bin/pip3.11 /usr/bin/pip3
 
 # Install Python requirements
 COPY requirements.txt .
