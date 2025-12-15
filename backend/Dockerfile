@@ -5,8 +5,7 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
-    python3.11-pip \
-    python3-distutils \
+    python3-pip \
     snmp \
     curl \
     && rm -rf /var/lib/apt/lists/*
