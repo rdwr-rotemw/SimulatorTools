@@ -7,7 +7,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     snmp \
     curl \
-    openjdk-17-jdk \
+    openjdk-17-jre-headless \
     && rm -rf /var/lib/apt/lists/*
 
 # Verify Java is available
