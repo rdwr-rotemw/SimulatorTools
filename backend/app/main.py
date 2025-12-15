@@ -11,6 +11,10 @@ Main FastAPI application entrypoint.
 from __future__ import annotations
 
 import logging
+import os
+import sys
+import json
+from datetime import datetime
 from typing import List
 from pathlib import Path
 
@@ -35,8 +39,109 @@ from backend.app.routes.role import router as role_router
 from backend.app.routes.permission import router as permission_router
 from backend.app.routes import snmp_templates
 
+
+# Remove simple basicConfig and replace with structured configurator
+
+def _get_env_flag(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+class JSONFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:  # returns a JSON string
+        payload = {
+            "timestamp": datetime.utcfromtimestamp(record.created).isoformat() + "Z",
+            "level": record.levelname,
+            "logger": record.name,
+            "module": record.module,
+            "funcName": record.funcName,
+            "line": record.lineno,
+            "message": record.getMessage(),
+        }
+        # Include exception info if present
+        if record.exc_info:
+            payload["exc_info"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+# Simple colored text formatter for development
+class ColoredFormatter(logging.Formatter):
+    COLORS = {
+        'DEBUG': '\u001b[36m',
+        'INFO': '\u001b[32m',
+        'WARNING': '\u001b[33m',
+        'ERROR': '\u001b[31m',
+        'CRITICAL': '\u001b[35m',
+    }
+    RESET = '\u001b[0m'
+
+    def format(self, record: logging.LogRecord) -> str:
+        level = record.levelname
+        color = self.COLORS.get(level, '')
+        ts = datetime.fromtimestamp(record.created).isoformat()
+        msg = record.getMessage()
+        return f"{color}{ts} {level} {record.name}: {msg}{self.RESET}"
+
+
+def configure_logging(settings_obj=None):
+    """Configure structured logging for the application.
+
+    Behavior:
+      - In production (ENVIRONMENT == 'production') default to INFO and JSON/text output
+      - In development default to DEBUG and colored text output
+      - Respect environment overrides: LOG_LEVEL, LOG_FORMAT
+    """
+    # Determine environment
+    env = (os.environ.get('ENVIRONMENT') or getattr(settings_obj, 'ENVIRONMENT', None) or os.environ.get('ENV') or 'development').lower()
+    is_prod = env == 'production'
+
+    # Defaults
+    default_level = 'INFO' if is_prod else 'DEBUG'
+    default_format = 'json' if is_prod else 'text'
+
+    # Allow environment override
+    level_name = _get_env_flag('LOG_LEVEL', getattr(settings_obj, 'LOG_LEVEL', default_level))
+    log_format = _get_env_flag('LOG_FORMAT', default_format).lower()
+
+    # Normalize level
+    try:
+        level = getattr(logging, level_name.upper())
+    except Exception:
+        level = logging.INFO
+
+    # Remove any existing handlers attached to root to prevent duplicate logs
+    root = logging.getLogger()
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
+    # Create stdout handler
+    handler = logging.StreamHandler(stream=sys.stdout)
+    handler.setLevel(level)
+
+    if log_format == 'json':
+        fmt = JSONFormatter()
+    else:
+        # text format; for development use colored formatter
+        if not is_prod:
+            fmt = ColoredFormatter()
+        else:
+            fmt = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
+
+    handler.setFormatter(fmt)
+
+    # Attach handler to root logger
+    root.setLevel(level)
+    root.addHandler(handler)
+
+    # Reduce noise from uvicorn and other noisy loggers in production
+    if is_prod:
+        logging.getLogger('uvicorn.access').setLevel(logging.INFO)
+        logging.getLogger('uvicorn.error').setLevel(logging.INFO)
+
+
+# Apply logging configuration early
+configure_logging(settings)
+
 logger = logging.getLogger("sim-tools")
-logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Simulators Tools Backend")
 
