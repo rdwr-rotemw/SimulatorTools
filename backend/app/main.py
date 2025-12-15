@@ -246,7 +246,23 @@ async def on_startup():
             logger.exception("Failed to seed roles on startup: %s", exc)
     except Exception as exc:
         logger.exception("Failed to create database tables on startup: %s", exc)
-    # TODO: initialize other resources (HTTP clients, caches, telemetry)
+    # NOTE: Initialization of optional, long-lived resources is intentionally deferred.
+    # Rationale and guidance:
+    # - HTTP connection pooling: Nice-to-have if the service will make many frequent outbound
+    #   requests to the same hosts (e.g., CC or external APIs). The current CC client manages
+    #   its own session/connection behavior; explicit app-level pooling can be added later
+    #   if profiling shows significant connection overhead or latency.
+    # - Caching layer: Useful when the same schemas/templates are requested repeatedly by
+    #   many users (reduces Mongo reads and template generation CPU). Consider Redis or
+    #   in-process LRU caches for low-volume deployments; add only when cache-hit metrics
+    #   justify the operational complexity.
+    # - Telemetry / metrics: Important for production monitoring (Prometheus, Datadog, etc.).
+    #   Logging currently emits useful error and lifecycle events; add telemetry when you
+    #   have a monitoring backend and need application-level metrics (latency, success rates,
+    #   template-generation counts). Start small and expand (counters, histograms) as needs
+    #   arise.
+    # Overall: defer these optimizations until profiling or production observations indicate
+    # they are necessary; they are "nice-to-haves" rather than required for correctness.
     # Example placeholder:
     # app.state.db = create_db_engine(settings.sqlalchemy_database_url)
     # app.state.mongo = MongoClient(settings.mongodb_uri)
@@ -255,7 +271,18 @@ async def on_startup():
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    # TODO: gracefully close DB connections, HTTP clients, flush metrics
+    # Graceful shutdown considerations (deferred):
+    # - Graceful shutdown is recommended when you add connection pools, background workers,
+    #   or metrics flushers so that in-flight requests can complete and pooled connections
+    #   can be closed cleanly.
+    # - Current architecture relies on short-lived per-request DB sessions (SessionLocal)
+    #   and client libraries that manage their own resources; as such, explicit global
+    #   cleanup is minimal today.
+    # - Implement explicit shutdown hooks (e.g., disposing engine, closing Mongo clients,
+    #   flushing metrics) when introducing connection pooling or telemetry collection.
+    # - For now, container orchestration (Docker / Kubernetes) will terminate the process
+    #   and the platform will reclaim OS-level resources; add graceful teardown when
+    #   it's needed for reliability or observability reasons.
     logger.info("Shutting down Simulators Tools application")
     # Example placeholder:
     # if hasattr(app.state, 'db'):
