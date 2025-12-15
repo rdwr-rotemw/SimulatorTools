@@ -131,9 +131,9 @@ class CCHandler:
             self._creds = CCCredentials(jsession_id=str(jsession), cc_ip=self.cc_ip,
                                         authenticated_at=datetime.now(timezone.utc))
             return True, "OK"
-        except Exception as exc:  # pragma: no cover - network error handling
-            logger.error(f"Exception during login to {self.cc_ip}: {exc!s}")
-            return False, f"Exception during login: {exc!s}"
+        except requests.RequestException as exc:
+            logger.exception("Request error during login to %s: %s", self.cc_ip, exc)
+            return False, f"Request exception during login: {exc!s}"
 
     def logout(self, jsession_id: str) -> Tuple[bool, str]:
         """Gracefully close the session on the CyberController.
@@ -158,8 +158,8 @@ class CCHandler:
             self._creds = None
             try:
                 self._session.cookies.clear()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Non-fatal error clearing session cookies: %s", exc)
 
             # Check server response
             if resp.status_code == 200:
@@ -168,15 +168,15 @@ class CCHandler:
                 logger.error(f"Logout from {self.cc_ip} failed: HTTP {resp.status_code}")
                 return False, f"Logout failed: HTTP {resp.status_code}"
 
-        except Exception as exc:  # pragma: no cover
+        except requests.RequestException as exc:
             # Clear local state even on exception
             self._creds = None
             try:
                 self._session.cookies.clear()
-            except Exception:
-                pass
-            logger.error(f"Exception during logout from {self.cc_ip}: {exc!s}")
-            return False, f"Exception during logout: {exc!s}"
+            except Exception as exc2:
+                logger.debug("Error clearing cookies after logout exception: %s", exc2)
+            logger.exception("Request exception during logout from %s: %s", self.cc_ip, exc)
+            return False, f"Request exception during logout: {exc!s}"
 
     def is_authenticated(self) -> Tuple[bool, str]:
         """Check whether the current session appears authenticated.
@@ -200,9 +200,11 @@ class CCHandler:
                             return True, "OK"
                     return False, "No JSESSION cookie present"
                 return False, f"Unexpected status code: {resp.status_code}"
-            except Exception as exc:
+            except requests.RequestException as exc:
+                logger.debug("Connection/check failed for is_authenticated to %s: %s", self.cc_ip, exc)
                 return False, f"Connection/check failed: {exc!s}"
-        except Exception as exc:  # pragma: no cover
+        except requests.RequestException as exc:
+            logger.exception("Exception during is_authenticated: %s", exc)
             return False, f"Exception during is_authenticated: {exc!s}"
 
     def is_logged_in(self) -> bool:
@@ -223,7 +225,8 @@ class CCHandler:
             cookies = {"JSESSIONID": self._creds.jsession_id}
             resp = requests.get(info_url, cookies=cookies, verify=self._verify_ssl, timeout=15)
             return resp.status_code == 200
-        except Exception:
+        except requests.RequestException as exc:
+            logger.debug("is_logged_in network error for %s: %s", self.cc_ip, exc)
             return False
 
     def refresh_session(self) -> Tuple[bool, str]:
@@ -244,12 +247,12 @@ class CCHandler:
                     # set a conventional cookie name; the server may use other
                     # JSESSION-like names but JSESSIONID is the common one.
                     self._session.cookies.set("JSESSIONID", str(self._creds.jsession_id))
-                except Exception:
-                    # non-fatal: return success since login itself succeeded
-                    pass
+                except Exception as exc:
+                    logger.debug("Non-fatal error setting session cookie after refresh: %s", exc)
 
             return True, "OK"
-        except Exception as exc:  # pragma: no cover - network/login errors
+        except requests.RequestException as exc:
+            logger.exception("Exception during refresh_session: %s", exc)
             return False, f"Exception during refresh_session: {exc!s}"
 
     def _map_device(self, raw: Dict[str, Any]) -> CCDevice:
@@ -303,12 +306,14 @@ class CCHandler:
                         for d in resp.json()['devices']
                     ]
                     return True, devices
-                except Exception:
+                except (ValueError, KeyError, TypeError) as exc:
+                    logger.exception("Failed to parse devices JSON response: %s", exc)
                     return False, "Failed to parse devices JSON response"
 
             return False, f"Failed to fetch devices from: {self.cc_ip}"
-        except Exception as exc:
-            return False, f"Exception in get_all_devices: {exc!s}"
+        except requests.RequestException as exc:
+            logger.exception("Request exception in get_all_dps: %s", exc)
+            return False, f"Request exception in get_all_devices: {exc!s}"
 
     def get_device_by_ip(self, ip: str) -> Tuple[bool, Union[str, CCDevice]]:
         """Find a single device by its IP (management or device IP).
@@ -330,7 +335,8 @@ class CCHandler:
                 if d.management_ip == ip:
                     return True, d
             return False, f"Device with IP {ip} not found"
-        except Exception as exc:  # pragma: no cover
+        except (requests.RequestException, RuntimeError) as exc:
+            logger.exception("Exception in get_device_by_ip: %s", exc)
             return False, f"Exception in get_device_by_ip: {exc!s}"
 
     def add_device(self, name: str, parent_orm: Any, management_ip: str, device_type: str, user: str, password: str) -> \
@@ -365,7 +371,8 @@ class CCHandler:
             if resp.status_code in (200, 201):
                 try:
                     data = resp.json()
-                except Exception:
+                except (ValueError, TypeError) as exc:
+                    logger.debug("Failed to parse JSON response in add_device, falling back: %s", exc)
                     # fallback: create CCDevice from provided info
                     device = CCDevice(management_ip=management_ip, name=name, device_type=device_type)
                     return True, device
@@ -375,7 +382,8 @@ class CCHandler:
                     data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else {}))
                 return True, device
             return False, f"Failed to add device: HTTP {resp.status_code} - {resp.text}"
-        except Exception as exc:  # pragma: no cover
+        except requests.RequestException as exc:
+            logger.exception("Request exception in add_device: %s", exc)
             return False, f"Exception in add_device: {exc!s}"
 
     def delete_device(self, ip_address: str) -> Tuple[bool, str]:
@@ -405,7 +413,8 @@ class CCHandler:
             if resp.status_code in (200, 204):
                 return True, "OK"
             return False, f"Failed to delete device: HTTP {resp.status_code} - {resp.text}"
-        except Exception as exc:  # pragma: no cover
+        except requests.RequestException as exc:
+            logger.exception("Exception in delete_device: %s", exc)
             return False, f"Exception in delete_device: {exc!s}"
 
     def add_device_range(self, name_convention: str, parent_orm: Any, device_type: str, start_ip: str, end_ip: str,
@@ -447,7 +456,8 @@ class CCHandler:
                 idx += 1
 
             return True, "OK"
-        except Exception as exc:  # pragma: no cover
+        except requests.RequestException as exc:
+            logger.exception("Exception in add_device_range: %s", exc)
             return False, f"Exception in add_device_range: {exc!s}"
 
     def get_ids_data_formats(self, username: str, password: str) -> Tuple[bool, Union[str, List[str]]]:
@@ -516,20 +526,21 @@ class CCHandler:
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             ssh.connect(hostname=self.cc_ip, port=22, username=username, password=password, timeout=10)
 
-            with SCPClient(ssh.get_transport()) as scp:
-                scp.get(remote_path, local_path)
+            with SCPClient(ssh.get_transport()) as scp_client:
+                scp_client.get(remote_path, local_path)
 
             try:
                 ssh.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Error closing SSH after download: %s", exc)
             return True, local_path
-        except Exception as exc:
+        except (paramiko.SSHException, paramiko.AuthenticationException, scp.SCPException, FileNotFoundError, IOError) as exc:
             try:
                 if ssh:
                     ssh.close()
-            except Exception:
-                pass
+            except Exception as exc2:
+                logger.debug("Error closing SSH in download exception handler: %s", exc2)
+            logger.exception("Download error for IdsDataFormat: %s", exc)
             return False, f"Download error: {exc!s}"
 
     def get_management_ports(self) -> Tuple[bool, Union[str, List[Dict[str, str]]]]:
@@ -558,8 +569,9 @@ class CCHandler:
                     return False, f"Failed to parse management ports response: {exc!s}"
 
             return False, f"Failed to fetch management ports: HTTP {resp.status_code}"
-        except Exception as exc:
-            return False, f"Exception in get_management_ports: {exc!s}"
+        except requests.RequestException as exc:
+            logger.exception("Request exception in get_management_ports: %s", exc)
+            return False, f"Request exception in get_management_ports: {exc!s}"
 
 
 def get_cc_handler(cc_ip: str, username: str, password: str) -> CCHandler:
@@ -577,7 +589,7 @@ def get_cc_handler(cc_ip: str, username: str, password: str) -> CCHandler:
         # Auto-authenticate but do not raise on failure; caller can check is_authenticated().
         try:
             handler.login()
-        except Exception:
+        except requests.RequestException:
             # swallow - login returns (bool, str) and internal exceptions are handled
             pass
 

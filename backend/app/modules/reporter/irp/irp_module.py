@@ -1,3 +1,4 @@
+import logging
 from time import sleep
 from typing import Dict, Any, Optional, Union
 from typing import Tuple
@@ -6,6 +7,9 @@ from backend.app.modules.reporter.irp.tools.convert_xml import ConvertXml
 from backend.app.modules.reporter.irp.tools.message_resolver import MessageResolver
 from backend.app.modules.reporter.irp.tools.template_generator import TemplateGenerator
 from backend.app.modules.reporter.irp.core.irp_formatter import IrpFormatter
+
+# Add module logger
+logger = logging.getLogger(__name__)
 
 
 def convert_xml(xml_file_path: str) -> Dict[str, Any]:
@@ -38,6 +42,7 @@ def convert_xml(xml_file_path: str) -> Dict[str, Any]:
         return _serialize_object(schema_dict)
 
     except Exception as e:
+        logger.exception("XML conversion error: %s", e)
         raise RuntimeError(f"XML conversion error: {e}")
 
 
@@ -211,12 +216,12 @@ def _deserialize_object(data: Any) -> Any:
                         obj.__dict__.update(obj_data)
                         return obj  # Return the actual ConvertXml object
                     except Exception as e:
-                        print(f"ERROR: Failed to instantiate ConvertXml.{class_name}: {e}")
-                        print(f"Class: {cls}, Data keys: {obj_data.keys()}")
+                        logger.exception("Failed to instantiate ConvertXml.%s: %s", class_name, e)
+                        logger.debug("Class: %s, Data keys: %s", cls, list(obj_data.keys()))
                         raise
                 else:
-                    print(f"ERROR: ConvertXml.{class_name} not found!")
-                    print(f"Available: {[x for x in dir(ConvertXml) if not x.startswith('_')]}")
+                    logger.error("ConvertXml.%s not found!", class_name)
+                    logger.debug("Available ConvertXml members: %s", [x for x in dir(ConvertXml) if not x.startswith('_')])
                     raise AttributeError(f"ConvertXml.{class_name} not found")
 
             # Try regular class import
@@ -230,7 +235,7 @@ def _deserialize_object(data: Any) -> Any:
                     obj.__dict__.update(obj_data)
                     return obj
             except Exception as e:
-                print(f"ERROR: Failed to deserialize {class_path}: {e}")
+                logger.exception("Failed to deserialize %s: %s", class_path, e)
                 raise
 
         # Regular dict - recursively deserialize values
@@ -542,9 +547,7 @@ def create_irp_template(schema_obj, message_identifier) -> Dict[str, Any]:
             "template": template
         }
     except Exception as e:
-        import traceback
-        print(f"ERROR: {e}")
-        print(traceback.format_exc())
+        logger.exception("Error creating IRP template for identifier %s: %s", message_identifier, e)
         raise
 
 

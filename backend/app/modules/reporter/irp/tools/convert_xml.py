@@ -1,3 +1,4 @@
+import logging
 import collections
 import struct
 import xml.etree.ElementTree as ET
@@ -6,6 +7,9 @@ from pathlib import Path
 import xmltodict
 
 from backend.app.modules.reporter.irp.models.data_format_models import *
+
+# Module logger
+logger = logging.getLogger(__name__)
 
 
 class ConvertXml:
@@ -69,7 +73,7 @@ class ConvertXml:
             return ordered_messages
 
         except Exception as e:
-            print(f"Warning: ElementTree parsing failed: {e}")
+            logger.warning("ElementTree parsing failed: %s", e)
             return {}
 
     def load_xml(self):
@@ -84,6 +88,7 @@ class ConvertXml:
 
             return parsed_xml
         except Exception as e:
+            logger.exception("Failed to load or parse XML file %s: %s", self.xml_file_path, e)
             raise RuntimeError(f"Failed to load or parse XML file {self.xml_file_path}: {e}")
 
     class WhileLoop:
@@ -571,22 +576,25 @@ class ConvertXml:
         """
         Debug method to print the parsed schema for verification.
         """
-        print("Parsed schema messages:")
+        if not getattr(self, 'schema', None):
+            logger.debug("No parsed schema available to debug")
+            return
+        logger.debug("Parsed schema messages:")
         for message_id, message in self.schema.messages.items():
-            print(f"Message ID: {message_id}, Message Name: {message.name}")
-            print("Data:", message.data)
+            logger.debug("Message ID: %s, Message Name: %s", message_id, message.name)
+            logger.debug("Data: %s", message.data)
 
     def debug_parsed_message(self, message_id):
         """
         Debug method to print the parsed data for a specific message ID.
         """
-        if not self.schema or message_id not in self.schema.messages:
-            print(f"Message ID {message_id} not found in schema.")
+        if not getattr(self, 'schema', None) or message_id not in self.schema.messages:
+            logger.debug("Message ID %s not found in schema.", message_id)
             return
 
         message = self.schema.messages[message_id]
-        print(f"Message ID: {message_id}, Name: {message.name}")
-        print("Data:", message.data)
+        logger.debug("Message ID: %s, Name: %s", message_id, message.name)
+        logger.debug("Data: %s", message.data)
 
     def _parse_message_element(self, key, value):
         """
