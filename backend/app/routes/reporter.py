@@ -445,6 +445,8 @@ async def test_irp_message(
         from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo
         import tempfile
         from pathlib import Path
+        from bson import ObjectId
+        import base64
 
         schema_id = payload.get("schema_id")
         message_id = payload.get("message_id")
@@ -457,13 +459,22 @@ async def test_irp_message(
             )
 
         mongo_db = get_mongo_db()
-        schema_obj = load_schema_from_mongo(mongo_db, schema_id)
 
-        if not schema_obj:
+        # Retrieve stored document to obtain xml_blob and checksum (if available)
+        try:
+            raw_doc = mongo_db.irp_data_formats.find_one({"_id": ObjectId(schema_id)})
+        except Exception as exc:
+            logger.exception("Failed to load schema document %s: %s", schema_id, exc)
+            raw_doc = None
+
+        if not raw_doc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Schema not found: {schema_id}"
             )
+
+        xml_blob = raw_doc.get("xml_blob")
+        xml_checksum = raw_doc.get("xml_checksum")
 
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
@@ -473,16 +484,48 @@ async def test_irp_message(
             captures_dir.mkdir(exist_ok=True)
             results_dir.mkdir(exist_ok=True)
 
-            xml_file_source = Path(__file__).parent.parent / "modules" / "reporter" / "irp" / "data_formats" / "IdsDataFormat100600.xml"
-
-            if not xml_file_source.exists():
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="DataFormat XML source file not found"
-                )
-
+            # Determine XML content to use for the parser: prefer stored xml_blob
             xml_file_for_parser = temp_path / "IdsDataFormat.xml"
-            xml_file_for_parser.write_text(xml_file_source.read_text())
+
+            used_cached_blob = False
+            if xml_blob:
+                try:
+                    xml_bytes = base64.b64decode(xml_blob)
+                    xml_content = xml_bytes.decode('utf-8')
+                    xml_file_for_parser.write_text(xml_content)
+                    used_cached_blob = True
+                    if xml_checksum:
+                        logger.debug(f"Using XML blob with checksum: {xml_checksum[:16]}...")
+                    else:
+                        logger.debug("Using XML blob (no checksum available)")
+                except Exception as exc:
+                    # Base64 decode failed - log and fall back to bundled XML file
+                    logger.exception("Failed to decode stored xml_blob for schema %s: %s", schema_id, exc)
+                    used_cached_blob = False
+
+            if not used_cached_blob:
+                # Fallback: use local data_formats copy shipped with the repo
+                xml_file_source = Path(__file__).parent.parent / "modules" / "reporter" / "irp" / "data_formats" / "IdsDataFormat100600.xml"
+
+                if not xml_file_source.exists():
+                    logger.error("No xml_blob in schema and local fallback XML not found for schema %s", schema_id)
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="DataFormat XML source not available for parsing"
+                    )
+
+                # Copy local source to temp parser file
+                xml_file_for_parser.write_text(xml_file_source.read_text())
+                logger.debug("Falling back to local data_formats copy for schema %s", schema_id)
+
+            # Reconstruct schema object using existing helper
+            schema_obj = load_schema_from_mongo(mongo_db, schema_id)
+
+            if not schema_obj:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Schema reconstruction failed: {schema_id}"
+                )
 
             coordinator = MessageTestingCoordinator(
                 captures_dir=captures_dir,
@@ -516,6 +559,8 @@ async def test_irp_message(
                 "parsed_xml": parsed_xml
             }
 
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception(f"Error testing message: {exc}")
         raise HTTPException(

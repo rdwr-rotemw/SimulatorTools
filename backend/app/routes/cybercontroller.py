@@ -594,8 +594,16 @@ async def download_ids_data_format(
     the CC host via SSH using provided root credentials and downloads the file
     via SCP to /tmp/data_formats/ on the backend host.
 
-    Returns a JSON object with keys: success (bool), message (str), local_path (str).
+    The endpoint implements checksum-based caching: if a schema with the same
+    version and SHA256 checksum already exists in MongoDB, conversion is skipped
+    and the existing stored schema is reused.
+
+    Returns a JSON object with keys: success (bool), message (str), local_path (str), mongo_id (str), note (str).
     """
+    import hashlib
+    import base64
+    from datetime import datetime, timezone
+
     try:
         cc_session = db.query(CCSession).filter(
             CCSession.cc_ip == cc_ip,
@@ -616,44 +624,77 @@ async def download_ids_data_format(
 
         ok, res = handler.download_ids_data_format(payload.sim_version, payload.username, payload.password)
         if not ok:
-            return {"success": False, "message": res, "local_path": "", "mongo_id": ""}
+            return {"success": False, "message": res, "local_path": "", "mongo_id": "", "note": ""}
 
         local_path = res
 
         # Ensure file exists before attempting conversion
         if not os.path.exists(local_path):
-            return {"success": False, "message": f"Downloaded file not found: {local_path}", "local_path": local_path, "mongo_id": ""}
+            return {"success": False, "message": f"Downloaded file not found: {local_path}", "local_path": local_path, "mongo_id": "", "note": ""}
 
-        # Convert XML to JSON-like structure and insert into MongoDB
+        # Read file bytes and compute SHA256 checksum
+        try:
+            with open(local_path, 'rb') as f:
+                file_bytes = f.read()
+        except Exception as exc:
+            logger.exception("Failed to read downloaded file %s: %s", local_path, exc)
+            return {"success": False, "message": f"Failed to read downloaded file: {exc!s}", "local_path": local_path, "mongo_id": "", "note": ""}
+
+        sha256_hash = hashlib.sha256(file_bytes).hexdigest()
+
+        # Check MongoDB for existing schema with same version + checksum
+        try:
+            mongo_db = get_mongo_db()
+            existing = mongo_db.irp_data_formats.find_one({
+                "IdsDataFormat_version": payload.sim_version,
+                "xml_checksum": sha256_hash
+            })
+        except Exception as exc:
+            logger.exception("Failed to query MongoDB for existing schema: %s", exc)
+            existing = None
+
+        if existing:
+            mongo_id = str(existing.get("_id"))
+            logger.info("Reusing cached XML blob for version %s (checksum %s...)", payload.sim_version, sha256_hash[:16])
+            return {"success": True, "message": "Reused cached XML blob", "local_path": local_path, "mongo_id": mongo_id, "note": "Reused cached blob"}
+
+        # No cached match - perform conversion and store new document
         try:
             converted = convert_xml(local_path)
-            # Debug: print what convert_xml returns
-            print("DEBUG convert_xml output:")
-            print(f"Type: {type(converted)}")
-            print(f"Keys: {list(converted.keys()) if isinstance(converted, dict) else 'N/A'}")
-            print(f"Content: {converted}")
-            mongo_db = get_mongo_db()
+        except FileNotFoundError:
+            return {"success": False, "message": "Downloaded file disappeared before conversion", "local_path": local_path, "mongo_id": "", "note": ""}
+        except Exception as exc:
+            logger.exception("Conversion failed for %s: %s", local_path, exc)
+            return {"success": False, "message": f"Conversion error: {exc!s}", "local_path": local_path, "mongo_id": "", "note": ""}
+
+        try:
             template_name = os.path.basename(local_path)
             if template_name.lower().endswith('.xml'):
                 template_name = template_name[:-4]
 
-            doc = IRPMessageTemplate(
-                template_name=template_name,
-                description=f"Downloaded from {cc_ip}",
-                xml_schema=converted,  # Pass entire converted schema dict
-                IdsDataFormat_version=payload.sim_version,
-                user_id=str(current_user.user_id),
-            )
+            # Prepare document for MongoDB insertion (include blob, checksum, timestamps)
+            insert_doc = {
+                "template_name": template_name,
+                "description": f"Downloaded from {cc_ip}",
+                "xml_schema": converted,
+                "IdsDataFormat_version": payload.sim_version,
+                "user_id": str(current_user.user_id),
+                "xml_blob": base64.b64encode(file_bytes).decode(),
+                "xml_checksum": sha256_hash,
+                "created_at": datetime.now(timezone.utc),
+                "updated_at": datetime.now(timezone.utc),
+                "is_public": False,
+            }
 
-            result = mongo_db.irp_data_formats.insert_one(doc.model_dump())
+            result = mongo_db.irp_data_formats.insert_one(insert_doc)
             mongo_id = str(result.inserted_id)
 
-            return {"success": True, "message": "Downloaded and saved", "local_path": local_path, "mongo_id": mongo_id}
-        except FileNotFoundError:
-            return {"success": False, "message": "Downloaded file disappeared before conversion", "local_path": local_path, "mongo_id": ""}
+            logger.info("Downloaded and stored new XML schema %s (id=%s, checksum=%s...)", payload.sim_version, mongo_id, sha256_hash[:16])
+            return {"success": True, "message": "Downloaded and saved", "local_path": local_path, "mongo_id": mongo_id, "note": "Parsed new XML"}
         except Exception as exc:
-            # Conversion or Mongo insertion failed
-            return {"success": False, "message": f"Conversion/Mongo error: {exc!s}", "local_path": local_path, "mongo_id": ""}
+            logger.exception("Failed to insert converted schema into MongoDB: %s", exc)
+            return {"success": False, "message": f"Mongo insert error: {exc!s}", "local_path": local_path, "mongo_id": "", "note": ""}
+
     except HTTPException:
         raise
     except Exception as exc:

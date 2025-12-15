@@ -23,6 +23,9 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import SQLAlchemyError
 from pymongo import MongoClient, errors as pymongo_errors
+import pymongo
+from pymongo import ASCENDING
+from pymongo.errors import PyMongoError
 
 from backend.app.utils.config import settings
 
@@ -127,6 +130,57 @@ def check_databases() -> dict:
     return result
 
 
+def create_irp_indexes(mongo_db: Optional["pymongo.database.Database"] = None) -> None:
+    """Create recommended indexes on the `irp_data_formats` collection.
+
+    Indexes created:
+      1. Compound index on (IdsDataFormat_version, xml_checksum)
+         - name: version_checksum_idx
+         - sparse=True because older documents may lack xml_checksum
+      2. Single-field index on IdsDataFormat_version (name: version_idx)
+      3. Single-field index on created_at (name: created_at_idx)
+
+    This function is idempotent and safe to call multiple times. If `mongo_db`
+    is not provided, it will use the application's configured MongoDB via
+    `get_mongo_db()`.
+    """
+    logger = logging.getLogger("sim-tools.db.indexes")
+    try:
+        if mongo_db is None:
+            mongo_db = get_mongo_db()
+        coll = mongo_db.irp_data_formats
+
+        # 1) Compound index: (IdsDataFormat_version, xml_checksum) - sparse
+        try:
+            idx_name = coll.create_index(
+                [("IdsDataFormat_version", ASCENDING), ("xml_checksum", ASCENDING)],
+                name="version_checksum_idx",
+                sparse=True,
+            )
+            logger.info("Created or verified index: %s", idx_name)
+        except PyMongoError as exc:
+            logger.exception("Failed to create compound index version_checksum_idx: %s", exc)
+
+        # 2) Single index: IdsDataFormat_version
+        try:
+            idx_name = coll.create_index([("IdsDataFormat_version", ASCENDING)], name="version_idx")
+            logger.info("Created or verified index: %s", idx_name)
+        except PyMongoError as exc:
+            logger.exception("Failed to create index version_idx: %s", exc)
+
+        # 3) Single index: created_at
+        try:
+            idx_name = coll.create_index([("created_at", ASCENDING)], name="created_at_idx")
+            logger.info("Created or verified index: %s", idx_name)
+        except PyMongoError as exc:
+            logger.exception("Failed to create index created_at_idx: %s", exc)
+
+    except Exception as exc:
+        logger = logging.getLogger("sim-tools.db.indexes")
+        logger.exception("Unexpected error while creating IRP indexes: %s", exc)
+        raise
+
+
 __all__ = [
     "engine",
     "SessionLocal",
@@ -136,5 +190,6 @@ __all__ = [
     "verify_postgres_connection",
     "verify_mongo_connection",
     "check_databases",
+    "create_irp_indexes",
     "Base",
 ]

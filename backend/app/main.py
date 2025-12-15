@@ -246,6 +246,16 @@ async def on_startup():
             logger.exception("Failed to seed roles on startup: %s", exc)
     except Exception as exc:
         logger.exception("Failed to create database tables on startup: %s", exc)
+
+    # Optionally create MongoDB indexes for IRP schemas. This is commented out by default
+    # because index creation may be an operational step. To enable, uncomment the import and call.
+    from backend.app.utils.database import create_irp_indexes
+    try:
+        create_irp_indexes()
+        logger.info("Ensured MongoDB indexes for irp_data_formats")
+    except Exception:
+        logger.exception("Failed to create/ensure MongoDB indexes on startup")
+
     # NOTE: Initialization of optional, long-lived resources is intentionally deferred.
     # Rationale and guidance:
     # - HTTP connection pooling: Nice-to-have if the service will make many frequent outbound
