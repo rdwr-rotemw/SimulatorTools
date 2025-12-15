@@ -1,14 +1,16 @@
-FROM python:3.11-slim
+FROM rockylinux:9
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install system dependencies using dnf (Rocky Linux)
+RUN dnf install -y \
+    python3.11 \
+    python3.11-pip \
     snmp \
     curl \
-    openjdk-17-jre-headless \
-    && rm -rf /var/lib/apt/lists/*
+    java-17-openjdk-headless \
+    && dnf clean all
 
 # Verify Java is available
 RUN java -version
