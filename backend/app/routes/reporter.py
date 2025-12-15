@@ -434,4 +434,94 @@ async def delete_irp_template(
         raise HTTPException(status_code=500, detail=f"Failed to delete template: {str(e)}")
 
 
+@router.post("/reporter/irp/test-message")
+async def test_irp_message(
+    payload: dict,
+    current_user: User = Depends(get_current_user)
+):
+    """Test IRP message with full e2e workflow (UDP capture + Java parser)."""
+    try:
+        from backend.app.modules.reporter.irp.core.message_testing_coordinator import MessageTestingCoordinator
+        from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo
+        import tempfile
+        from pathlib import Path
+
+        schema_id = payload.get("schema_id")
+        message_id = payload.get("message_id")
+        template_data = payload.get("template")
+
+        if not all([schema_id, message_id, template_data]):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing required fields: schema_id, message_id, template"
+            )
+
+        mongo_db = get_mongo_db()
+        schema_obj = load_schema_from_mongo(mongo_db, schema_id)
+
+        if not schema_obj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Schema not found: {schema_id}"
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            captures_dir = temp_path / "captures"
+            results_dir = temp_path / "results"
+
+            captures_dir.mkdir(exist_ok=True)
+            results_dir.mkdir(exist_ok=True)
+
+            xml_file_source = Path(__file__).parent.parent / "modules" / "reporter" / "irp" / "data_formats" / "IdsDataFormat100600.xml"
+
+            if not xml_file_source.exists():
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="DataFormat XML source file not found"
+                )
+
+            xml_file_for_parser = temp_path / "IdsDataFormat.xml"
+            xml_file_for_parser.write_text(xml_file_source.read_text())
+
+            coordinator = MessageTestingCoordinator(
+                captures_dir=captures_dir,
+                results_dir=results_dir
+            )
+
+            result = coordinator.test_message(
+                message_id=message_id,
+                message_data=template_data,
+                schema_obj=schema_obj,
+                xml_file_for_parser=str(xml_file_for_parser),
+                from_ip="127.0.0.1",
+                to_ip="127.0.0.1",
+                timeout=30
+            )
+
+            parsed_xml = None
+            if result.get("status") == "completed":
+                for step in result.get("steps", []):
+                    if step.get("step") == "parse_message" and step.get("parse_result_file"):
+                        parse_file = Path(step["parse_result_file"])
+                        if parse_file.exists():
+                            with open(parse_file, 'r') as f:
+                                parsed_xml = f.read()
+                        break
+
+            return {
+                "success": result.get("status") == "completed",
+                "message": f"Test {'completed' if result.get('status') == 'completed' else 'failed'} for message {message_id}",
+                "result": result,
+                "parsed_xml": parsed_xml
+            }
+
+    except Exception as exc:
+        logger.exception(f"Error testing message: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error testing message: {exc!s}"
+        )
+
+
 __all__ = ["router"]

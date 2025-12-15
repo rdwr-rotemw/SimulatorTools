@@ -25,9 +25,8 @@ from pathlib import Path
 # Add parent directory to path to allow imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from core.message_testing_coordinator import MessageTestingCoordinator
-from core.session_logger import SessionLogger
-from tools.template_generator import TemplateGenerator
+from backend.app.modules.reporter.irp.core.message_testing_coordinator import MessageTestingCoordinator
+from backend.app.modules.reporter.irp.tools.template_generator import TemplateGenerator
 
 # E2E directories
 E2E_DIR = Path(__file__).parent

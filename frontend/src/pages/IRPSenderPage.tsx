@@ -36,6 +36,7 @@ import DeleteIcon from '@mui/icons-material/Delete'
 import CasinoIcon from '@mui/icons-material/Casino'
 import LoopIcon from '@mui/icons-material/Loop'
 import StopIcon from '@mui/icons-material/Stop'
+import ScienceIcon from '@mui/icons-material/Science'
 
 import Layout from '../components/common/Layout'
 import useCCStore from '../store/ccStore'
@@ -146,8 +147,8 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       if (fieldKey && fieldKey.toLowerCase().includes('url')) {
         return 'https://radware.com'
       }
-      // Special handling: if field name contains 'fqdn', generate valid FQDN
-      if (fieldKey && fieldKey.toLowerCase().includes('fqdn')) {
+      // Special handling: if field name contains 'fqdn' or 'domain', generate valid FQDN
+      if (fieldKey && (fieldKey.toLowerCase().includes('fqdn') || fieldKey.toLowerCase().includes('domain'))) {
         const tlds = ['.com', '.org', '.net', '.io', '.co', '.info', '.biz']
         const randomTld = tlds[Math.floor(Math.random() * tlds.length)]
         const randomDomain = Math.random().toString(36).substring(2, 10)
@@ -490,6 +491,11 @@ export const IRPSenderPage: React.FC = () => {
   const [messageValidationState, setMessageValidationState] = useState<Map<number, boolean>>(new Map())
   const hasValidationErrors = Array.from(messageValidationState.values()).some(isValid => !isValid)
 
+  // Test message state
+  const [testDialogOpen, setTestDialogOpen] = useState(false)
+  const [testResult, setTestResult] = useState<any>(null)
+  const [testingMessage, setTestingMessage] = useState(false)
+
   // Loop functionality state
   const [loopDialogOpen, setLoopDialogOpen] = useState(false)
   const [loopDelay, setLoopDelay] = useState<number>(15) // seconds - default 15s
@@ -722,6 +728,60 @@ export const IRPSenderPage: React.FC = () => {
     URL.revokeObjectURL(url)
   }
 
+  // Test single message with e2e workflow
+  const handleTestMessage = async (messageIndex: number) => {
+    if (!schemaId) {
+      setSnackbar({ open: true, message: 'Schema not loaded', severity: 'error' })
+      return
+    }
+
+    const msg = messages[messageIndex]
+
+    try {
+      setTestingMessage(true)
+      setTestResult(null)
+
+      // Transform attack-id back to time+cnt
+      const backendData = transformFromAttackId(msg.data, msg.originalSchema)
+
+      const payload = {
+        schema_id: schemaId,
+        message_id: parseInt(msg.messageType),
+        message_name: msg.messageName,
+        template: backendData
+      }
+
+      const response = await fetch(`${process.env.REACT_APP_API_BASE_URL}/reporter/irp/test-message`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('token')}`,
+        },
+        body: JSON.stringify(payload),
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        throw new Error(error.detail || 'Test failed')
+      }
+
+      const result = await response.json()
+      setTestResult(result)
+      setTestDialogOpen(true)
+
+      if (result.success) {
+        setSnackbar({ open: true, message: 'Message test completed successfully', severity: 'success' })
+      } else {
+        setSnackbar({ open: true, message: 'Message test failed - see details', severity: 'error' })
+      }
+    } catch (error: any) {
+      console.error('Error testing message:', error)
+      setSnackbar({ open: true, message: error.message || 'Failed to test message', severity: 'error' })
+    } finally {
+      setTestingMessage(false)
+    }
+  }
+
   // Send Messages
   const handleSendMessages = async () => {
     if (!selectedSimulator || !selectedDestinationPort || messages.length === 0) {
@@ -932,6 +992,16 @@ export const IRPSenderPage: React.FC = () => {
                         size="small"
                       >
                         <CasinoIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Test message parsing">
+                      <IconButton
+                        onClick={() => handleTestMessage(index)}
+                        size="small"
+                        color="primary"
+                        disabled={!messageValidationState.get(index) || testingMessage}
+                      >
+                        <ScienceIcon fontSize="small" />
                       </IconButton>
                     </Tooltip>
                     <IconButton onClick={() => deleteMessage(index)} color="error">
@@ -1146,6 +1216,66 @@ export const IRPSenderPage: React.FC = () => {
       >
         <Alert severity={snackbar.severity}>{snackbar.message}</Alert>
       </Snackbar>
+
+      {/* Test Result Dialog */}
+      <Dialog
+        open={testDialogOpen}
+        onClose={() => setTestDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>
+          Message Test Result
+          {testResult?.success && ' ✓'}
+          {testResult && !testResult.success && ' ✗'}
+        </DialogTitle>
+        <DialogContent>
+          {testResult && (
+            <Box>
+              <Typography variant="subtitle2" gutterBottom>
+                Status: {testResult.success ? 'Success' : 'Failed'}
+              </Typography>
+
+              {testResult.parsed_xml && (
+                <Box sx={{ marginTop: 2 }}>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Parsed XML Result:
+                  </Typography>
+                  <TextField
+                    multiline
+                    fullWidth
+                    rows={20}
+                    value={testResult.parsed_xml}
+                    InputProps={{
+                      readOnly: true,
+                      sx: { fontFamily: 'monospace', fontSize: '0.85rem' }
+                    }}
+                    sx={{ marginTop: 1 }}
+                  />
+                </Box>
+              )}
+
+              {testResult.result && (
+                <Box sx={{ marginTop: 2 }}>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Test Steps:
+                  </Typography>
+                  {testResult.result.steps?.map((step: any, idx: number) => (
+                    <Box key={idx} sx={{ marginLeft: 2, marginTop: 1 }}>
+                      <Typography variant="body2">
+                        {idx + 1}. {step.step}: {step.status}
+                      </Typography>
+                    </Box>
+                  ))}
+                </Box>
+              )}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setTestDialogOpen(false)}>Close</Button>
+        </DialogActions>
+      </Dialog>
     </Layout>
   )
 }

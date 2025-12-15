@@ -249,12 +249,12 @@ class TemplateGenerator:
 
         elif 'string' in type_lower or 'name' in type_lower:
             metadata["fieldType"] = "string"
-            metadata["default"] = ""
+            metadata["default"] = "str"
 
         else:
             # Unknown type - treat as string
             metadata["fieldType"] = "string"
-            metadata["default"] = ""
+            metadata["default"] = "str"
 
         # Check for fixed-string size (do this AFTER setting fieldType to string)
         # This handles both simple names and namespaced names
@@ -1619,9 +1619,17 @@ class TemplateGenerator:
         elif type_lower == 'ipv4and6':
             return "192.168.1.1"
         elif 'string' in type_lower or 'name' in type_lower:
-            return ""
+            return "str"
         else:
-            # Check if it's a fixed-string type by looking in schema types
+            # Check if it's a fixed-string type in schema.types.fixed_strings
+            if hasattr(self.schema, 'types') and hasattr(self.schema.types, 'fixed_strings'):
+                fixed_strings = self.schema.types.fixed_strings
+                if isinstance(fixed_strings, dict) and type_name in fixed_strings:
+                    # This handles both flat (e.g., "attack-state") and namespaced
+                    # (e.g., "httpsfloodprotection.detection-engine") fixed-strings
+                    return "str"
+
+            # Check if it's a fixed-string in namespace dict (legacy check)
             if '.' in type_name:
                 namespace, type_local_name = type_name.rsplit('.', 1)
                 if (hasattr(self.schema, 'types') and
@@ -1630,7 +1638,7 @@ class TemplateGenerator:
                     namespace_obj = self.schema.types.namespaces[namespace]
                     # Fixed-strings are stored as string values in the namespace dict
                     if type_local_name in namespace_obj and isinstance(namespace_obj[type_local_name], str):
-                        return ""  # Fixed-string type - return empty string
+                        return "str"
 
             # For unknown types, return 0 as safe default
             return 0
