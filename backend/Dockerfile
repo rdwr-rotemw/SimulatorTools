@@ -1,10 +1,9 @@
 FROM rockylinux:9
 
-# Set working directory
-WORKDIR /app
-
-# Install system dependencies using dnf (Rocky Linux)
-RUN dnf install -y \
+# Enable EPEL and PowerTools repos for python3.11 and java
+RUN dnf install -y epel-release && \
+    dnf config-manager --set-enabled crb && \
+    dnf install -y \
     python3.11 \
     python3.11-pip \
     snmp \
@@ -12,7 +11,14 @@ RUN dnf install -y \
     java-17-openjdk-headless \
     && dnf clean all
 
-# Verify Java is available
+# Set python3.11 as default
+RUN alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \
+    alternatives --install /usr/bin/pip3 pip3 /usr/bin/pip3.11 1
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies verified: Java
 RUN java -version
 
 # Install Python requirements
