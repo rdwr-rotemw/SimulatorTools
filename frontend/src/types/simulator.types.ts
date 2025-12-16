@@ -1,25 +1,19 @@
 export interface Simulator {
   ip_address: string;
-  type: string;
-  version: string;
   map: string;
-  status: string;
+  template_id?: string;
   created_at: string;
 }
 
 export interface SimulatorCreate {
   ip_address: string;
-  type: string;
-  version: string;
   map: string;
-  status: string;
+  template_id: string;
 }
 
 export interface SimulatorUpdate {
-  type: string;
-  version: string;
-  map: string;
-  status: string;
+  map?: string;
+  template_id?: string;
 }
 
 export interface SimulatorState {
@@ -36,4 +30,3 @@ export interface SimulatorState {
 
   clearError: () => void;
 }
-

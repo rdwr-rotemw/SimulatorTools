@@ -1,22 +1,23 @@
 """
-Simulator management endpoints (CRUD).
+Simulator management endpoints (CRUD) and Device Template CRUD merged into one router.
 
-Implements DB-only CRUD for Simulator model:
-- POST /api/simulators
-- GET  /api/simulators/{simulator_ip}
-- GET  /api/simulators
-- PUT  /api/simulators/{simulator_ip}
-- DELETE /api/simulators/{simulator_ip}
+This file consolidates endpoints previously split across:
+- backend/app/routes/sapro.py (simulator endpoints)
+- backend/app/routes/sapro_simulator.py (if existed)
+- backend/app/routes/device_templates.py (device template CRUD)
 
-Protected endpoints (create/update/delete) require authentication via
-`get_current_user`. No Sapro/CyberController integrations are performed
-here; this is basic DB CRUD only.
+Router: single APIRouter(prefix="/api", tags=["sapro"]) with simulator endpoints first,
+then template endpoints.
 """
-from typing import List
+from typing import List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from datetime import datetime, timezone
+
+from bson import ObjectId
+from bson.errors import InvalidId
 
 from backend.app.schemas.sapro_simulator import (
     SaproSimulatorCreate,
@@ -25,42 +26,72 @@ from backend.app.schemas.sapro_simulator import (
 )
 from backend.app.schemas.common import SuccessResponse
 from backend.app.models.simulator import Simulator
-from backend.app.utils.database import get_db
+from backend.app.utils.database import get_db, get_mongo_db
 from backend.app.utils.auth import require_sapro_access
 from backend.app.modules import get_sapro_handler
+from backend.app.modules.mongo_models import (
+    DeviceTemplateCreate,
+    DeviceTemplateUpdate,
+)
+from backend.app.modules.sapro.template_converter import json_to_xml
 
 router = APIRouter(prefix="/api", tags=["sapro"])
 
 
+# ----------------------------- Simulator Endpoints -----------------------------
 @router.post("/simulators", response_model=SaproSimulatorResponse, status_code=status.HTTP_201_CREATED)
 def create_simulator(
         payload: SaproSimulatorCreate,
         db: Session = Depends(get_db),
         _current_user=Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler),
+        mongo_db = Depends(get_mongo_db),
 ) -> SaproSimulatorResponse:
     """Create a new simulator in Sapro and persist it to the DB.
 
-    This endpoint integrates with the Sapro server to create or start a
-    simulator device, then saves the simulator metadata in the local DB
-    upon success.
+    Workflow changes:
+    - `payload.template_id` is used to load a device template from MongoDB
+    - The stored JSON template is converted to XML via `json_to_xml` and the
+      resulting XML string is passed to the Sapro handler when creating the device.
     """
     # Conflict if already exists in DB
     existing = db.get(Simulator, payload.ip_address)
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Simulator with this IP already exists")
 
-    # Call Sapro to create device
-    success, message = sapro_handler.create_device(payload.ip_address, payload.type, payload.template, payload.map)
+    # Load template from MongoDB
+    try:
+        tpl_oid = ObjectId(payload.template_id)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid template_id")
+
+    templates_coll = mongo_db["device_templates"]
+    tpl_doc = templates_coll.find_one({"_id": tpl_oid})
+    if not tpl_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    # Extract JSON template structure
+    template_json = tpl_doc.get("template")
+    if template_json is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Template is missing 'template' field")
+
+    # Convert JSON to XML
+    try:
+        xml_content = json_to_xml(template_json)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to convert template to XML: {exc}")
+
+    # Call Sapro to create device using the XML content
+    success, message = sapro_handler.create_device(payload.ip_address, xml_content, payload.map)
     if not success:
         # Sapro reported failure
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
 
-    # Persist to DB
+    # Persist to DB with template_id reference
     sim = Simulator(
         ip_address=payload.ip_address,
-        type=payload.type,
-        version=payload.template,
+        type=(tpl_doc.get("name") or ""),
+        version=(tpl_doc.get("description") or ""),
         map=payload.map,
         status="running",
     )
@@ -76,7 +107,11 @@ def create_simulator(
         db.rollback()
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
-    return SaproSimulatorResponse.model_validate(sim)
+    # Return response including template id reference
+    resp = SaproSimulatorResponse.model_validate(sim)
+    # attach template reference into response (if desired consumer needs it they can query DB)
+    # We return same response model; template_id not part of response model per current schema
+    return resp
 
 
 @router.get("/simulators/{simulator_ip}", response_model=SaproSimulatorResponse)
@@ -185,3 +220,177 @@ def delete_simulator(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     return SuccessResponse(message="Simulator deleted successfully", data={"ip_address": simulator_ip})
+
+
+# ----------------------------- Device Template Endpoints -----------------------------
+@router.post("/device-templates", status_code=status.HTTP_201_CREATED)
+async def create_device_template(
+    payload: DeviceTemplateCreate,
+    current_user=Depends(require_sapro_access),
+    mongo_db = Depends(get_mongo_db),
+):
+    """Create a new device template. Returns minimal metadata on success.
+
+    Error: 409 if name already exists.
+    """
+    collection = mongo_db["device_templates"]
+
+    # Check unique name
+    existing = collection.find_one({"name": payload.name})
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Template name already exists")
+
+    now = datetime.now(timezone.utc)
+    doc = {
+        "name": payload.name,
+        "description": payload.description,
+        "template": payload.template,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    result = collection.insert_one(doc)
+
+    return {
+        "_id": str(result.inserted_id),
+        "name": payload.name,
+        "description": payload.description,
+        "created_at": now.isoformat(),
+    }
+
+
+@router.get("/device-templates", response_model=List[Dict[str, Any]])
+async def list_device_templates(
+    current_user=Depends(require_sapro_access),
+    mongo_db = Depends(get_mongo_db),
+):
+    """List all device templates (lightweight listing without full template body)."""
+    collection = mongo_db["device_templates"]
+
+    cursor = collection.find({}, {"template": 0})
+
+    result: List[Dict[str, Any]] = []
+    for d in cursor:
+        created = d.get("created_at")
+        if isinstance(created, datetime):
+            created_val = created.isoformat()
+        else:
+            created_val = created or ""
+
+        result.append({
+            "_id": str(d.get("_id")),
+            "name": d.get("name"),
+            "description": d.get("description"),
+            "created_at": created_val,
+        })
+
+    return result
+
+
+@router.get("/device-templates/{template_id}")
+async def get_device_template(
+    template_id: str,
+    current_user=Depends(require_sapro_access),
+    mongo_db = Depends(get_mongo_db),
+):
+    """Return full device template by id."""
+    collection = mongo_db["device_templates"]
+    try:
+        oid = ObjectId(template_id)
+    except (InvalidId, TypeError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    doc = collection.find_one({"_id": oid})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    # Convert datetimes and ObjectId to serializable types
+    created = doc.get("created_at")
+    updated = doc.get("updated_at")
+    if isinstance(created, datetime):
+        doc["created_at"] = created.isoformat()
+    if isinstance(updated, datetime):
+        doc["updated_at"] = updated.isoformat()
+
+    doc["_id"] = str(doc.get("_id"))
+
+    return doc
+
+
+@router.put("/device-templates/{template_id}")
+async def update_device_template(
+    template_id: str,
+    payload: DeviceTemplateUpdate,
+    current_user=Depends(require_sapro_access),
+    mongo_db = Depends(get_mongo_db),
+):
+    """Update fields of a device template. Returns updated metadata.
+
+    Error: 404 if not found.
+    """
+    collection = mongo_db["device_templates"]
+    try:
+        oid = ObjectId(template_id)
+    except (InvalidId, TypeError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    existing = collection.find_one({"_id": oid})
+    if not existing:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    update_fields: Dict[str, Any] = {}
+    if payload.name is not None:
+        # Ensure uniqueness of name when changing
+        conflict = collection.find_one({"name": payload.name, "_id": {"$ne": oid}})
+        if conflict:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Template name already exists")
+        update_fields["name"] = payload.name
+    if payload.description is not None:
+        update_fields["description"] = payload.description
+    if payload.template is not None:
+        update_fields["template"] = payload.template
+
+    if update_fields:
+        update_fields["updated_at"] = datetime.now(timezone.utc)
+        collection.update_one({"_id": oid}, {"$set": update_fields})
+
+    # Fetch updated doc for response
+    doc = collection.find_one({"_id": oid}, {"template": 0})
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    updated = doc.get("updated_at")
+    if isinstance(updated, datetime):
+        updated_val = updated.isoformat()
+    else:
+        updated_val = updated or ""
+
+    return {
+        "_id": str(doc.get("_id")),
+        "name": doc.get("name"),
+        "description": doc.get("description"),
+        "updated_at": updated_val,
+    }
+
+
+@router.delete("/device-templates/{template_id}")
+async def delete_device_template(
+    template_id: str,
+    current_user=Depends(require_sapro_access),
+    mongo_db = Depends(get_mongo_db),
+):
+    """Delete device template by id."""
+    collection = mongo_db["device_templates"]
+    try:
+        oid = ObjectId(template_id)
+    except (InvalidId, TypeError):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    result = collection.delete_one({"_id": oid})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    return {"success": True, "message": f"Template '{template_id}' deleted"}
+
+
+__all__ = ["router"]

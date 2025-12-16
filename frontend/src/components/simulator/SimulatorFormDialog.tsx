@@ -12,6 +12,7 @@ import {
 } from '@mui/material';
 import { useForm } from 'react-hook-form';
 import { Simulator, SimulatorCreate, SimulatorUpdate } from '../../types/simulator.types';
+import apiClient from '../../api/client';
 
 interface SimulatorFormDialogProps {
   open: boolean;
@@ -24,41 +25,75 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
   const { register, handleSubmit, formState, reset, setValue } = useForm<SimulatorCreate | SimulatorUpdate>({
     defaultValues: {
       ip_address: '',
-      type: '',
-      version: '',
       map: '',
-      status: '',
+      template_id: '',
     } as SimulatorCreate,
   });
 
   const { errors } = formState;
   const [isLoading, setIsLoading] = useState(false);
+  const [templates, setTemplates] = useState<Array<{ _id: string; name: string }>>([]);
+  const [isTemplatesLoading, setIsTemplatesLoading] = useState(false);
 
   const isEditMode = !!simulator;
 
   useEffect(() => {
+    // Populate form values when editing
     if (simulator) {
       setValue('ip_address' as keyof (SimulatorCreate & SimulatorUpdate), simulator.ip_address as any);
-      setValue('type' as keyof (SimulatorCreate & SimulatorUpdate), simulator.type as any);
-      setValue('version' as keyof (SimulatorCreate & SimulatorUpdate), simulator.version as any);
-      setValue('map' as keyof (SimulatorCreate & SimulatorUpdate), simulator.map as any);
-      setValue('status' as keyof (SimulatorCreate & SimulatorUpdate), simulator.status as any);
+      setValue('map' as keyof (SimulatorCreate & SimulatorUpdate), (simulator.map || '') as any);
+      // If simulator includes template_id or template, try to set it
+      if ((simulator as any).template_id) {
+        setValue('template_id' as keyof (SimulatorCreate & SimulatorUpdate), (simulator as any).template_id as any);
+      }
     } else {
       reset();
     }
   }, [simulator, setValue, reset]);
+
+  useEffect(() => {
+    // Fetch templates on mount
+    let cancelled = false;
+    const loadTemplates = async () => {
+      setIsTemplatesLoading(true);
+      try {
+        const resp = await apiClient.get('/device-templates');
+        // Expect an array of {_id, name, description, created_at}
+        const data = resp.data as Array<any>;
+        if (!cancelled) {
+          setTemplates(data.map((t) => ({ _id: t._id, name: t.name })));
+        }
+      } catch (err) {
+        console.error('Failed to load device templates', err);
+        if (!cancelled) setTemplates([]);
+      } finally {
+        if (!cancelled) setIsTemplatesLoading(false);
+      }
+    };
+
+    loadTemplates();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const ipPattern = /^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$/;
 
   const handleFormSubmit = async (data: SimulatorCreate | SimulatorUpdate) => {
     setIsLoading(true);
     try {
-      await onSubmit(data);
+      // Ensure we send only the expected shape
+      const payload: any = {
+        ip_address: (data as any).ip_address,
+        map: (data as any).map,
+        template_id: (data as any).template_id,
+      };
+      await onSubmit(payload as SimulatorCreate | SimulatorUpdate);
       reset();
       onClose();
     } catch (err) {
-      // swallow here; the store/service should set global error if needed
       console.error('Simulator submit failed', err);
+      throw err;
     } finally {
       setIsLoading(false);
     }
@@ -86,32 +121,6 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
 
             <Box>
               <TextField
-                label="Type"
-                fullWidth
-                select
-                defaultValue=""
-                {...register('type' as any, { required: 'Type is required' })}
-                error={!!(errors as any)?.type}
-                helperText={(errors as any)?.type?.message}
-              >
-                <MenuItem value="DefensePro">DefensePro</MenuItem>
-                <MenuItem value="Alteon">Alteon</MenuItem>
-                <MenuItem value="AppWall">AppWall</MenuItem>
-              </TextField>
-            </Box>
-
-            <Box>
-              <TextField
-                label="Version"
-                fullWidth
-                {...register('version' as any, { required: 'Version is required' })}
-                error={!!(errors as any)?.version}
-                helperText={(errors as any)?.version?.message}
-              />
-            </Box>
-
-            <Box>
-              <TextField
                 label="Map"
                 fullWidth
                 select
@@ -128,16 +137,21 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
 
             <Box>
               <TextField
-                label="Status"
+                label="Template"
                 fullWidth
                 select
                 defaultValue=""
-                {...register('status' as any, { required: 'Status is required' })}
-                error={!!(errors as any)?.status}
-                helperText={(errors as any)?.status?.message}
+                {...register('template_id' as any, { required: 'Template is required' })}
+                error={!!(errors as any)?.template_id}
+                helperText={(errors as any)?.template_id?.message}
               >
-                <MenuItem value="Active">Active</MenuItem>
-                <MenuItem value="Inactive">Inactive</MenuItem>
+                {isTemplatesLoading ? (
+                  <MenuItem value=""><em>Loading...</em></MenuItem>
+                ) : (
+                  templates.length ? templates.map((t) => (
+                    <MenuItem key={t._id} value={t._id}>{t.name}</MenuItem>
+                  )) : <MenuItem value=""><em>No templates</em></MenuItem>
+                )}
               </TextField>
             </Box>
 

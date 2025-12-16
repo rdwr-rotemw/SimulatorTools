@@ -12,6 +12,7 @@ and for request/response validation inside the app services.
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from bson import ObjectId
 from pydantic import BaseModel, Field
 
 
@@ -61,8 +62,63 @@ class PollingTemplate(BaseModel):
     is_public: bool = False
 
 
+# DeviceTemplate models for Sapro simulator device templates stored in MongoDB.
+class DeviceTemplate(BaseModel):
+    """Device template stored in MongoDB for Sapro simulator creation.
+
+    Fields:
+    - _id: ObjectId (auto, primary key)
+    - name: str (unique, e.g., "DPX_10_6", "ALTEON1")
+    - description: str (optional, e.g., "DefensePro 10.6.0")
+    - template: dict (flexible nested JSON structure describing the device template)
+    - created_at: datetime
+    - updated_at: datetime
+    """
+
+    _id: Optional[ObjectId] = Field(None, alias="_id")
+    name: str = Field(..., max_length=200, description="Unique template name e.g., 'DPX_10_6'")
+    description: Optional[str] = None
+    template: Dict[str, Any] = Field(..., description="Flexible nested JSON structure for the device template")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
+
+    class Config:
+        orm_mode = True
+        # Allow using the alias `_id` when creating/reading models
+        allow_population_by_field_name = True
+        # Permit BSON ObjectId as a field type and ensure it serializes to str in JSON
+        arbitrary_types_allowed = True
+        json_encoders = {ObjectId: lambda oid: str(oid)}
+        extra = "ignore"
+
+
+class DeviceTemplateCreate(BaseModel):
+    """Model for creating a DeviceTemplate (no _id)."""
+
+    name: str = Field(..., max_length=200)
+    description: Optional[str] = None
+    template: Dict[str, Any] = Field(...)
+
+    class Config:
+        extra = "ignore"
+
+
+class DeviceTemplateUpdate(BaseModel):
+    """Model for partial updates to a DeviceTemplate (all fields optional)."""
+
+    name: Optional[str]
+    description: Optional[str]
+    template: Optional[Dict[str, Any]]
+
+    class Config:
+        extra = "ignore"
+
+
 __all__ = [
     "SNMPTrapTemplate",
     "IRPMessageTemplate",
     "PollingTemplate",
+    "DeviceTemplate",
+    "DeviceTemplateCreate",
+    "DeviceTemplateUpdate",
 ]

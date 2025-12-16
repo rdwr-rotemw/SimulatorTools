@@ -6,11 +6,16 @@ from pydantic import BaseModel, Field
 
 
 class SaproSimulatorCreate(BaseModel):
-    """Schema for creating a Sapro-managed simulator."""
+    """Schema for creating a Sapro-managed simulator.
+
+    New shape:
+      - ip_address: str
+      - map: str
+      - template_id: str
+    """
     ip_address: str = Field(..., description="Simulator IP address (primary key)")
-    type: str = Field(..., description="Simulator device type/name")
-    template: str = Field(..., description="Simulator device template")
-    map: Optional[str] = Field(None, description="Optional map/profile name to assign")
+    map: str = Field(..., description="Map/profile name to assign")
+    template_id: str = Field(..., description="MongoDB _id of the device template to use")
 
     model_config = {"from_attributes": True}
 
@@ -34,4 +39,3 @@ class SaproSimulatorResponse(BaseModel):
     created_at: datetime = Field(..., description="Creation timestamp")
 
     model_config = {"from_attributes": True}
-

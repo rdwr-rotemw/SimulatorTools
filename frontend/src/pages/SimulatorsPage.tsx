@@ -7,6 +7,7 @@ import { SimulatorTable } from '../components/simulator/SimulatorTable';
 import SimulatorFormDialog from '../components/simulator/SimulatorFormDialog';
 import useSimulatorStore from '../store/simulatorStore';
 import { Simulator, SimulatorCreate, SimulatorUpdate } from '../types/simulator.types';
+import apiClient from '../api/client';
 
 interface SnackbarState {
   open: boolean;
@@ -21,7 +22,7 @@ export const SimulatorsPage: React.FC = () => {
   const [simulatorToDelete, setSimulatorToDelete] = useState<string | null>(null);
   const [snackbar, setSnackbar] = useState<SnackbarState>({ open: false, message: '', severity: 'success' });
   const [searchTerm, setSearchTerm] = useState('');
-  const [sortBy, setSortBy] = useState<'ip_address' | 'type' | 'version' | 'status'>('ip_address');
+  const [sortBy, setSortBy] = useState<'ip_address' | 'map' | 'template_id'>('ip_address');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   const {
@@ -33,8 +34,29 @@ export const SimulatorsPage: React.FC = () => {
     deleteSimulator,
   } = useSimulatorStore();
 
+  const [templates, setTemplates] = useState<Array<{ _id: string; name: string }>>([]);
+  const templateMap = React.useMemo(() => {
+    const m: Record<string, string> = {};
+    templates.forEach((t) => (m[t._id] = t.name));
+    return m;
+  }, [templates]);
+
   useEffect(() => {
     fetchSimulators();
+
+    // load templates for display
+    let cancelled = false;
+    const loadTemplates = async () => {
+      try {
+        const resp = await apiClient.get('/device-templates');
+        if (!cancelled) setTemplates((resp.data || []).map((t: any) => ({ _id: t._id, name: t.name })));
+      } catch (err) {
+        console.error('Failed to load templates', err);
+      }
+    };
+    loadTemplates();
+
+    return () => { cancelled = true; };
   }, []);
 
   const handleCreate = () => {
@@ -97,7 +119,7 @@ export const SimulatorsPage: React.FC = () => {
     setSnackbar((s) => ({ ...s, open: false }));
   };
 
-  const handleSort = (column: 'ip_address' | 'type' | 'version' | 'status') => {
+  const handleSort = (column: 'ip_address' | 'map' | 'template_id') => {
     if (sortBy === column) {
       setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
     } else {
@@ -109,16 +131,21 @@ export const SimulatorsPage: React.FC = () => {
   const filteredSimulators = simulators.filter(sim => {
     const search = searchTerm.toLowerCase();
     const ipMatch = sim.ip_address?.toLowerCase().includes(search) || false;
-    const typeMatch = sim.type?.toLowerCase().includes(search) || false;
-    const versionMatch = sim.version?.toLowerCase().includes(search) || false;
     const mapMatch = sim.map?.toLowerCase().includes(search) || false;
-    const statusMatch = sim.status?.toLowerCase().includes(search) || false;
-    return ipMatch || typeMatch || versionMatch || mapMatch || statusMatch;
+    const templateName = sim.template_id ? (templateMap[sim.template_id] || '').toLowerCase() : '';
+    const templateMatch = templateName.includes(search);
+    return ipMatch || mapMatch || templateMatch;
   });
 
   const sortedSimulators = [...filteredSimulators].sort((a, b) => {
-    let aValue: any = a[sortBy];
-    let bValue: any = b[sortBy];
+    let aValue: any = a[sortBy as keyof Simulator] as any;
+    let bValue: any = b[sortBy as keyof Simulator] as any;
+
+    // For template_id sorting, resolve to names
+    if (sortBy === 'template_id') {
+      aValue = a.template_id ? (templateMap[a.template_id] || a.template_id) : '';
+      bValue = b.template_id ? (templateMap[b.template_id] || b.template_id) : '';
+    }
 
     // Handle null/undefined values
     if (aValue == null) aValue = '';
@@ -141,7 +168,7 @@ export const SimulatorsPage: React.FC = () => {
         </Box>
 
         <TextField
-          placeholder="Search by IP, type, version, map, or status..."
+          placeholder="Search by IP, template name, or map..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           fullWidth
@@ -159,6 +186,7 @@ export const SimulatorsPage: React.FC = () => {
           sortBy={sortBy}
           sortOrder={sortOrder}
           onSort={handleSort}
+          templateMap={templateMap}
         />
 
         <SimulatorFormDialog
@@ -177,8 +205,8 @@ export const SimulatorsPage: React.FC = () => {
               <Box sx={{ marginTop: 2, padding: 2, background: '#FFF3E0', borderRadius: 1, border: '1px solid #FFB74D' }}>
                 <Typography variant="body2" sx={{ fontWeight: 600, marginBottom: 1 }}>Simulator Details:</Typography>
                 <Typography variant="body2">IP Address: <strong>{simulators.find(s => s.ip_address === simulatorToDelete)?.ip_address}</strong></Typography>
-                <Typography variant="body2">Type: <strong>{simulators.find(s => s.ip_address === simulatorToDelete)?.type || 'Unknown'}</strong></Typography>
-                <Typography variant="body2">Version: <strong>{simulators.find(s => s.ip_address === simulatorToDelete)?.version || 'Unknown'}</strong></Typography>
+                <Typography variant="body2">Map: <strong>{simulators.find(s => s.ip_address === simulatorToDelete)?.map || 'Unknown'}</strong></Typography>
+                <Typography variant="body2">Template: <strong>{templates.find(t => t._id === simulators.find(s => s.ip_address === simulatorToDelete)?.template_id)?.name || 'Unknown'}</strong></Typography>
               </Box>
             )}
 

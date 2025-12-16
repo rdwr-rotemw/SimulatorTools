@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
-from backend.app.modules.sapro.devices_templates import get_template_by_name
+# removed devices_templates import (DB-only templates now)
 from backend.app.modules.sapro.src import (
     saproCommunication,
     saproMapFunctions,
@@ -141,30 +141,6 @@ class SaproCommunicationHandler:
 
         return devices
 
-    # def snmp_get_device_info(self, device_map: str, device_ip: str) -> Tuple[Optional[str], Optional[str]]:
-    #     """Retrieve device type and version via SNMP.
-    #
-    #     Args:
-    #         device_map: Map name where the device is located.
-    #         device_ip: IP address of the device."""
-    #
-    #     device_type_response = SendTclCmdToDevice(self._sapro, device_map + ".map", device_ip, "SA_getvar { sysDescr.0 }")
-    #     device_type = ""
-    #     if "DefensePro" in device_type_response:
-    #         version_response = SendTclCmdToDevice(self._sapro, device_map + ".map", device_ip,
-    #                                               "SA_getvar { rndApsoluteOSVersion.0 }")
-    #         version = version_response.split(":")[1][:-1]
-    #         device_type = "DefensePro"
-    #     elif "Application" in device_type_response:
-    #         version = SendTclCmdToDevice(self._sapro, device_map + ".map", device_ip,
-    #                                               "SA_getvar { agSoftwareVersion.0 }")
-    #         device_type = "Alteon"
-    #     else:
-    #         device_type = None
-    #         version = None
-    #
-    #     return device_type, version
-
     def snmp_get_device_info(self, device_ip: str) -> Tuple[Optional[str], Optional[str]]:
         """Retrieve device type and version via SNMP."""
         logger.debug(f"snmp_get_device_info called for {device_ip}")
@@ -277,19 +253,6 @@ class SaproCommunicationHandler:
             msg = getattr(e, "toString", lambda: str(e))()
             raise f"Find device failed for {device_ip}: {msg}"
 
-    def set_new_device_file(self, device_ip: str, device_template: str) -> Tuple[bool, str]:
-        """Generate device file content for the given device type and IP.
-
-        Returns:
-            (success, device_file_content)
-        """
-        try:
-            device_string = get_template_by_name(device_template)
-            content = device_string.replace("<ip>", device_ip)
-            return True, content
-        except Exception as e:
-            return False, f"Failed to build device file for {device_ip}: {str(e)}"
-
     def create_device_file_on_server(self, remote_file_path: str, device_file_data: str) -> Tuple[bool, str]:
         """Write a device file to the sapro server filesystem.
 
@@ -368,7 +331,7 @@ class SaproCommunicationHandler:
         except Exception as e:
             return False, f"Failed to stop device(s) from map {map_name}: {str(e)}"
 
-    def create_device(self, device_ip: str, device_type: str, template: str, sim_map=None) -> Tuple[bool, str]:
+    def create_device(self, device_ip: str, raw_xml_content: str, map_name: str) -> Tuple[bool, str]:
         """Create (or start existing) simulator device on the sapro server.
 
         Workflow:
@@ -381,9 +344,6 @@ class SaproCommunicationHandler:
             (success, message)
         """
         try:
-            map_name = self.get_map_by_type(device_type) if not sim_map else sim_map
-            if not map_name:
-                return False, f"Map: {map_name} not found"
             map_path = self.get_full_map_path(map_name)
 
             started_ok, start_msg = self.start_map(map_path)
@@ -401,13 +361,13 @@ class SaproCommunicationHandler:
                     return True, f"Simulator {device_ip} already exists and was started"
                 return False, f"Simulator {device_ip} already exists but failed to start: {msg}"
 
-            # create device file path and content
+            # create device file path
             new_device_file_path = f"{self.map_directory}{map_name}/{device_ip}.map"
-            ok, content_or_msg = self.set_new_device_file(device_ip, template)
-            if not ok:
-                return False, content_or_msg
 
-            ok, msg = self.create_device_file_on_server(new_device_file_path, content_or_msg)
+            # use raw XML content directly
+            device_file_content = raw_xml_content.strip()
+
+            ok, msg = self.create_device_file_on_server(new_device_file_path, device_file_content)
             if not ok:
                 return False, msg
 

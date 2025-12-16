@@ -13,12 +13,23 @@ export const simulatorService = {
   },
 
   createSimulator: async (data: SimulatorCreate): Promise<Simulator> => {
-    const response = await apiClient.post<Simulator>('/simulators', data);
+    // Backend expects a `template` string field; translate frontend's template_id into `template`.
+    const payload: any = {
+      ip_address: data.ip_address,
+      map: data.map,
+      template: (data as any).template_id || data.template_id,
+    };
+    const response = await apiClient.post<Simulator>('/simulators', payload);
     return response.data;
   },
 
   updateSimulator: async (ip: string, data: SimulatorUpdate): Promise<Simulator> => {
-    const response = await apiClient.put<Simulator>(`/simulators/${ip}`, data);
+    const payload: any = {
+      map: data.map,
+    };
+    if ((data as any).template_id) payload.template = (data as any).template_id;
+
+    const response = await apiClient.put<Simulator>(`/simulators/${ip}`, payload);
     return response.data;
   },
 
@@ -27,4 +38,3 @@ export const simulatorService = {
     return;
   },
 };
-

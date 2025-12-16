@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, IconButton, Chip, Typography, Tooltip, Skeleton, Fade } from '@mui/material';
+import { Box, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, IconButton, Typography, Tooltip, Skeleton, Fade } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
@@ -11,46 +11,13 @@ interface SimulatorTableProps {
   onEdit: (simulator: Simulator) => void;
   onDelete: (ip: string) => void;
   isLoading: boolean;
-  sortBy: 'ip_address' | 'type' | 'version' | 'status';
+  sortBy: 'ip_address' | 'map' | 'template_id';
   sortOrder: 'asc' | 'desc';
-  onSort: (column: 'ip_address' | 'type' | 'version' | 'status') => void;
+  onSort: (column: 'ip_address' | 'map' | 'template_id') => void;
+  templateMap?: Record<string, string>;
 }
 
-const getStatusColor = (status: string): 'default' | 'success' | 'warning' | 'error' => {
-  switch ((status || '').toUpperCase()) {
-    case 'OK':
-      return 'success';
-    case 'LOADING':
-      return 'warning';
-    case 'FAILED':
-      return 'error';
-    case 'STOPPING':
-      return 'warning';
-    case 'SHUTDOWN':
-    case 'DISABLED':
-    default:
-      return 'default';
-  }
-};
-
-const getStatusTooltip = (status: string): string => {
-  switch ((status || '').toUpperCase()) {
-    case 'OK':
-      return 'Simulator is running and healthy';
-    case 'LOADING':
-      return 'Simulator is starting up';
-    case 'FAILED':
-      return 'Simulator encountered an error';
-    case 'STOPPED':
-      return 'Simulator is not running';
-    case 'UNKNOWN':
-      return 'Status information unavailable';
-    default:
-      return status || 'Unknown';
-  }
-};
-
-export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEdit, onDelete, isLoading, sortBy, sortOrder, onSort }) => {
+export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEdit, onDelete, isLoading, sortBy, sortOrder, onSort, templateMap = {} }) => {
   if (isLoading) {
     return (
       <TableContainer component={Paper}>
@@ -67,33 +34,15 @@ export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEd
                 </Box>
               </TableCell>
               <TableCell
-                onClick={() => onSort('type')}
+                onClick={() => onSort('template_id')}
                 sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
               >
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  Type
-                  {sortBy === 'type' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
-                </Box>
-              </TableCell>
-              <TableCell
-                onClick={() => onSort('version')}
-                sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
-              >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  Version
-                  {sortBy === 'version' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
+                  Template
+                  {sortBy === 'template_id' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
                 </Box>
               </TableCell>
               <TableCell>Map</TableCell>
-              <TableCell
-                onClick={() => onSort('status')}
-                sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
-              >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  Status
-                  {sortBy === 'status' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
-                </Box>
-              </TableCell>
               <TableCell>Actions</TableCell>
             </TableRow>
           </TableHead>
@@ -103,8 +52,6 @@ export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEd
                 <TableCell><Skeleton variant="text" width={120} /></TableCell>
                 <TableCell><Skeleton variant="text" width={100} /></TableCell>
                 <TableCell><Skeleton variant="text" width={80} /></TableCell>
-                <TableCell><Skeleton variant="text" width={90} /></TableCell>
-                <TableCell><Skeleton variant="rectangular" width={80} height={24} sx={{ borderRadius: '12px' }} /></TableCell>
                 <TableCell>
                   <Skeleton variant="circular" width={24} height={24} sx={{ display: 'inline-block', marginRight: 1 }} />
                   <Skeleton variant="circular" width={24} height={24} sx={{ display: 'inline-block' }} />
@@ -141,33 +88,15 @@ export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEd
                 </Box>
               </TableCell>
               <TableCell
-                onClick={() => onSort('type')}
+                onClick={() => onSort('template_id')}
                 sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
               >
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  Type
-                  {sortBy === 'type' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
-                </Box>
-              </TableCell>
-              <TableCell
-                onClick={() => onSort('version')}
-                sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
-              >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  Version
-                  {sortBy === 'version' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
+                  Template
+                  {sortBy === 'template_id' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
                 </Box>
               </TableCell>
               <TableCell>Map</TableCell>
-              <TableCell
-                onClick={() => onSort('status')}
-                sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
-              >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  Status
-                  {sortBy === 'status' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
-                </Box>
-              </TableCell>
               <TableCell>Actions</TableCell>
             </TableRow>
           </TableHead>
@@ -175,14 +104,8 @@ export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEd
             {simulators.map((sim) => (
               <TableRow key={sim.ip_address} hover>
                 <TableCell>{sim.ip_address}</TableCell>
-                <TableCell>{sim.type}</TableCell>
-                <TableCell>{sim.version}</TableCell>
+                <TableCell>{sim.template_id ? (templateMap[sim.template_id] || sim.template_id) : '—'}</TableCell>
                 <TableCell>{sim.map}</TableCell>
-                <TableCell>
-                  <Tooltip title={getStatusTooltip(sim.status)} arrow>
-                    <Chip label={sim.status} color={getStatusColor(sim.status)} size="small" />
-                  </Tooltip>
-                </TableCell>
                 <TableCell>
                   <IconButton aria-label="edit" color="primary" onClick={() => onEdit(sim)}>
                     <EditIcon />
