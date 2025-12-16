@@ -14,9 +14,10 @@ import logging
 import os
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -49,7 +50,7 @@ def _get_env_flag(name: str, default: str) -> str:
 class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:  # returns a JSON string
         payload = {
-            "timestamp": datetime.utcfromtimestamp(record.created).isoformat() + "Z",
+            "timestamp": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "module": record.module,
@@ -145,6 +146,7 @@ logger = logging.getLogger("sim-tools")
 
 app = FastAPI(title="Simulators Tools Backend")
 
+
 # Build CORS origins list: prefer configured origins, always include localhost:3000 for local dev
 _origins: List[str] = []
 try:
@@ -186,23 +188,22 @@ async def health():
     return {"status": "ok"}
 
 
-@app.on_event("startup")
-async def on_startup():
-    # Initialize DB tables and other startup tasks
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
     logger.info("Starting up Simulators Tools application")
     try:
         # Create SQL tables from ORM models if they do not exist
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables ensured (create_all executed)")
 
-        # Seed roles using a short-lived session
+        # Seed roles and users
         try:
             db = SessionLocal()
             try:
                 seed_roles(db)
                 logger.info("Role seeding completed on startup")
 
-                # Determine whether to run test seeds
                 if not settings.SKIP_TEST_SEEDS:
                     try:
                         seed_test_user(db)
@@ -216,10 +217,8 @@ async def on_startup():
                     except Exception:
                         logger.exception("Failed to seed CC admin user on startup")
 
-                # Optionally create a bootstrap admin user from env vars
                 if settings.CREATE_ADMIN_ON_STARTUP:
                     try:
-                        # Prefer precomputed hash over plaintext password
                         from backend.app.db.seed_users import seed_admin_user
 
                         username = settings.ADMIN_USERNAME
@@ -233,7 +232,6 @@ async def on_startup():
                     except Exception:
                         logger.exception("Failed to seed admin user on startup")
 
-                # Verify the seeded setup
                 try:
                     verify_setup(db)
                     logger.info("Startup verification completed")
@@ -247,8 +245,7 @@ async def on_startup():
     except Exception as exc:
         logger.exception("Failed to create database tables on startup: %s", exc)
 
-    # Optionally create MongoDB indexes for IRP schemas. This is commented out by default
-    # because index creation may be an operational step. To enable, uncomment the import and call.
+    # Ensure MongoDB IRP indexes if configured
     from backend.app.utils.database import create_irp_indexes
     try:
         create_irp_indexes()
@@ -256,50 +253,13 @@ async def on_startup():
     except Exception:
         logger.exception("Failed to create/ensure MongoDB indexes on startup")
 
-    # NOTE: Initialization of optional, long-lived resources is intentionally deferred.
-    # Rationale and guidance:
-    # - HTTP connection pooling: Nice-to-have if the service will make many frequent outbound
-    #   requests to the same hosts (e.g., CC or external APIs). The current CC client manages
-    #   its own session/connection behavior; explicit app-level pooling can be added later
-    #   if profiling shows significant connection overhead or latency.
-    # - Caching layer: Useful when the same schemas/templates are requested repeatedly by
-    #   many users (reduces Mongo reads and template generation CPU). Consider Redis or
-    #   in-process LRU caches for low-volume deployments; add only when cache-hit metrics
-    #   justify the operational complexity.
-    # - Telemetry / metrics: Important for production monitoring (Prometheus, Datadog, etc.).
-    #   Logging currently emits useful error and lifecycle events; add telemetry when you
-    #   have a monitoring backend and need application-level metrics (latency, success rates,
-    #   template-generation counts). Start small and expand (counters, histograms) as needs
-    #   arise.
-    # Overall: defer these optimizations until profiling or production observations indicate
-    # they are necessary; they are "nice-to-haves" rather than required for correctness.
-    # Example placeholder:
-    # app.state.db = create_db_engine(settings.sqlalchemy_database_url)
-    # app.state.mongo = MongoClient(settings.mongodb_uri)
-    pass
+    yield
 
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    # Graceful shutdown considerations (deferred):
-    # - Graceful shutdown is recommended when you add connection pools, background workers,
-    #   or metrics flushers so that in-flight requests can complete and pooled connections
-    #   can be closed cleanly.
-    # - Current architecture relies on short-lived per-request DB sessions (SessionLocal)
-    #   and client libraries that manage their own resources; as such, explicit global
-    #   cleanup is minimal today.
-    # - Implement explicit shutdown hooks (e.g., disposing engine, closing Mongo clients,
-    #   flushing metrics) when introducing connection pooling or telemetry collection.
-    # - For now, container orchestration (Docker / Kubernetes) will terminate the process
-    #   and the platform will reclaim OS-level resources; add graceful teardown when
-    #   it's needed for reliability or observability reasons.
+    # Shutdown logic
     logger.info("Shutting down Simulators Tools application")
-    # Example placeholder:
-    # if hasattr(app.state, 'db'):
-    #     app.state.db.dispose()
-    # if hasattr(app.state, 'mongo'):
-    #     app.state.mongo.close()
-    pass
+
+
+app = FastAPI(title="Simulators Tools Backend", lifespan=lifespan)
 
 
 @app.exception_handler(StarletteHTTPException)

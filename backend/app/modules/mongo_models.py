@@ -9,7 +9,7 @@ Defines schemas for:
 These are convenience validation models used when reading/writing MongoDB
 and for request/response validation inside the app services.
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
@@ -21,7 +21,7 @@ class SNMPTrapTemplate(BaseModel):
     description: Optional[str]
     traps: List[Dict[str, Any]]
     user_id: Optional[str]
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     is_public: bool = False
 
 
@@ -39,18 +39,15 @@ class IRPMessageTemplate(BaseModel):
     )
     IdsDataFormat_version: Optional[str]
     user_id: Optional[str]
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     is_public: bool = False
 
-    class Config:
-        """Pydantic model configuration.
-
-        - `orm_mode` enables compatibility with ORM objects if needed.
-        - `extra = 'ignore'` ensures the model is tolerant of additional fields
-          stored in Mongo documents that are not declared on the model.
-        """
-        orm_mode = True
-        extra = "ignore"
+    model_config = {
+        # `from_attributes` replaces old `orm_mode` in pydantic v2
+        "from_attributes": True,
+        # preserve extra behavior
+        "extra": "ignore",
+    }
 
 
 class PollingTemplate(BaseModel):
@@ -58,7 +55,7 @@ class PollingTemplate(BaseModel):
     description: Optional[str]
     json_config: Dict[str, Any]
     user_id: Optional[str]
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     is_public: bool = False
 
 
@@ -75,21 +72,22 @@ class DeviceTemplate(BaseModel):
     - updated_at: datetime
     """
 
-    _id: Optional[ObjectId] = Field(None, alias="_id")
+    # Pydantic v2 disallows names with leading underscores; expose `id` and alias to `_id` for Mongo
+    id: Optional[ObjectId] = Field(None, alias="_id")
     name: str = Field(..., max_length=200, description="Unique template name e.g., 'DPX_10_6'")
     description: Optional[str] = None
     template: Dict[str, Any] = Field(..., description="Flexible nested JSON structure for the device template")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: Optional[datetime] = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    class Config:
-        orm_mode = True
-        # Allow using the alias `_id` when creating/reading models
-        allow_population_by_field_name = True
-        # Permit BSON ObjectId as a field type and ensure it serializes to str in JSON
-        arbitrary_types_allowed = True
-        json_encoders = {ObjectId: lambda oid: str(oid)}
-        extra = "ignore"
+    model_config = {
+        "from_attributes": True,
+        # `validate_by_name` replaces `allow_population_by_field_name`
+        "validate_by_name": True,
+        "arbitrary_types_allowed": True,
+        "json_encoders": {ObjectId: lambda oid: str(oid)},
+        "extra": "ignore",
+    }
 
 
 class DeviceTemplateCreate(BaseModel):
@@ -99,8 +97,7 @@ class DeviceTemplateCreate(BaseModel):
     description: Optional[str] = None
     template: Dict[str, Any] = Field(...)
 
-    class Config:
-        extra = "ignore"
+    model_config = {"extra": "ignore"}
 
 
 class DeviceTemplateUpdate(BaseModel):
@@ -110,8 +107,7 @@ class DeviceTemplateUpdate(BaseModel):
     description: Optional[str]
     template: Optional[Dict[str, Any]]
 
-    class Config:
-        extra = "ignore"
+    model_config = {"extra": "ignore"}
 
 
 __all__ = [
