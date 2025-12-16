@@ -10,14 +10,38 @@ export const generateAttackId = (): string => {
 };
 
 export const validateIPAddress = (ip: string): boolean => {
-  const ipPattern = /^(\d{1,3}\.){3}\d{1,3}$/;
-  if (!ipPattern.test(ip)) return false;
+  if (!ip || ip.trim() === '') return false;
 
-  const parts = ip.split('.');
-  return parts.every(part => {
-    const num = parseInt(part, 10);
-    return num >= 0 && num <= 255;
-  });
+  // IPv4 check (same as before)
+  const ipv4Pattern = /^(\d{1,3}\.){3}\d{1,3}$/;
+  if (ipv4Pattern.test(ip)) {
+    const parts = ip.split('.');
+    return parts.every(part => {
+      const num = parseInt(part, 10);
+      return num >= 0 && num <= 255;
+    });
+  }
+
+  // IPv6 pattern (covers full, compressed, and IPv4-mapped forms)
+  // Allow optional zone index like '%eth0' or '%1' at the end
+  const ipv6Pattern = new RegExp(
+    '^(' +
+      '(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}|' + // 1:2:3:4:5:6:7:8
+      '(?:[A-Fa-f0-9]{1,4}:){1,7}:|' +               // 1::                              1:2:3:4:5:6:7::
+      ':(?::[A-Fa-f0-9]{1,4}){1,7}|' +               // ::2:3:4:5:6:7:8
+      '(?:[A-Fa-f0-9]{1,4}:){1,6}:[A-Fa-f0-9]{1,4}|' +
+      '(?:[A-Fa-f0-9]{1,4}:){1,5}(?::[A-Fa-f0-9]{1,4}){1,2}|' +
+      '(?:[A-Fa-f0-9]{1,4}:){1,4}(?::[A-Fa-f0-9]{1,4}){1,3}|' +
+      '(?:[A-Fa-f0-9]{1,4}:){1,3}(?::[A-Fa-f0-9]{1,4}){1,4}|' +
+      '(?:[A-Fa-f0-9]{1,4}:){1,2}(?::[A-Fa-f0-9]{1,4}){1,5}|' +
+      '[A-Fa-f0-9]{1,4}:(?::[A-Fa-f0-9]{1,4}){1,6}|' +
+      // IPv4-mapped IPv6 and ::ffff:0:0/96 style
+      '::(?:ffff:(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)(?:\\.(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)){3})|' +
+      '(?:[A-Fa-f0-9]{1,4}:){1,4}:(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)(?:\\.(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)){3}' +
+    ')(?:%[0-9A-Za-z]+)?$'
+  );
+
+  return ipv6Pattern.test(ip);
 };
 
 export const validatePort = (port: string): boolean => {
@@ -35,4 +59,3 @@ export const isValidSamplesFormat = (samples: string): boolean => {
   const pattern = /^\d+-\d+-\d+$/;
   return pattern.test(samples);
 };
-
