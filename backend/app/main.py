@@ -144,50 +144,8 @@ configure_logging(settings)
 
 logger = logging.getLogger("sim-tools")
 
-app = FastAPI(title="Simulators Tools Backend")
 
-
-# Build CORS origins list: prefer configured origins, always include localhost:3000 for local dev
-_origins: List[str] = []
-try:
-    _origins = list(settings.CORS_ORIGINS or [])
-except Exception:
-    _origins = ["http://localhost:3000"]
-
-if "http://localhost:3000" not in _origins:
-    _origins.insert(0, "http://localhost:3000")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Register routers under /api prefix
-app.include_router(sapro_router)
-app.include_router(cc_router)
-app.include_router(reporter_router)
-# Register user router (it already has prefix "/api" inside; include at root as requested)
-app.include_router(user_router, prefix="", tags=["users"])
-# Register new routers
-app.include_router(role_router)
-app.include_router(permission_router)
-app.include_router(snmp_templates.router)
-
-# Mount static files (React build) - serve frontend build at root if present
-BUILD_DIR = Path(__file__).parent.parent.parent / "frontend" / "build"
-if BUILD_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(BUILD_DIR), html=True), name="static")
-
-
-@app.get("/health", tags=["meta"])
-async def health():
-    """Lightweight health check for orchestration and readiness probes."""
-    return {"status": "ok"}
-
-
+# Define lifespan context manager for startup/shutdown logic
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup logic
@@ -259,7 +217,49 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Simulators Tools application")
 
 
+# Create FastAPI app with lifespan handler
 app = FastAPI(title="Simulators Tools Backend", lifespan=lifespan)
+
+
+# Build CORS origins list: prefer configured origins, always include localhost:3000 for local dev
+_origins: List[str] = []
+try:
+    _origins = list(settings.CORS_ORIGINS or [])
+except Exception:
+    _origins = ["http://localhost:3000"]
+
+if "http://localhost:3000" not in _origins:
+    _origins.insert(0, "http://localhost:3000")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register routers under /api prefix
+app.include_router(sapro_router)
+app.include_router(cc_router)
+app.include_router(reporter_router)
+# Register user router (it already has prefix "/api" inside; include at root as requested)
+app.include_router(user_router, prefix="", tags=["users"])
+# Register new routers
+app.include_router(role_router)
+app.include_router(permission_router)
+app.include_router(snmp_templates.router)
+
+# Mount static files (React build) - serve frontend build at root if present
+BUILD_DIR = Path(__file__).parent.parent.parent / "frontend" / "build"
+if BUILD_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(BUILD_DIR), html=True), name="static")
+
+
+@app.get("/health", tags=["meta"])
+async def health():
+    """Lightweight health check for orchestration and readiness probes."""
+    return {"status": "ok"}
 
 
 @app.exception_handler(StarletteHTTPException)
