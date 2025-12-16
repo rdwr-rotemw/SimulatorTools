@@ -12,7 +12,7 @@ export const generateAttackId = (): string => {
 export const validateIPAddress = (ip: string): boolean => {
   if (!ip || ip.trim() === '') return false;
 
-  // IPv4 check (same as before)
+  // IPv4 validation with proper range checking
   const ipv4Pattern = /^(\d{1,3}\.){3}\d{1,3}$/;
   if (ipv4Pattern.test(ip)) {
     const parts = ip.split('.');
@@ -22,24 +22,10 @@ export const validateIPAddress = (ip: string): boolean => {
     });
   }
 
-  // IPv6 pattern (covers full, compressed, and IPv4-mapped forms)
-  // Allow optional zone index like '%eth0' or '%1' at the end
-  const ipv6Pattern = new RegExp(
-    '^(' +
-      '(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}|' + // 1:2:3:4:5:6:7:8
-      '(?:[A-Fa-f0-9]{1,4}:){1,7}:|' +               // 1::                              1:2:3:4:5:6:7::
-      ':(?::[A-Fa-f0-9]{1,4}){1,7}|' +               // ::2:3:4:5:6:7:8
-      '(?:[A-Fa-f0-9]{1,4}:){1,6}:[A-Fa-f0-9]{1,4}|' +
-      '(?:[A-Fa-f0-9]{1,4}:){1,5}(?::[A-Fa-f0-9]{1,4}){1,2}|' +
-      '(?:[A-Fa-f0-9]{1,4}:){1,4}(?::[A-Fa-f0-9]{1,4}){1,3}|' +
-      '(?:[A-Fa-f0-9]{1,4}:){1,3}(?::[A-Fa-f0-9]{1,4}){1,4}|' +
-      '(?:[A-Fa-f0-9]{1,4}:){1,2}(?::[A-Fa-f0-9]{1,4}){1,5}|' +
-      '[A-Fa-f0-9]{1,4}:(?::[A-Fa-f0-9]{1,4}){1,6}|' +
-      // IPv4-mapped IPv6 and ::ffff:0:0/96 style
-      '::(?:ffff:(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)(?:\\.(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)){3})|' +
-      '(?:[A-Fa-f0-9]{1,4}:){1,4}:(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)(?:\\.(?:25[0-5]|2[0-4]\\d|[01]?\\d\\d?)){3}' +
-    ')(?:%[0-9A-Za-z]+)?$'
-  );
+  // IPv6 validation - strict pattern that requires proper structure
+  // Supports: full form, compressed (::), and IPv4-mapped (::ffff:192.0.2.1)
+  // Does NOT accept trailing colons or incomplete addresses
+  const ipv6Pattern = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]{1,}|::(ffff(:0{1,4}){0,1}:){0,1}((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9])\.){3}(25[0-5]|(2[0-4]|1{0,1}[0-9]){0,1}[0-9]))$/;
 
   return ipv6Pattern.test(ip);
 };
