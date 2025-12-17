@@ -63,6 +63,8 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => ({
     } catch (err: any) {
       const message = err?.response?.data?.detail || 'Failed to delete simulator';
       set({ error: message, isLoading: false });
+      // Re-throw so caller (page) can show an error snackbar or take other actions
+      throw err;
     }
   },
 

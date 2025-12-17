@@ -467,4 +467,118 @@ async def delete_device_template(
     return {"success": True, "message": f"Template '{template_id}' deleted"}
 
 
+# ----------------------------- Sapro File Listing Endpoints -----------------------------
+@router.get("/sapro-files/{file_type}")
+async def list_sapro_files(
+    file_type: str,
+    current_user=Depends(require_sapro_access),
+):
+    """List files from Sapro server directories for template field dropdowns.
+
+    Args:
+        file_type: Type of files to list
+            - "mib": List .cmf files from /opt/sapro/cmf/
+            - "agent": List .var and .cva files from /opt/sapro/var/
+            - "ssh": List .tel files from /opt/sapro/telnet/
+            - "soap": List .xmf files from /opt/sapro/xml/
+            - "modeling": List .tcl files from /opt/sapro/tcl/
+
+    Returns:
+        Dict with file_type and list of files
+
+    Error: 400 if invalid file_type
+    """
+    from backend.app.utils.sapro_ssh import get_sapro_ssh_client
+
+    # Map file types to directories and extensions
+    file_type_map = {
+        "mib": ("/opt/sapro/cmf/", [".cmf"]),
+        "agent": ("/opt/sapro/var/", [".var", ".cva"]),
+        "ssh": ("/opt/sapro/telnet/", [".tel"]),
+        "soap": ("/opt/sapro/xml/", [".xmf"]),
+        "modeling": ("/opt/sapro/tcl/", [".tcl"]),
+    }
+
+    if file_type not in file_type_map:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid file_type. Must be one of: {', '.join(file_type_map.keys())}"
+        )
+
+    directory, extensions = file_type_map[file_type]
+
+    try:
+        ssh_client = get_sapro_ssh_client()
+
+        # Check if directory exists
+        if not ssh_client.file_exists(directory):
+            logger.warning(f"Directory not found: {directory}")
+            return {
+                "file_type": file_type,
+                "directory": directory,
+                "files": [],
+            }
+
+        # List all files in directory
+        all_files = ssh_client.list_directory(directory)
+
+        # Filter by extensions
+        filtered_files = [
+            f for f in all_files
+            if any(f.endswith(ext) for ext in extensions)
+        ]
+
+        # Sort files alphabetically
+        filtered_files.sort()
+
+        logger.info(f"Listed {len(filtered_files)} {file_type} files from {directory}")
+
+        return {
+            "file_type": file_type,
+            "directory": directory,
+            "files": filtered_files,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to list {file_type} files from {directory}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list files: {str(e)}"
+        )
+
+
+@router.get("/sapro-files/validate/{file_path:path}")
+async def validate_sapro_file(
+    file_path: str,
+    current_user=Depends(require_sapro_access),
+):
+    """Check if a file exists on the Sapro server.
+
+    Args:
+        file_path: Full path to file (e.g., /opt/sapro/cmf/file.cmf)
+
+    Returns:
+        Dict with exists (bool) and path (str)
+    """
+    from backend.app.utils.sapro_ssh import get_sapro_ssh_client
+
+    try:
+        ssh_client = get_sapro_ssh_client()
+        exists = ssh_client.file_exists(file_path)
+
+        logger.debug(f"File validation for {file_path}: exists={exists}")
+
+        return {
+            "exists": exists,
+            "path": file_path,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to validate file {file_path}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to validate file: {str(e)}"
+        )
+
+
 __all__ = ["router"]

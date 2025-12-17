@@ -33,57 +33,20 @@ def execute_sapro_command(command: str, timeout: int = 30) -> Tuple[bool, str]:
         subprocess.TimeoutExpired: If command execution exceeds timeout
         Exception: For SSH connection errors
     """
-    import paramiko
+    from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 
-    # In production, SSH to localhost (the host machine)
-    # In development, SSH to configured remote host
-    ssh_host = "localhost" if settings.ENVIRONMENT == "production" else settings.SAPRO_SSH_HOST
+    # The centralized SSH client handles host selection based on environment
+    ssh_client = get_sapro_ssh_client()
+    ssh_host = ssh_client.host
     ssh_target = f"{settings.SAPRO_SSH_USER}@{ssh_host}"
 
     try:
         logger.info(f"Executing Sapro command via SSH to {ssh_host}: {command[:100]}")
 
-        client = None
-        try:
-            client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        # Use centralized SSH client with connection pooling
+        success, output = ssh_client.execute_command(command, timeout=timeout, check_stderr=False)
 
-            logger.debug(f"Connecting to {ssh_host} as {settings.SAPRO_SSH_USER}")
-            client.connect(
-                ssh_host,
-                username=settings.SAPRO_SSH_USER,
-                password=settings.SAPRO_SSH_PASSWORD,
-                timeout=timeout,
-            )
-
-            logger.debug(f"Executing via SSH: {command[:100]}")
-            stdin, stdout, stderr = client.exec_command(command)
-
-            output = stdout.read().decode() + stderr.read().decode()
-            exit_status = stdout.channel.recv_exit_status()
-            success = exit_status == 0
-
-            logger.debug(f"SSH command exit status: {exit_status}")
-
-        except paramiko.AuthenticationException as e:
-            error_msg = f"SSH auth failed for {ssh_target}: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            return False, error_msg
-
-        except paramiko.SSHException as e:
-            error_msg = f"SSH error to {ssh_target}: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            return False, error_msg
-
-        except OSError as e:
-            error_msg = f"Network error to {ssh_target}: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            return False, error_msg
-
-        finally:
-            if client:
-                client.close()
-                logger.debug("SSH closed")
+        logger.debug(f"SSH command result: success={success}, output length={len(output)} chars")
 
         if success:
             logger.info(f"Command succeeded. Output: {len(output)} chars")
@@ -92,11 +55,6 @@ def execute_sapro_command(command: str, timeout: int = 30) -> Tuple[bool, str]:
             logger.warning(f"Command failed. Output: {output[:500]}")
 
         return success, output
-
-    except Exception as e:
-        error_msg = f"Unexpected error: {str(e)}"
-        logger.error(error_msg, exc_info=True)
-        return False, error_msg
 
     except Exception as e:
         error_msg = f"Unexpected error executing Sapro command: {str(e)}"

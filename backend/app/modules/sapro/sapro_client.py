@@ -411,55 +411,34 @@ class SaproCommunicationHandler:
             # Log but continue to attempt deletion via SSH
             logger.debug("Stopping device before delete raised: %s", e)
 
-        # 2) Execute remote sapcnsl delete command over SSH on the Sapro server
-        ssh_host = getattr(settings, 'SAPRO_SSH_HOST', None)
-        ssh_user = getattr(settings, 'SAPRO_SSH_USER', None)
-        ssh_pass = getattr(settings, 'SAPRO_SSH_PASSWORD', None)
-
-        if not ssh_host or not ssh_user:
-            return False, "Sapro SSH credentials not configured (SAPRO_SSH_HOST/SAPRO_SSH_USER)"
-
+        # 2) Execute remote sapcnsl delete command over SSH on the Sapro server using centralized SSH client
         cmd = f"/opt/sapro/sapcnsl -p {self.sapro_port} -m {map_full_name} -c deldev -d {device_ip}"
-        ssh = None
+
         try:
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(hostname=ssh_host, port=22, username=ssh_user, password=ssh_pass, timeout=15)
+            ssh_client = get_sapro_ssh_client()
+            logger.debug(f"Executing delete command via SSH: {cmd}")
 
-            stdin, stdout, stderr = ssh.exec_command(cmd)
-            out = stdout.read().decode('utf-8', errors='ignore').strip()
-            err = stderr.read().decode('utf-8', errors='ignore').strip()
+            # Use centralized SSH client with connection pooling
+            success, output = ssh_client.execute_command(cmd, check_stderr=False)
 
-            # Determine success: prefer absence of stderr and presence of success keywords or no error text
-            out_l = out.lower() if out else ''
-            err_l = err.lower() if err else ''
+            if not success:
+                return False, f"SSH delete command failed: {output}"
 
-            if err_l:
-                return False, f"SSH delete command STDERR: {err}"
+            # Analyze output to determine success
+            out_l = output.lower()
 
-            # success if stdout mentions deleted/success or if no stderr and stdout not indicating error
-            if ('deleted' in out_l) or ('success' in out_l) or (out_l and 'error' not in out_l):
-                return True, out or "Device deleted (no stdout)"
+            if ('deleted' in out_l) or ('success' in out_l) or ('error' not in out_l and output):
+                return True, output or "Device deleted successfully"
 
-            # Fallback: consider it success if no stderr and empty stdout
-            if not out and not err:
-                return True, "Device delete command executed (no output)"
+            # Fallback: if no clear error indicators, consider success
+            if output and 'error' not in out_l:
+                return True, output
 
-            # Otherwise return failure with captured output
-            return False, f"Unexpected delete output: stdout={out!s} stderr={err!s}"
+            return False, f"Unexpected delete output: {output}"
 
-        except paramiko.AuthenticationException as exc:
-            return False, f"SSH authentication failed: {exc}"
-        except paramiko.SSHException as exc:
-            return False, f"SSH error executing delete command: {exc}"
         except Exception as exc:
+            logger.error(f"Failed to execute SSH delete command: {exc}", exc_info=True)
             return False, f"Failed to execute SSH delete command: {exc}"
-        finally:
-            if ssh:
-                try:
-                    ssh.close()
-                except Exception:
-                    pass
 
 
 # Module-level singleton factory
