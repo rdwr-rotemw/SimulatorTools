@@ -1,7 +1,9 @@
 import React from 'react';
-import { Box, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, IconButton, Typography, Skeleton, Fade } from '@mui/material';
+import { Box, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, IconButton, Typography, Skeleton, Fade, CircularProgress } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import StopIcon from '@mui/icons-material/Stop';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import { Simulator } from '../../types/simulator.types';
@@ -10,13 +12,29 @@ interface SimulatorTableProps {
   simulators: Simulator[];
   onEdit: (simulator: Simulator) => void;
   onDelete: (ip: string) => void;
+  onStart: (ip: string) => Promise<void>;
+  onStop: (ip: string) => Promise<void>;
   isLoading: boolean;
+  startLoading: string | null;
+  stopLoading: string | null;
   sortBy: 'ip_address' | 'type' | 'version' | 'map' | 'status';
   sortOrder: 'asc' | 'desc';
   onSort: (column: 'ip_address' | 'type' | 'version' | 'map' | 'status') => void;
 }
 
-export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEdit, onDelete, isLoading, sortBy, sortOrder, onSort }) => {
+export const SimulatorTable: React.FC<SimulatorTableProps> = ({
+  simulators,
+  onEdit,
+  onDelete,
+  onStart,
+  onStop,
+  isLoading,
+  startLoading,
+  stopLoading,
+  sortBy,
+  sortOrder,
+  onSort
+}) => {
   if (isLoading) {
     return (
       <TableContainer component={Paper}>
@@ -164,23 +182,76 @@ export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEd
             </TableRow>
           </TableHead>
           <TableBody>
-            {simulators.map((sim) => (
-              <TableRow key={sim.ip_address} hover>
-                <TableCell>{sim.ip_address}</TableCell>
-                <TableCell>{sim.type || '—'}</TableCell>
-                <TableCell>{sim.version || '—'}</TableCell>
-                <TableCell>{sim.map || '—'}</TableCell>
-                <TableCell>{sim.status || '—'}</TableCell>
-                <TableCell>
-                  <IconButton aria-label="edit" color="primary" onClick={() => onEdit(sim)}>
-                    <EditIcon />
-                  </IconButton>
-                  <IconButton aria-label="delete" color="error" onClick={() => onDelete(sim.ip_address)}>
-                    <DeleteIcon />
-                  </IconButton>
-                </TableCell>
-              </TableRow>
-            ))}
+            {simulators.map((sim) => {
+              const isStarting = startLoading === sim.ip_address;
+              const isStopping = stopLoading === sim.ip_address;
+              const isOperating = isStarting || isStopping;
+              const statusLower = (sim.status || '').toLowerCase();
+              const isRunning = statusLower === 'ok' || statusLower === 'running';
+              const isStopped = statusLower === 'shutdown' || statusLower === 'stopped';
+
+              return (
+                <TableRow key={sim.ip_address} hover>
+                  <TableCell>{sim.ip_address}</TableCell>
+                  <TableCell>{sim.type || '—'}</TableCell>
+                  <TableCell>{sim.version || '—'}</TableCell>
+                  <TableCell>{sim.map || '—'}</TableCell>
+                  <TableCell>{sim.status || '—'}</TableCell>
+                  <TableCell>
+                    {/* Start/Stop buttons */}
+                    {isRunning ? (
+                      <IconButton
+                        aria-label="stop"
+                        color="error"
+                        onClick={() => onStop(sim.ip_address)}
+                        disabled={isOperating}
+                        title="Stop simulator"
+                      >
+                        {isStopping ? <CircularProgress size={20} /> : <StopIcon />}
+                      </IconButton>
+                    ) : isStopped ? (
+                      <IconButton
+                        aria-label="start"
+                        color="success"
+                        onClick={() => onStart(sim.ip_address)}
+                        disabled={isOperating}
+                        title="Start simulator"
+                      >
+                        {isStarting ? <CircularProgress size={20} /> : <PlayArrowIcon />}
+                      </IconButton>
+                    ) : (
+                      <IconButton
+                        aria-label="start-stop"
+                        disabled
+                        title="Status unknown"
+                      >
+                        <PlayArrowIcon />
+                      </IconButton>
+                    )}
+
+                    {/* Edit button */}
+                    <IconButton
+                      aria-label="edit"
+                      color="primary"
+                      onClick={() => onEdit(sim)}
+                      disabled={isOperating}
+                    >
+                      <EditIcon />
+                    </IconButton>
+
+                    {/* Delete button */}
+                    <IconButton
+                      aria-label="delete"
+                      color="error"
+                      onClick={() => onDelete(sim.ip_address)}
+                      disabled={isOperating}
+                    >
+                      <DeleteIcon />
+                    </IconButton>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </TableContainer>

@@ -306,7 +306,7 @@ class SaproCommunicationHandler:
         try:
             messages = []
             for device in devices_names:
-                msg = saproDeviceFunctions.SendStartCmdToDevice(self._sapro, map_name, device)
+                msg = saproDeviceFunctions.SendStartCmdToDevice(self._sapro, map_name + ".map", device)
                 messages.append(str(msg))
             return True, "\n".join(messages)
         except SaproException as e:
@@ -324,7 +324,7 @@ class SaproCommunicationHandler:
         try:
             messages = []
             for device in devices_names:
-                msg = saproDeviceFunctions.SendStopCmdToDevice(self._sapro, map_name, device)
+                msg = saproDeviceFunctions.SendStopCmdToDevice(self._sapro, map_name + ".map", device)
                 messages.append(str(msg))
             return True, "\n".join(messages)
         except SaproException as e:

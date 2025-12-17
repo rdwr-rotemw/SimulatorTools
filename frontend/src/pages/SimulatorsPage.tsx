@@ -24,6 +24,8 @@ export const SimulatorsPage: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState<'ip_address' | 'type' | 'version' | 'map' | 'status'>('ip_address');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [startLoading, setStartLoading] = useState<string | null>(null);
+  const [stopLoading, setStopLoading] = useState<string | null>(null);
 
   const {
     simulators,
@@ -87,6 +89,44 @@ export const SimulatorsPage: React.FC = () => {
     } finally {
       setDeleteDialogOpen(false);
       setSimulatorToDelete(null);
+    }
+  };
+
+  const handleStart = async (ip: string) => {
+    setStartLoading(ip);
+    try {
+      await apiClient.post(`/simulators/${ip}/start`);
+      setSnackbar({ open: true, message: `Simulator ${ip} started successfully`, severity: 'success' });
+      // Refresh simulator list to update status
+      await fetchSimulators();
+    } catch (err: any) {
+      console.error('Failed to start simulator:', err);
+      setSnackbar({
+        open: true,
+        message: err?.response?.data?.detail || 'Failed to start simulator',
+        severity: 'error'
+      });
+    } finally {
+      setStartLoading(null);
+    }
+  };
+
+  const handleStop = async (ip: string) => {
+    setStopLoading(ip);
+    try {
+      await apiClient.post(`/simulators/${ip}/stop`);
+      setSnackbar({ open: true, message: `Simulator ${ip} stopped successfully`, severity: 'success' });
+      // Refresh simulator list to update status
+      await fetchSimulators();
+    } catch (err: any) {
+      console.error('Failed to stop simulator:', err);
+      setSnackbar({
+        open: true,
+        message: err?.response?.data?.detail || 'Failed to stop simulator',
+        severity: 'error'
+      });
+    } finally {
+      setStopLoading(null);
     }
   };
 
@@ -185,7 +225,11 @@ export const SimulatorsPage: React.FC = () => {
           simulators={sortedSimulators}
           onEdit={handleEdit}
           onDelete={handleDeleteClick}
+          onStart={handleStart}
+          onStop={handleStop}
           isLoading={isLoading}
+          startLoading={startLoading}
+          stopLoading={stopLoading}
           sortBy={sortBy}
           sortOrder={sortOrder}
           onSort={handleSort}

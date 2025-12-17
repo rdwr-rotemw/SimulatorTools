@@ -296,6 +296,66 @@ def delete_simulator(
     return SuccessResponse(message="Simulator deleted successfully", data={"ip_address": simulator_ip})
 
 
+@router.post("/simulators/{simulator_ip}/start", response_model=SuccessResponse)
+def start_simulator(
+        simulator_ip: str,
+        db: Session = Depends(get_db),
+        _current_user=Depends(require_sapro_access),
+        sapro_handler=Depends(get_sapro_handler)
+) -> SuccessResponse:
+    """Start a simulator device.
+
+    Retrieves the simulator's map from DB and calls Sapro to start the device.
+    """
+    sim = db.get(Simulator, simulator_ip)
+    if not sim:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Simulator not found")
+
+    map_name = sim.map or ""
+    if not map_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
+
+    try:
+        success, message = sapro_handler.start_devices_from_map(map_name, [simulator_ip])
+        if not success:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
+
+        return SuccessResponse(message=f"Simulator {simulator_ip} started successfully", data={"ip_address": simulator_ip})
+    except Exception as exc:
+        logger.exception("Failed to start simulator %s: %s", simulator_ip, exc)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to start simulator: {exc}")
+
+
+@router.post("/simulators/{simulator_ip}/stop", response_model=SuccessResponse)
+def stop_simulator(
+        simulator_ip: str,
+        db: Session = Depends(get_db),
+        _current_user=Depends(require_sapro_access),
+        sapro_handler=Depends(get_sapro_handler)
+) -> SuccessResponse:
+    """Stop a simulator device.
+
+    Retrieves the simulator's map from DB and calls Sapro to stop the device.
+    """
+    sim = db.get(Simulator, simulator_ip)
+    if not sim:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Simulator not found")
+
+    map_name = sim.map or ""
+    if not map_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
+
+    try:
+        success, message = sapro_handler.stop_devices_from_map(map_name, [simulator_ip])
+        if not success:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
+
+        return SuccessResponse(message=f"Simulator {simulator_ip} stopped successfully", data={"ip_address": simulator_ip})
+    except Exception as exc:
+        logger.exception("Failed to stop simulator %s: %s", simulator_ip, exc)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to stop simulator: {exc}")
+
+
 # ----------------------------- Device Template Endpoints -----------------------------
 @router.post("/device-templates", status_code=status.HTTP_201_CREATED)
 async def create_device_template(
