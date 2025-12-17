@@ -1,52 +1,95 @@
 """Utilities to convert device template JSON to XML for Sapro and to modify template fields.
 
-Functions:
+This module provides:
 - json_to_xml(template_dict: Dict[str, Any]) -> str
 - modify_template_field(template_dict: Dict, path: str, value: Any) -> Dict
 
-Behavior:
-- Uses xml.etree.ElementTree to construct XML.
-- Primitive values (str/int/bool/None) inside a dict become attributes on the parent's element.
-- Nested dicts become child elements.
-- Lists create repeated child elements for each item (child tag uses the same key name converted to PascalCase).
-- Keys are converted to PascalCase for element and attribute names (snake_case and kebab-case supported).
-- Produces pretty-printed XML with 2-space indentation.
-
+Behavior highlights:
+- Uses a custom renderer to produce Sapro-style XML (attributes with spaces, 8-space indentation).
+- Converts keys to Sapro-preferred CamelCase with special handling for acronyms like SSH/SSHSCP/DHCP and short prefixes like Snmp/Soap.
+- Primitive dict values become attributes; nested dicts become child elements; lists become repeated child elements.
 """
-from typing import Any, Dict, List
+from typing import Any, Dict
 import xml.etree.ElementTree as ET
+import re
+from xml.sax.saxutils import escape as xml_escape
 
 
-def to_pascal_case(key: str) -> str:
-    """Convert a key like 'device_map' or 'soapModFile' to PascalCase: 'DeviceMap', 'SoapModFile'.
+def to_camel_case(key: str) -> str:
+    """Convert snake_case / camelCase keys to Sapro-style CamelCase with acronym handling.
 
-    - Splits on '_' and '-' first. If no separators found, just uppercase first character and leave rest as-is.
+    Rules implemented:
+    - Known acronym prefixes are mapped specially:
+      - 'ssh' -> 'SSH' (uppercase)
+      - 'sshscp' -> 'SSHSCP' (uppercase)
+      - 'snmp' -> 'Snmp' (first-letter uppercase only)
+      - 'soap' -> 'Soap'
+      - 'dhcp' -> 'DHCP' (uppercase)
+    - If key starts with a known prefix, the prefix mapping is used and the rest of the
+      key is PascalCased and appended.
+    - Otherwise, the key is converted from snake_case/camelCase to PascalCase.
+
+    Examples:
+      snmp_str -> SnmpStr
+      snmp_port -> SnmpPort
+      soap_http_port -> SoapHttpPort
+      ssh_user_name -> SSHUserName
+      sshscp_base_dir -> SSHSCPBaseDir
+      dhcp -> DHCP
+      multi_home -> MultiHome
+      subnet_mask -> SubnetMask
     """
     if not key:
         return key
-    if "_" in key or "-" in key:
-        parts = [p for p in key.replace("-", "_").split("_") if p]
-        return "".join(part[:1].upper() + part[1:] for part in parts)
-    # No separators: just capitalize first char to preserve camelCase internals
-    return key[:1].upper() + key[1:]
+
+    # Normalize separators and split camel boundaries
+    s = key.replace('-', '_')
+    s = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s)
+    parts = [p for p in s.split('_') if p]
+    if not parts:
+        return key
+
+    acronyms = {
+        'sshscp': 'SSHSCP',
+        'sshs': 'SSHS',
+        'ssh': 'SSH',
+        'snmp': 'Snmp',
+        'soap': 'Soap',
+        'dhcp': 'DHCP',
+    }
+
+    # Try longest matching acronym prefix (e.g., sshscp before ssh)
+    lower = s.lower()
+    for acr in sorted(acronyms.keys(), key=lambda x: -len(x)):
+        if lower.startswith(acr):
+            prefix = acronyms[acr]
+            rest = s[len(acr):]
+            if not rest:
+                return prefix
+            # rest may start with '_' or camelCase; normalize and PascalCase it
+            rest = rest.lstrip('_')
+            # split remaining on underscores and camel boundaries
+            rest_parts = [p for p in re.split(r'[_]', rest) if p]
+            rest_camel = ''.join(p[:1].upper() + p[1:] for p in rest_parts)
+            return prefix + rest_camel
+
+    # Default: PascalCase (capitalize all parts)
+    return ''.join(p[:1].upper() + p[1:] for p in parts)
 
 
 def _build_element(tag: str, obj: Any) -> ET.Element:
-    """Recursively build an ElementTree Element for the given tag and object.
+    """Recursively build an ElementTree Element using to_camel_case for names.
 
-    Rules:
-    - If obj is a dict: primitive values -> attributes; dict/list values -> child elements.
-    - If obj is a list: create repeated child elements named after tag (PascalCase).
-    - If obj is primitive: create element with text set to the string value.
+    - Primitives (str/int/float/bool/None) at this level become element text.
+    - Dict entries that are primitives become attributes on this element.
+    - Dict entries that are dict/list become child elements.
+    - Lists become repeated child elements named by the tag.
     """
-    element = ET.Element(to_pascal_case(tag))
+    element = ET.Element(to_camel_case(tag))
 
     # Primitive types become text content
     if isinstance(obj, (str, int, float, bool)) or obj is None:
-        if obj is None:
-            element.text = ""
-        else:
-            element.text = str(obj)
+        element.text = "" if obj is None else str(obj)
         return element
 
     if isinstance(obj, dict):
@@ -55,19 +98,16 @@ def _build_element(tag: str, obj: Any) -> ET.Element:
                 child = _build_element(key, val)
                 element.append(child)
             elif isinstance(val, list):
-                # For list, create repeated child elements for each entry
                 for item in val:
                     child = _build_element(key, item)
                     element.append(child)
             else:
-                # Primitive -> attribute
-                # Convert None to empty string
-                element.set(to_pascal_case(key), "" if val is None else str(val))
+                # Primitive -> attribute (convert None to empty string)
+                element.set(to_camel_case(key), "" if val is None else str(val))
         return element
 
     if isinstance(obj, list):
-        # If the value itself is a list at this level, create a parent element and
-        # append child elements for each item using the same PascalCase tag.
+        # Create repeated child elements for each item
         for item in obj:
             child = _build_element(tag, item)
             element.append(child)
@@ -78,73 +118,88 @@ def _build_element(tag: str, obj: Any) -> ET.Element:
     return element
 
 
-def _indent(elem: ET.Element, level: int = 0) -> None:
-    """In-place pretty print formatter (2-space indentation)."""
-    indent_str = "\n" + ("  " * level)
-    child_indent = "\n" + ("  " * (level + 1))
-
-    if len(elem):
-        if not elem.text or not elem.text.strip():
-            elem.text = child_indent
-        for child in elem:
-            _indent(child, level + 1)
-        if not elem.tail or not elem.tail.strip():
-            elem.tail = indent_str
-    else:
-        if level and (not elem.tail or not elem.tail.strip()):
-            elem.tail = indent_str
-
-
 def json_to_xml(template_dict: Dict[str, Any]) -> str:
-    """Convert a nested template JSON (dict) into a pretty-printed XML string.
+    """Convert a nested template JSON (dict) into Sapro-styled XML string.
 
-    - Preserves attributes for primitive key/values on the same object level.
-    - Nested dicts become child elements.
-    - Uses 2-space indentation.
-
-    Example input:
-    {
-      "deviceMap": {
-        "release": "11.0",
-        "description": "",
-        "device": {
-          "general": {"name": "<ip>", "multiHome": "1"},
-          "snmp": {"readCommunity": "public"}
-        }
-      }
-    }
-
-    Produces:
-    <DeviceMap Release="11.0" Description="">
-      <Device>
-        <General Name="<ip>" MultiHome="1" />
-        <Snmp ReadCommunity="public" />
-      </Device>
-    </DeviceMap>
-
-    Returns the XML as a string (no XML declaration).
+    Formatting specifics implemented:
+    - 8-space indentation per level
+    - Attributes formatted as: Name = "value" (spaces around =)
+    - Inline attributes when <= 4 attributes; otherwise attributes are listed on separate
+      indented lines, with the '>' closing the start tag appended at the end of the last attribute line.
+    - Text content is indented one level in from the tag.
     """
     if not isinstance(template_dict, dict):
         raise TypeError("template_dict must be a dict")
 
-    # If template_dict contains a single top-level key, use it as the root element.
     keys = list(template_dict.keys())
     if len(keys) == 1:
         root_key = keys[0]
         root_val = template_dict[root_key]
         root = _build_element(root_key, root_val)
     else:
-        # Multiple top-level items: wrap under a <Root> element
         root = ET.Element("Root")
         for k, v in template_dict.items():
             child = _build_element(k, v)
             root.append(child)
 
-    # Pretty-print indentation
-    _indent(root, 0)
+    def render_element(elem: ET.Element, level: int = 0) -> str:
+        indent = ' ' * (8 * level)
+        tag = elem.tag
 
-    xml_str = ET.tostring(root, encoding="unicode")
-    return xml_str
+        # Prepare attributes
+        attrs = []
+        for k, v in elem.attrib.items():
+            name = to_camel_case(k)
+            val = '' if v is None else str(v)
+            val_escaped = xml_escape(val, {'"': '&quot;'})
+            attrs.append(f'{name} = "{val_escaped}"')
+
+        children = list(elem)
+        # Determine meaningful text: treat empty or whitespace-only text as absent
+        text_raw = elem.text
+        text = None
+        if text_raw is not None:
+            t = str(text_raw).strip()
+            if t != '':
+                text = t
+
+        # Inline if small attribute count
+        inline = len(attrs) <= 4
+
+        # No children and no text -> self-closing
+        if not children and not text:
+            if attrs:
+                if inline:
+                    return f"{indent}<{tag} {' '.join(attrs)} />\n"
+                else:
+                    # Multiline attributes; close with '/>' on its own line
+                    attr_lines = '\n'.join(f"{indent}        {a}" for a in attrs)
+                    return f"{indent}<{tag}\n{attr_lines}\n{indent}/>\n"
+            else:
+                return f"{indent}<{tag} />\n"
+
+        # Has children or text -> opening tag
+        if attrs:
+            if inline:
+                open_tag = f"{indent}<{tag} {' '.join(attrs)}>\n"
+            else:
+                attr_lines = '\n'.join(f"{indent}        {a}" for a in attrs)
+                open_tag = f"{indent}<{tag}\n{attr_lines}>\n"
+        else:
+            open_tag = f"{indent}<{tag}>\n"
+
+        inner = ''
+        if text:
+            inner += f"{indent}        {xml_escape(text)}\n"
+
+        for child in children:
+            inner += render_element(child, level + 1)
+
+        close_tag = f"{indent}</{tag}>\n"
+        return open_tag + inner + close_tag
+
+    xml_out = render_element(root, 0)
+    return xml_out.rstrip('\n')
 
 
 def modify_template_field(template_dict: Dict, path: str, value: Any) -> Dict:
@@ -152,11 +207,6 @@ def modify_template_field(template_dict: Dict, path: str, value: Any) -> Dict:
 
     - Creates intermediate dictionaries when necessary.
     - Supports integer path segments to index lists (e.g., 'array.0.key').
-
-    Example:
-      modify_template_field(template, "deviceMap.device.soap.soapModFile", "/new/path.xmf")
-
-    Returns the modified template_dict.
     """
     if not isinstance(template_dict, dict):
         raise TypeError("template_dict must be a dict")
@@ -177,14 +227,9 @@ def modify_template_field(template_dict: Dict, path: str, value: Any) -> Dict:
             is_index = False
 
         if is_index:
-            # Current must be a list
             if not isinstance(cur, list):
-                # If we need to set into a list but current isn't a list, create it
-                cur_parent = cur
-                # Replace the current key in the parent with a list -- but we don't have parent reference here
                 raise TypeError("Encountered numeric path segment but current object is not a list")
 
-            # Ensure list is long enough
             while len(cur) <= list_index:
                 cur.append({})
 
@@ -196,25 +241,20 @@ def modify_template_field(template_dict: Dict, path: str, value: Any) -> Dict:
 
         # Normal dict key
         if is_last:
-            # Set the value
             if isinstance(cur, dict):
                 cur[part] = value
             else:
                 raise TypeError(f"Cannot set key '{part}' on non-dict object")
             return template_dict
 
-        # Not last: ensure intermediate dict exists
         nxt = cur.get(part)
         if nxt is None:
-            # Create intermediate dict
             cur[part] = {}
             nxt = cur[part]
         elif not isinstance(nxt, (dict, list)):
-            # Overwrite non-dict with a dict to continue path
             cur[part] = {}
             nxt = cur[part]
 
         cur = nxt
 
     return template_dict
-

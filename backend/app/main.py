@@ -30,6 +30,8 @@ from backend.app.utils.database import Base, engine, SessionLocal
 from backend.app.db.seed_roles import seed_roles
 from backend.app.db.seed_users import seed_test_user, seed_cc_admin_user
 from backend.app.db.verify_setup import verify_setup
+from backend.app.db.seed_templates import seed_device_templates
+
 
 # Import route modules directly and mount under /api
 from backend.app.routes.sapro import router as sapro_router
@@ -204,12 +206,20 @@ async def lifespan(app: FastAPI):
         logger.exception("Failed to create database tables on startup: %s", exc)
 
     # Ensure MongoDB IRP indexes if configured
-    from backend.app.utils.database import create_irp_indexes
+    from backend.app.utils.database import create_irp_indexes, get_mongo_db
     try:
         create_irp_indexes()
         logger.info("Ensured MongoDB indexes for irp_data_formats")
     except Exception:
         logger.exception("Failed to create/ensure MongoDB indexes on startup")
+
+    # Seed device templates into MongoDB
+    try:
+        mongo_db = get_mongo_db()
+        seed_device_templates(mongo_db)
+        logger.info("Device templates seeding completed")
+    except Exception as exc:
+        logger.exception("Failed to seed device templates: %s", exc)
 
     yield
 

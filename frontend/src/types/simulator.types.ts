@@ -2,6 +2,9 @@ export interface Simulator {
   ip_address: string;
   map: string;
   template_id?: string;
+  type?: string;
+  version?: string;
+  status?: string;
   created_at: string;
 }
 

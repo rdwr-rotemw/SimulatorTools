@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, IconButton, Typography, Tooltip, Skeleton, Fade } from '@mui/material';
+import { Box, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, IconButton, Typography, Skeleton, Fade } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
@@ -11,13 +11,12 @@ interface SimulatorTableProps {
   onEdit: (simulator: Simulator) => void;
   onDelete: (ip: string) => void;
   isLoading: boolean;
-  sortBy: 'ip_address' | 'map' | 'template_id';
+  sortBy: 'ip_address' | 'type' | 'version' | 'map' | 'status';
   sortOrder: 'asc' | 'desc';
-  onSort: (column: 'ip_address' | 'map' | 'template_id') => void;
-  templateMap?: Record<string, string>;
+  onSort: (column: 'ip_address' | 'type' | 'version' | 'map' | 'status') => void;
 }
 
-export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEdit, onDelete, isLoading, sortBy, sortOrder, onSort, templateMap = {} }) => {
+export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEdit, onDelete, isLoading, sortBy, sortOrder, onSort }) => {
   if (isLoading) {
     return (
       <TableContainer component={Paper}>
@@ -33,16 +32,47 @@ export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEd
                   {sortBy === 'ip_address' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
                 </Box>
               </TableCell>
+
               <TableCell
-                onClick={() => onSort('template_id')}
+                onClick={() => onSort('type')}
                 sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
               >
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  Template
-                  {sortBy === 'template_id' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
+                  Type
+                  {sortBy === 'type' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
                 </Box>
               </TableCell>
-              <TableCell>Map</TableCell>
+
+              <TableCell
+                onClick={() => onSort('version')}
+                sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Version
+                  {sortBy === 'version' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
+                </Box>
+              </TableCell>
+
+              <TableCell
+                onClick={() => onSort('map')}
+                sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Map
+                  {sortBy === 'map' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
+                </Box>
+              </TableCell>
+
+              <TableCell
+                onClick={() => onSort('status')}
+                sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Status
+                  {sortBy === 'status' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
+                </Box>
+              </TableCell>
+
               <TableCell>Actions</TableCell>
             </TableRow>
           </TableHead>
@@ -51,6 +81,8 @@ export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEd
               <TableRow key={n}>
                 <TableCell><Skeleton variant="text" width={120} /></TableCell>
                 <TableCell><Skeleton variant="text" width={100} /></TableCell>
+                <TableCell><Skeleton variant="text" width={100} /></TableCell>
+                <TableCell><Skeleton variant="text" width={80} /></TableCell>
                 <TableCell><Skeleton variant="text" width={80} /></TableCell>
                 <TableCell>
                   <Skeleton variant="circular" width={24} height={24} sx={{ display: 'inline-block', marginRight: 1 }} />
@@ -87,16 +119,47 @@ export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEd
                   {sortBy === 'ip_address' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
                 </Box>
               </TableCell>
+
               <TableCell
-                onClick={() => onSort('template_id')}
+                onClick={() => onSort('type')}
                 sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
               >
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                  Template
-                  {sortBy === 'template_id' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
+                  Type
+                  {sortBy === 'type' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
                 </Box>
               </TableCell>
-              <TableCell>Map</TableCell>
+
+              <TableCell
+                onClick={() => onSort('version')}
+                sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Version
+                  {sortBy === 'version' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
+                </Box>
+              </TableCell>
+
+              <TableCell
+                onClick={() => onSort('map')}
+                sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Map
+                  {sortBy === 'map' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
+                </Box>
+              </TableCell>
+
+              <TableCell
+                onClick={() => onSort('status')}
+                sx={{ cursor: 'pointer', userSelect: 'none', '&:hover': { background: '#f5f5f5' } }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                  Status
+                  {sortBy === 'status' && (sortOrder === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />)}
+                </Box>
+              </TableCell>
+
               <TableCell>Actions</TableCell>
             </TableRow>
           </TableHead>
@@ -104,8 +167,10 @@ export const SimulatorTable: React.FC<SimulatorTableProps> = ({ simulators, onEd
             {simulators.map((sim) => (
               <TableRow key={sim.ip_address} hover>
                 <TableCell>{sim.ip_address}</TableCell>
-                <TableCell>{sim.template_id ? (templateMap[sim.template_id] || sim.template_id) : '—'}</TableCell>
-                <TableCell>{sim.map}</TableCell>
+                <TableCell>{sim.type || '—'}</TableCell>
+                <TableCell>{sim.version || '—'}</TableCell>
+                <TableCell>{sim.map || '—'}</TableCell>
+                <TableCell>{sim.status || '—'}</TableCell>
                 <TableCell>
                   <IconButton aria-label="edit" color="primary" onClick={() => onEdit(sim)}>
                     <EditIcon />

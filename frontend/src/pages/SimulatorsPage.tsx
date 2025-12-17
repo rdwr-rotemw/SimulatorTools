@@ -22,7 +22,7 @@ export const SimulatorsPage: React.FC = () => {
   const [simulatorToDelete, setSimulatorToDelete] = useState<string | null>(null);
   const [snackbar, setSnackbar] = useState<SnackbarState>({ open: false, message: '', severity: 'success' });
   const [searchTerm, setSearchTerm] = useState('');
-  const [sortBy, setSortBy] = useState<'ip_address' | 'map' | 'template_id'>('ip_address');
+  const [sortBy, setSortBy] = useState<'ip_address' | 'type' | 'version' | 'map' | 'status'>('ip_address');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
   const {
@@ -79,6 +79,9 @@ export const SimulatorsPage: React.FC = () => {
     try {
       await deleteSimulator(simulatorToDelete);
       setSnackbar({ open: true, message: 'Simulator deleted', severity: 'success' });
+
+      // Refresh simulator list after deletion
+      await fetchSimulators();
     } catch (err: any) {
       setSnackbar({ open: true, message: err?.message || 'Failed to delete simulator', severity: 'error' });
     } finally {
@@ -96,6 +99,9 @@ export const SimulatorsPage: React.FC = () => {
         await createSimulator(data as SimulatorCreate);
         setSnackbar({ open: true, message: 'Simulator created', severity: 'success' });
       }
+
+      // Refresh simulator list from backend to reflect Sapro state
+      await fetchSimulators();
     } catch (err: any) {
       setSnackbar({ open: true, message: err?.message || 'Operation failed', severity: 'error' });
     } finally {
@@ -119,7 +125,7 @@ export const SimulatorsPage: React.FC = () => {
     setSnackbar((s) => ({ ...s, open: false }));
   };
 
-  const handleSort = (column: 'ip_address' | 'map' | 'template_id') => {
+  const handleSort = (column: 'ip_address' | 'type' | 'version' | 'map' | 'status') => {
     if (sortBy === column) {
       setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
     } else {
@@ -132,20 +138,17 @@ export const SimulatorsPage: React.FC = () => {
     const search = searchTerm.toLowerCase();
     const ipMatch = sim.ip_address?.toLowerCase().includes(search) || false;
     const mapMatch = sim.map?.toLowerCase().includes(search) || false;
-    const templateName = sim.template_id ? (templateMap[sim.template_id] || '').toLowerCase() : '';
-    const templateMatch = templateName.includes(search);
-    return ipMatch || mapMatch || templateMatch;
+    const typeMatch = sim.type?.toLowerCase().includes(search) || false;
+    const versionMatch = sim.version?.toLowerCase().includes(search) || false;
+    const statusMatch = sim.status?.toLowerCase().includes(search) || false;
+    return ipMatch || mapMatch || typeMatch || versionMatch || statusMatch;
   });
 
   const sortedSimulators = [...filteredSimulators].sort((a, b) => {
     let aValue: any = a[sortBy as keyof Simulator] as any;
     let bValue: any = b[sortBy as keyof Simulator] as any;
 
-    // For template_id sorting, resolve to names
-    if (sortBy === 'template_id') {
-      aValue = a.template_id ? (templateMap[a.template_id] || a.template_id) : '';
-      bValue = b.template_id ? (templateMap[b.template_id] || b.template_id) : '';
-    }
+    // No special-case sorting required for current fields
 
     // Handle null/undefined values
     if (aValue == null) aValue = '';
@@ -186,12 +189,12 @@ export const SimulatorsPage: React.FC = () => {
           sortBy={sortBy}
           sortOrder={sortOrder}
           onSort={handleSort}
-          templateMap={templateMap}
         />
 
         <SimulatorFormDialog
           open={formOpen}
           simulator={selectedSimulator}
+          simulators={simulators}
           onClose={handleFormClose}
           onSubmit={handleFormSubmit}
         />

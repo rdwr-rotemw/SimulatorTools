@@ -9,7 +9,9 @@ import {
   MenuItem,
   CircularProgress,
   Box,
+  IconButton,
 } from '@mui/material';
+import AddIcon from '@mui/icons-material/Add';
 import { useForm } from 'react-hook-form';
 import { Simulator, SimulatorCreate, SimulatorUpdate } from '../../types/simulator.types';
 import apiClient from '../../api/client';
@@ -19,9 +21,11 @@ interface SimulatorFormDialogProps {
   simulator: Simulator | null;
   onClose: () => void;
   onSubmit: (data: SimulatorCreate | SimulatorUpdate) => Promise<void>;
+  // Optional list of existing simulators to extract unique map names from
+  simulators?: Simulator[];
 }
 
-export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, simulator, onClose, onSubmit }) => {
+export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, simulator, onClose, onSubmit, simulators }) => {
   const { register, handleSubmit, formState, reset, setValue } = useForm<SimulatorCreate | SimulatorUpdate>({
     defaultValues: {
       ip_address: '',
@@ -34,6 +38,9 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
   const [isLoading, setIsLoading] = useState(false);
   const [templates, setTemplates] = useState<Array<{ _id: string; name: string }>>([]);
   const [isTemplatesLoading, setIsTemplatesLoading] = useState(false);
+  const [maps, setMaps] = useState<string[]>([]);
+  const [addMapOpen, setAddMapOpen] = useState(false);
+  const [newMapName, setNewMapName] = useState('');
 
   const isEditMode = !!simulator;
 
@@ -77,6 +84,14 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
     };
   }, []);
 
+  // derive unique maps from provided simulators prop when available
+  useEffect(() => {
+    if (simulators && simulators.length > 0) {
+      const uniq = Array.from(new Set(simulators.map((s) => (s.map || '').trim()).filter(Boolean)));
+      if (uniq.length > 0) setMaps((prev) => Array.from(new Set([...uniq, ...prev])));
+    }
+  }, [simulators]);
+
   const ipPattern = /^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$/;
 
   const handleFormSubmit = async (data: SimulatorCreate | SimulatorUpdate) => {
@@ -99,8 +114,27 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
     }
   };
 
+  const handleOpenAddMap = () => {
+    setNewMapName('');
+    setAddMapOpen(true);
+  };
+  const handleCloseAddMap = () => setAddMapOpen(false);
+  const handleSubmitNewMap = () => {
+    const name = (newMapName || '').trim();
+    if (!name) {
+      // minimal feedback for now
+      console.warn('Map name is empty');
+      return;
+    }
+    // Add to local maps list if not exists and select it
+    setMaps((prev) => (prev.includes(name) ? prev : [name, ...prev]));
+    setValue('map' as keyof (SimulatorCreate & SimulatorUpdate), name as any);
+    console.log('New map submitted:', name); // placeholder for user implementation
+    handleCloseAddMap();
+  };
+
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth scroll="body" PaperProps={{ sx: { margin: '32px' } }}>
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { margin: '32px' } }}>
       <DialogTitle>{isEditMode ? 'Edit Simulator' : 'Create Simulator'}</DialogTitle>
       <DialogContent sx={{ paddingTop: '24px !important', paddingBottom: '24px' }}>
         <form id="simulator-form" onSubmit={handleSubmit(handleFormSubmit)}>
@@ -120,19 +154,45 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
             </Box>
 
             <Box>
-              <TextField
-                label="Map"
-                fullWidth
-                select
-                defaultValue=""
-                {...register('map' as any, { required: 'Map is required' })}
-                error={!!(errors as any)?.map}
-                helperText={(errors as any)?.map?.message}
-              >
-                <MenuItem value="prod">prod</MenuItem>
-                <MenuItem value="qa">qa</MenuItem>
-                <MenuItem value="dev">dev</MenuItem>
-              </TextField>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <TextField
+                  label="Map"
+                  fullWidth
+                  select
+                  defaultValue=""
+                  {...register('map' as any, { required: 'Map is required' })}
+                  error={!!(errors as any)?.map}
+                  helperText={(errors as any)?.map?.message}
+                  sx={{ flex: 1 }}
+                >
+                  {maps.map((m) => (
+                    <MenuItem key={m} value={m}>{m}</MenuItem>
+                  ))}
+                </TextField>
+
+                <IconButton size="small" onClick={handleOpenAddMap} aria-label="Add map">
+                  <AddIcon />
+                </IconButton>
+              </Box>
+
+              {/* Add Map Dialog */}
+              <Dialog open={addMapOpen} onClose={handleCloseAddMap} maxWidth="xs" fullWidth>
+                <DialogTitle>Add new map</DialogTitle>
+                <DialogContent>
+                  <TextField
+                    autoFocus
+                    margin="dense"
+                    label="Map name"
+                    fullWidth
+                    value={newMapName}
+                    onChange={(e) => setNewMapName(e.target.value)}
+                  />
+                </DialogContent>
+                <DialogActions>
+                  <Button onClick={handleCloseAddMap}>Cancel</Button>
+                  <Button onClick={handleSubmitNewMap} variant="contained">Add</Button>
+                </DialogActions>
+              </Dialog>
             </Box>
 
             <Box>

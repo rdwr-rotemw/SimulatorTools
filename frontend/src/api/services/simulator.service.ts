@@ -17,7 +17,7 @@ export const simulatorService = {
     const payload: any = {
       ip_address: data.ip_address,
       map: data.map,
-      template: (data as any).template_id || data.template_id,
+      template_id: (data as any).template_id || data.template_id,
     };
     const response = await apiClient.post<Simulator>('/simulators', payload);
     return response.data;

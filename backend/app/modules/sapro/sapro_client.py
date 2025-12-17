@@ -2,6 +2,7 @@ from typing import List
 from typing import Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+import paramiko
 
 # removed devices_templates import (DB-only templates now)
 from backend.app.modules.sapro.src import (
@@ -396,15 +397,69 @@ class SaproCommunicationHandler:
         Returns:
             (success, message)
         """
+        # Normalize map_full_name: if provided map_name already looks like a path or endswith .map use it,
+        # otherwise resolve against configured map directory.
+        if map_name.endswith('.map') or '/' in map_name:
+            map_full_name = map_name
+        else:
+            map_full_name = self.get_full_map_path(map_name)
+
+        # 1) Stop device first (keep existing behavior)
         try:
-            map_path = self.get_full_map_path(map_name)
-            reply = saproMapFunctions.SendDeleteDevCmdToMap(self._sapro, map_path, device_ip)
-            return True, str(reply)
-        except SaproException as e:
-            msg = getattr(e, "toString", lambda: str(e))()
-            return False, f"Failed to delete device {device_ip} from map {map_name}: {msg}"
+            saproDeviceFunctions.SendStopCmdToDevice(self._sapro, map_full_name, device_ip)
         except Exception as e:
-            return False, f"Failed to delete device {device_ip} from map {map_name}: {str(e)}"
+            # Log but continue to attempt deletion via SSH
+            logger.debug("Stopping device before delete raised: %s", e)
+
+        # 2) Execute remote sapcnsl delete command over SSH on the Sapro server
+        ssh_host = getattr(settings, 'SAPRO_SSH_HOST', None)
+        ssh_user = getattr(settings, 'SAPRO_SSH_USER', None)
+        ssh_pass = getattr(settings, 'SAPRO_SSH_PASSWORD', None)
+
+        if not ssh_host or not ssh_user:
+            return False, "Sapro SSH credentials not configured (SAPRO_SSH_HOST/SAPRO_SSH_USER)"
+
+        cmd = f"/opt/sapro/sapcnsl -p {self.sapro_port} -m {map_full_name} -c deldev -d {device_ip}"
+        ssh = None
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(hostname=ssh_host, port=22, username=ssh_user, password=ssh_pass, timeout=15)
+
+            stdin, stdout, stderr = ssh.exec_command(cmd)
+            out = stdout.read().decode('utf-8', errors='ignore').strip()
+            err = stderr.read().decode('utf-8', errors='ignore').strip()
+
+            # Determine success: prefer absence of stderr and presence of success keywords or no error text
+            out_l = out.lower() if out else ''
+            err_l = err.lower() if err else ''
+
+            if err_l:
+                return False, f"SSH delete command STDERR: {err}"
+
+            # success if stdout mentions deleted/success or if no stderr and stdout not indicating error
+            if ('deleted' in out_l) or ('success' in out_l) or (out_l and 'error' not in out_l):
+                return True, out or "Device deleted (no stdout)"
+
+            # Fallback: consider it success if no stderr and empty stdout
+            if not out and not err:
+                return True, "Device delete command executed (no output)"
+
+            # Otherwise return failure with captured output
+            return False, f"Unexpected delete output: stdout={out!s} stderr={err!s}"
+
+        except paramiko.AuthenticationException as exc:
+            return False, f"SSH authentication failed: {exc}"
+        except paramiko.SSHException as exc:
+            return False, f"SSH error executing delete command: {exc}"
+        except Exception as exc:
+            return False, f"Failed to execute SSH delete command: {exc}"
+        finally:
+            if ssh:
+                try:
+                    ssh.close()
+                except Exception:
+                    pass
 
 
 # Module-level singleton factory

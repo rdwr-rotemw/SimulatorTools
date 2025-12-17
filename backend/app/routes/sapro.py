@@ -34,6 +34,7 @@ from backend.app.modules.mongo_models import (
     DeviceTemplateUpdate,
 )
 from backend.app.modules.sapro.template_converter import json_to_xml
+from backend.app.utils.logger import logger
 
 router = APIRouter(prefix="/api", tags=["sapro"])
 
@@ -49,17 +50,20 @@ def create_simulator(
 ) -> SaproSimulatorResponse:
     """Create a new simulator in Sapro and persist it to the DB.
 
-    Workflow changes:
-    - `payload.template_id` is used to load a device template from MongoDB
-    - The stored JSON template is converted to XML via `json_to_xml` and the
-      resulting XML string is passed to the Sapro handler when creating the device.
+    New flow (safe):
+    1. Ensure simulator doesn't already exist in DB
+    2. Load template from Mongo
+    3. Convert template to XML (or use raw XML if stored that way)
+    4. Call sapro_handler.create_device(...) to provision on Sapro
+    5. Only if Sapro call returns success -> persist to DB
+    6. If DB save fails after successful Sapro creation, attempt best-effort cleanup in Sapro
     """
-    # Conflict if already exists in DB
+    # 1) Check DB for existing simulator
     existing = db.get(Simulator, payload.ip_address)
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Simulator with this IP already exists")
 
-    # Load template from MongoDB
+    # 2) Load template from MongoDB
     try:
         tpl_oid = ObjectId(payload.template_id)
     except Exception:
@@ -70,24 +74,52 @@ def create_simulator(
     if not tpl_doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
 
-    # Extract JSON template structure
-    template_json = tpl_doc.get("template")
-    if template_json is None:
+    template_field = tpl_doc.get("template")
+    if template_field is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Template is missing 'template' field")
 
-    # Convert JSON to XML
+    # Helper: replace '<ip>' placeholders inside nested template dict/list
+    def replace_ip_in_template(template_dict: Dict[str, Any], ip_address: str) -> Dict[str, Any]:
+        import copy
+        result = copy.deepcopy(template_dict)
+
+        def replace_recursive(obj):
+            if isinstance(obj, dict):
+                for key, val in obj.items():
+                    if isinstance(val, str) and val == '<ip>':
+                        obj[key] = ip_address
+                    elif isinstance(val, (dict, list)):
+                        replace_recursive(val)
+            elif isinstance(obj, list):
+                for i, item in enumerate(obj):
+                    if isinstance(item, str) and item == '<ip>':
+                        obj[i] = ip_address
+                    elif isinstance(item, (dict, list)):
+                        replace_recursive(item)
+
+        replace_recursive(result)
+        return result
+
+    # 3) Prepare XML content: support stored JSON dict or raw XML string
     try:
-        xml_content = json_to_xml(template_json)
+        if isinstance(template_field, str):
+            # If template is stored as raw XML string, replace literal '<ip>' occurrences in the string
+            # to preserve original behavior where templates contained the <ip> placeholder.
+            xml_content = template_field.replace('<ip>', payload.ip_address)
+        else:
+            # Replace <ip> placeholder with actual IP in the JSON structure, then convert to XML
+            template_with_ip = replace_ip_in_template(template_field, payload.ip_address)
+            xml_content = json_to_xml(template_with_ip)
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to convert template to XML: {exc}")
 
-    # Call Sapro to create device using the XML content
+    # 4) Call Sapro to create device using the XML content
     success, message = sapro_handler.create_device(payload.ip_address, xml_content, payload.map)
     if not success:
-        # Sapro reported failure
+        # Sapro reported failure - do not persist to DB
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
 
-    # Persist to DB with template_id reference
+    # 5) Persist to DB only after Sapro creation succeeded
     sim = Simulator(
         ip_address=payload.ip_address,
         type=(tpl_doc.get("name") or ""),
@@ -95,22 +127,37 @@ def create_simulator(
         map=payload.map,
         status="running",
     )
+
     try:
         db.add(sim)
         db.commit()
         db.refresh(sim)
     except IntegrityError:
         db.rollback()
-        # Shouldn't happen since we checked earlier, but handle race
+        # Race condition: another process created the DB entry meanwhile
+        # Attempt to remove the previously-created Sapro device to avoid orphan
+        try:
+            sapro_handler.delete_device(payload.map, payload.ip_address)
+        except Exception:
+            logger.exception("Failed to cleanup Sapro device after DB integrity error for %s", payload.ip_address)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Simulator with this IP already exists")
     except SQLAlchemyError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        # Best-effort cleanup in Sapro since DB save failed
+        try:
+            ok, msg = sapro_handler.delete_device(payload.map, payload.ip_address)
+            if ok:
+                logger.info("Cleaned up Sapro device %s after DB failure", payload.ip_address)
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to save simulator to DB: {str(exc)}; device removed from Sapro")
+            else:
+                logger.error("Failed to remove Sapro device %s after DB failure: %s", payload.ip_address, msg)
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to save simulator to DB: {str(exc)}; additionally failed to cleanup device on Sapro: {msg}")
+        except Exception as cleanup_exc:
+            logger.exception("Cleanup after DB failure also failed for device %s: %s", payload.ip_address, cleanup_exc)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to save simulator to DB and cleanup Sapro device: {cleanup_exc}")
 
-    # Return response including template id reference
+    # 6) Return response
     resp = SaproSimulatorResponse.model_validate(sim)
-    # attach template reference into response (if desired consumer needs it they can query DB)
-    # We return same response model; template_id not part of response model per current schema
     return resp
 
 
@@ -129,10 +176,21 @@ def list_simulators(
         _current_user=Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler)
 ) -> List[SaproSimulatorResponse]:
-    """Get all devices from Sapro and sync to DB"""
-    devices = sapro_handler.get_all_devices()  # List[SaproDevice]
+    """Get all devices from Sapro and sync to DB.
 
-    # Upsert to DB
+    New behavior:
+    1. Query Sapro for currently running devices
+    2. Upsert each Sapro device into the SQL DB
+    3. Remove any DB simulators that are not present in Sapro (orphan cleanup)
+    4. Return the current DB simulator list
+    """
+    try:
+        devices = sapro_handler.get_all_devices()  # List[SaproDevice]
+    except Exception as exc:
+        logger.exception("Failed to query Sapro for devices: %s", exc)
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to query Sapro: {exc}")
+
+    # Upsert devices returned by Sapro into DB
     for device in devices:
         db.merge(Simulator(
             ip_address=device.ip_address,
@@ -143,7 +201,23 @@ def list_simulators(
         ))
     db.commit()
 
-    # Return from DB
+    # Build set of Sapro IPs and remove any DB records not present in Sapro
+    sapro_ips = {d.ip_address for d in devices}
+
+    db_sims = db.query(Simulator).all()
+    removed = 0
+    for sim in db_sims:
+        if sim.ip_address not in sapro_ips:
+            try:
+                db.delete(sim)
+                removed += 1
+            except Exception:
+                logger.exception("Failed to delete orphaned simulator %s from DB", sim.ip_address)
+    if removed:
+        db.commit()
+        logger.info("Removed %d orphaned simulator(s) from DB not present in Sapro", removed)
+
+    # Return the remaining simulators from DB
     sims = db.query(Simulator).all()
     return [SaproSimulatorResponse.model_validate(s) for s in sims]
 
