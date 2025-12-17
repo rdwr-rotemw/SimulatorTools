@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -56,14 +56,15 @@ class CCLoginResponse(BaseModel):
 
 class CCAddDevicePayload(BaseModel):
     """Payload for adding a device to CyberController."""
-    username: str
-    password: str
     name: str
+    type: str  # "DefensePro" or "Alteon"
+    cli_username: str
+    cli_password: str
+    http_username: str
+    https_password: str
     management_ip: str
-    device_type: str
-    device_user: str
-    device_password: str
-    parent_orm: Optional[Any] = None
+    vision_mgt_port: str  # e.g., "G1"
+    register_device_events: bool = False
 
 
 class CCDeviceResponse(BaseModel):
@@ -295,6 +296,78 @@ async def get_cc_simulators(
         )
 
 
+@router.get(
+    "/cc/{cc_ip}/organization-parent",
+    status_code=status.HTTP_200_OK,
+)
+async def get_organization_parent(
+        cc_ip: str,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
+) -> Dict[str, str]:
+    """Get parent organization ID for adding devices.
+
+    Looks for "Simulators" site in organization tree, falls back to "Default".
+
+    Args:
+        cc_ip: CyberController IP address or hostname
+        db: Database session
+        current_user: Authenticated user with cc_admin or admin role
+
+    Returns:
+        Dictionary with parent_orm_id and site_name
+
+    Raises:
+        HTTPException: If authentication or tree retrieval fails
+    """
+    try:
+        # Query for active session
+        cc_session = db.query(CCSession).filter(
+            CCSession.cc_ip == cc_ip,
+            CCSession.user_id == current_user.user_id
+        ).first()
+
+        if not cc_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
+            )
+
+        handler = CCHandler(cc_ip, "", "")
+        jsession_id = str(cc_session.jsession_id)
+        handler._creds = CCCredentials(jsession_id=jsession_id, cc_ip=cc_ip,
+                                       authenticated_at=getattr(cc_session, 'login_time', None))
+        try:
+            handler._session.cookies.set("JSESSIONID", jsession_id)
+        except Exception:
+            pass
+
+        # Get organization tree
+        ok, parent_orm_id = handler.get_organization_tree()
+
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get organization tree: {parent_orm_id}"
+            )
+
+        # Determine site name from the message
+        site_name = "Simulators" if "Simulators" in str(parent_orm_id) else "Default"
+
+        return {
+            "parent_orm_id": parent_orm_id,
+            "site_name": site_name
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error getting organization parent: {exc!s}"
+        )
+
+
 @router.post(
     "/cc/{cc_ip}/simulators",
     status_code=status.HTTP_201_CREATED,
@@ -342,14 +415,17 @@ async def add_cc_simulator(
         except Exception:
             pass
 
-        # Add device
+        # Add device using new API
         ok, result = handler.add_device(
             name=payload.name,
-            parent_orm=payload.parent_orm,
             management_ip=payload.management_ip,
-            device_type=payload.device_type,
-            user=payload.device_user,
-            password=payload.device_password,
+            device_type=payload.type,
+            cli_username=payload.cli_username,
+            cli_password=payload.cli_password,
+            http_username=payload.http_username,
+            https_password=payload.https_password,
+            vision_mgt_port=payload.vision_mgt_port,
+            register_device_events=payload.register_device_events,
         )
 
         if not ok:
@@ -358,14 +434,11 @@ async def add_cc_simulator(
                 detail=f"Failed to add device: {result}"
             )
 
-        device: CCDevice = result  # type: ignore
-
+        # Return minimal response since new API returns success message
         return CCDeviceResponse(
-            management_ip=device.management_ip,
-            name=device.name,
-            device_id=device.device_id,
-            device_type=device.device_type,
-            status=device.status,
+            management_ip=payload.management_ip,
+            name=payload.name,
+            device_type=payload.type,
         )
     except HTTPException:
         raise

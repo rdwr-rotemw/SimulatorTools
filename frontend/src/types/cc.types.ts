@@ -24,14 +24,15 @@ export interface CCLoginResponse {
 }
 
 export interface CCAddDeviceRequest {
-  username: string;
-  password: string;
   name: string;
+  type: string;  // "DefensePro" or "Alteon"
+  cli_username: string;
+  cli_password: string;
+  http_username: string;
+  https_password: string;
   management_ip: string;
-  device_type: string;
-  device_user: string;
-  device_password: string;
-  parent_orm?: any;
+  vision_mgt_port: string;  // e.g., "G1"
+  register_device_events: boolean;
 }
 
 export interface CCDeleteResponse {

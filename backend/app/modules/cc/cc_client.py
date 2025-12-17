@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import paramiko
 import requests
 import urllib3
-from scp import SCPClient
+from scp import SCPClient, SCPException
 
 # Suppress only the single InsecureRequestWarning raised when verify=False
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -339,49 +339,179 @@ class CCHandler:
             logger.exception("Exception in get_device_by_ip: %s", exc)
             return False, f"Exception in get_device_by_ip: {exc!s}"
 
-    def add_device(self, name: str, parent_orm: Any, management_ip: str, device_type: str, user: str, password: str) -> \
-            Tuple[bool, Union[str, CCDevice]]:
-        """Add a single device to CyberController.
+    def get_organization_tree(self) -> Tuple[bool, str]:
+        """Get parent organization ID for adding devices.
 
-        Args:
-            name: device display name
-            parent_orm: parent object id or representation expected by CC (pass-through)
-            management_ip: device management IP address
-            device_type: type identifier
-            user: device username
-            password: device password
+        Fetches organization tree and looks for "Simulators" site.
+        Falls back to "Default" site if "Simulators" not found.
 
         Returns:
-            (True, CCDevice) on success or (False, error_message) on failure.
+            (True, parent_orm_id) on success or (False, error_message) on failure.
         """
         try:
             if not self.is_logged_in():
                 ok, msg = self.refresh_session()
                 if not ok:
                     raise RuntimeError(f"Authentication required and refresh failed: {msg}")
-            url = f"{self.base_url}/api/devices"
+
+            url = f"{self.base_url}/mgmt/system/monitor/tree/Organization"
+            resp = self._session.get(url, verify=self._verify_ssl, timeout=30)
+
+            if resp.status_code != 200:
+                return False, f"Failed to get organization tree: HTTP {resp.status_code}"
+
+            try:
+                tree_data = resp.json()
+            except (ValueError, TypeError) as exc:
+                return False, f"Failed to parse organization tree response: {exc}"
+
+            # Recursively search for "Simulators" or "Default" site
+            def find_site(node: Any, target_name: str) -> Optional[str]:
+                """Recursively search tree for site with given name.
+
+                Handles both dict and list nodes. Some CC responses place the
+                managedElementID under `meIdentifier.managedElementID` while
+                others may expose `managedElementID` at the node root. This
+                function checks both locations and recurses into `children`.
+                """
+                # If node is a list, iterate over items
+                if isinstance(node, list):
+                    for item in node:
+                        result = find_site(item, target_name)
+                        if result:
+                            return result
+                    return None
+
+                # If node is not a dict at this point, nothing to do
+                if not isinstance(node, dict):
+                    return None
+
+                # Check current node's name
+                name = node.get("name")
+                if name == target_name:
+                    # Try nested meIdentifier first (common format)
+                    me = node.get("meIdentifier")
+                    if isinstance(me, dict) and me.get("managedElementID"):
+                        return me.get("managedElementID")
+
+                    # Fallback to top-level managedElementID if present
+                    if node.get("managedElementID"):
+                        return node.get("managedElementID")
+
+                # Recurse into children if present
+                children = node.get("children")
+                if isinstance(children, list) and children:
+                    for child in children:
+                        result = find_site(child, target_name)
+                        if result:
+                            return result
+
+                return None
+
+            # Try to find "Simulators" site first
+            simulators_id = find_site(tree_data, "Simulators")
+            if simulators_id:
+                logger.info("Found 'Simulators' site with ID: %s", simulators_id)
+                return True, simulators_id
+
+            # Fall back to "Default" site
+            default_id = find_site(tree_data, "Default")
+            if default_id:
+                logger.info("'Simulators' site not found, using 'Default' site with ID: %s", default_id)
+                return True, default_id
+
+            return False, "Neither 'Simulators' nor 'Default' site found in organization tree"
+
+        except requests.RequestException as exc:
+            logger.exception("Request exception in get_organization_tree: %s", exc)
+            return False, f"Exception in get_organization_tree: {exc!s}"
+
+    def add_device(
+        self,
+        name: str,
+        management_ip: str,
+        device_type: str,
+        cli_username: str,
+        cli_password: str,
+        http_username: str,
+        https_password: str,
+        vision_mgt_port: str,
+        register_device_events: bool = False
+    ) -> Tuple[bool, str]:
+        """Add a single device to CyberController using actual CC API.
+
+        Args:
+            name: device display name
+            management_ip: device management IP address
+            device_type: "DefensePro" or "Alteon"
+            cli_username: CLI username (e.g., "radware")
+            cli_password: CLI password
+            http_username: HTTP username
+            https_password: HTTPS password
+            vision_mgt_port: Vision management port (e.g., "G1")
+            register_device_events: whether to register device events (default: False)
+
+        Returns:
+            (True, "Device added successfully") on success or (False, error_message) on failure.
+        """
+        try:
+            if not self.is_logged_in():
+                ok, msg = self.refresh_session()
+                if not ok:
+                    raise RuntimeError(f"Authentication required and refresh failed: {msg}")
+
+            # Auto-fetch parent ORM ID
+            ok, parent_orm_id = self.get_organization_tree()
+            if not ok:
+                return False, f"Failed to get parent organization: {parent_orm_id}"
+
+            # Build payload matching actual CyberController API
+            url = f"{self.base_url}/mgmt/system/config/tree/device"
             payload = {
                 "name": name,
-                "parent": parent_orm,
-                "managementIp": management_ip,
+                "parentOrmID": parent_orm_id,
                 "type": device_type,
-                "credentials": {"user": user, "password": password},
+                "deviceSetup": {
+                    "deviceAccess": {
+                        "cliPassword": cli_password,
+                        "cliPort": 22,
+                        "cliUsername": cli_username,
+                        "exclusivelyReceiveDeviceEvents": False,
+                        "httpPassword": http_username,  # Note: using http_username for httpPassword
+                        "httpsPassword": https_password,
+                        "httpsUsername": http_username,
+                        "httpUsername": http_username,
+                        "managementIp": management_ip,
+                        "registerDeviceEvents": register_device_events,
+                        "snmpV1ReadCommunity": "public",
+                        "snmpV1WriteCommunity": "public",
+                        "snmpV2ReadCommunity": "public",
+                        "snmpV2WriteCommunity": "public",
+                        "snmpV3AuthenticationProtocol": "SHA",
+                        "snmpV3PrivacyProtocol": "DES",
+                        "snmpVersion": "SNMP_V2",
+                        "verifyHttpCredentials": False,
+                        "verifyHttpsCredentials": True,
+                        "visionMgtPort": vision_mgt_port
+                    }
+                }
             }
-            resp = self._session.post(url, json=payload, verify=self._verify_ssl, timeout=30)
-            if resp.status_code in (200, 201):
+
+            resp = self._session.post(url, json=payload, verify=self._verify_ssl, timeout=300)
+
+            if resp.status_code == 200:
                 try:
                     data = resp.json()
+                    if isinstance(data, dict) and data.get("status") == "ok":
+                        return True, "Device added successfully"
+                    return False, f"Unexpected response: {data}"
                 except (ValueError, TypeError) as exc:
-                    logger.debug("Failed to parse JSON response in add_device, falling back: %s", exc)
-                    # fallback: create CCDevice from provided info
-                    device = CCDevice(management_ip=management_ip, name=name, device_type=device_type)
-                    return True, device
+                    logger.debug("Failed to parse JSON response in add_device: %s", exc)
+                    # If we got 200 but no JSON, assume success
+                    return True, "Device added successfully"
 
-                # map and return
-                device = self._map_device(
-                    data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else {}))
-                return True, device
             return False, f"Failed to add device: HTTP {resp.status_code} - {resp.text}"
+
         except requests.RequestException as exc:
             logger.exception("Request exception in add_device: %s", exc)
             return False, f"Exception in add_device: {exc!s}"
@@ -449,8 +579,18 @@ class CCHandler:
                 else:
                     name = f"{name_convention}-{ip_str}"
 
-                ok, res = self.add_device(name=name, parent_orm=parent_orm, management_ip=ip_str,
-                                          device_type=device_type, user=user, password=password)
+                # call new add_device API: provide CLI and HTTP creds as same user/password
+                ok, res = self.add_device(
+                    name=name,
+                    management_ip=ip_str,
+                    device_type=device_type,
+                    cli_username=user,
+                    cli_password=password,
+                    http_username=user,
+                    https_password=password,
+                    vision_mgt_port="",
+                    register_device_events=False,
+                )
                 if not ok:
                     return False, f"Failed to add device {ip_str}: {res}"
                 idx += 1
@@ -534,7 +674,7 @@ class CCHandler:
             except Exception as exc:
                 logger.debug("Error closing SSH after download: %s", exc)
             return True, local_path
-        except (paramiko.SSHException, paramiko.AuthenticationException, scp.SCPException, FileNotFoundError, IOError) as exc:
+        except (paramiko.SSHException, paramiko.AuthenticationException, SCPException, FileNotFoundError, IOError) as exc:
             try:
                 if ssh:
                     ssh.close()

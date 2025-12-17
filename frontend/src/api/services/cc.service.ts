@@ -23,7 +23,9 @@ export const ccService = {
   },
 
   addDevice: async (cc_ip: string, data: CCAddDeviceRequest): Promise<CCDevice> => {
-    const response = await apiClient.post<CCDevice>(`/cc/${cc_ip}/simulators`, data);
+    const response = await apiClient.post<CCDevice>(`/cc/${cc_ip}/simulators`, data, {
+      timeout: 300000, // 5 minutes for device creation
+    });
     return response.data;
   },
 

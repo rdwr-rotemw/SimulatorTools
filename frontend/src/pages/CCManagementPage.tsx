@@ -16,8 +16,7 @@ import {
 import AddIcon from '@mui/icons-material/Add';
 import LogoutIcon from '@mui/icons-material/Logout';
 import SearchIcon from '@mui/icons-material/Search';
-import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
-import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import Layout from '../components/common/Layout';
 import { CCDeviceTable } from '../components/cc/CCDeviceTable';
 import { CCAddDeviceDialog } from '../components/cc/CCAddDeviceDialog';
@@ -56,6 +55,23 @@ const CCManagementPage: React.FC = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Auto-refresh devices list every 10 seconds while connected to a CC
+  useEffect(() => {
+    if (!currentCC) return;
+
+    const interval = setInterval(() => {
+      try {
+        fetchDevices(currentCC);
+      } catch (err) {
+        // swallow errors here; fetchDevices internally handles errors and state
+        // so we avoid noisy interval failures bubbling up
+        // console.debug('Auto-refresh fetchDevices error', err);
+      }
+    }, 30000); // 30 seconds
+
+    return () => clearInterval(interval);
+  }, [currentCC, fetchDevices]);
 
   const handleAddDevice = () => setAddDialogOpen(true);
 
@@ -154,6 +170,15 @@ const CCManagementPage: React.FC = () => {
           <Typography variant="h4">CyberController Management</Typography>
 
           <Box sx={{ display: 'flex', gap: 2 }}>
+            <Button
+              startIcon={<RefreshIcon />}
+              variant="outlined"
+              onClick={() => currentCC && fetchDevices(currentCC)}
+              disabled={isLoading}
+            >
+              Refresh
+            </Button>
+
             <Button startIcon={<LogoutIcon />} variant="outlined" onClick={handleLogout}>
               Logout from CC
             </Button>
@@ -181,7 +206,12 @@ const CCManagementPage: React.FC = () => {
 
         <CCDeviceTable devices={sortedDevices} onDelete={handleDeleteClick} isLoading={isLoading} sortBy={sortBy} sortOrder={sortOrder} onSort={handleSort} />
 
-        <CCAddDeviceDialog open={addDialogOpen} onClose={handleAddDialogClose} onSubmit={handleAddDeviceSubmit} />
+        <CCAddDeviceDialog
+          open={addDialogOpen}
+          onClose={handleAddDialogClose}
+          onSubmit={handleAddDeviceSubmit}
+          ccIp={currentCC || ''}
+        />
 
         <Dialog open={deleteDialogOpen} onClose={handleDeleteCancel}>
           <DialogTitle>Confirm Delete</DialogTitle>
