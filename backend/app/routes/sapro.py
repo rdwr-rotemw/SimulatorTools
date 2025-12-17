@@ -194,8 +194,8 @@ def list_simulators(
     for device in devices:
         db.merge(Simulator(
             ip_address=device.ip_address,
-            type=device.type,
-            version=device.version,
+            type=device.type or "",  # Default to empty string if SNMP query failed
+            version=device.version or "",  # Default to empty string if SNMP query failed
             map=device.map,
             status=device.status
         ))

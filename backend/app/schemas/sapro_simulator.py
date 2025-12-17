@@ -32,8 +32,8 @@ class SaproSimulatorUpdate(BaseModel):
 class SaproSimulatorResponse(BaseModel):
     """Response schema returned for Sapro simulator operations."""
     ip_address: str = Field(..., description="Simulator IP address (primary key)")
-    type: str = Field(..., description="Simulator device type/name")
-    version: str = Field(..., description="Simulator device version")
+    type: Optional[str] = Field(None, description="Simulator device type/name (None if SNMP query failed)")
+    version: Optional[str] = Field(None, description="Simulator device version (None if SNMP query failed)")
     map: Optional[str] = Field(None, description="Assigned map/profile name")
     status: str = Field(..., description="Current status of the simulator (running/stopped/unknown)")
     created_at: datetime = Field(..., description="Creation timestamp")
