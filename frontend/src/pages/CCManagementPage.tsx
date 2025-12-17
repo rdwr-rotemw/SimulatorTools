@@ -89,8 +89,8 @@ const CCManagementPage: React.FC = () => {
 
   const handleAddDialogClose = () => setAddDialogOpen(false);
 
-  const handleDeleteClick = (management_ip: string) => {
-    setDeviceToDelete(management_ip);
+  const handleDeleteClick = (device_id: string) => {
+    setDeviceToDelete(device_id);
     setDeleteDialogOpen(true);
   };
 
@@ -220,12 +220,12 @@ const CCManagementPage: React.FC = () => {
               Are you sure you want to delete this device from CyberController?
             </DialogContentText>
 
-            {deviceToDelete !== null && devices.find(d => d.management_ip === deviceToDelete) && (
+            {deviceToDelete !== null && devices.find(d => d.device_id === deviceToDelete) && (
               <Box sx={{ marginTop: 2, padding: 2, background: '#FFF3E0', borderRadius: 1, border: '1px solid #FFB74D' }}>
                 <Typography variant="body2" sx={{ fontWeight: 600, marginBottom: 1 }}>Device Details:</Typography>
-                <Typography variant="body2">Management IP: <strong>{devices.find(d => d.management_ip === deviceToDelete)?.management_ip}</strong></Typography>
-                <Typography variant="body2">Name: <strong>{devices.find(d => d.management_ip === deviceToDelete)?.name || 'Unknown'}</strong></Typography>
-                <Typography variant="body2">Type: <strong>{devices.find(d => d.management_ip === deviceToDelete)?.device_type || 'Unknown'}</strong></Typography>
+                <Typography variant="body2">Management IP: <strong>{devices.find(d => d.device_id === deviceToDelete)?.management_ip}</strong></Typography>
+                <Typography variant="body2">Name: <strong>{devices.find(d => d.device_id === deviceToDelete)?.name || 'Unknown'}</strong></Typography>
+                <Typography variant="body2">Type: <strong>{devices.find(d => d.device_id === deviceToDelete)?.device_type || 'Unknown'}</strong></Typography>
               </Box>
             )}
 

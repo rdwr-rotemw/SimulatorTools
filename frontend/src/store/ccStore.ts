@@ -79,11 +79,21 @@ export const useCCStore = create<CCState>((set, get) => ({
     }
   },
 
-  deleteDevice: async (cc_ip: string, simulator_ip: string) => {
+  deleteDevice: async (cc_ip: string, device_id: string) => {
     set({ isLoading: true, error: null });
     try {
-      await ccService.deleteDevice(cc_ip, simulator_ip);
-      set((state) => ({ devices: state.devices.filter((d) => d.management_ip !== simulator_ip), isLoading: false }));
+      await ccService.deleteDevice(cc_ip, device_id);
+
+      // Wait 2 seconds before updating state and refreshing
+      setTimeout(() => {
+        set((state) => ({
+          devices: state.devices.filter((d) => d.device_id !== device_id),
+          isLoading: false
+        }));
+        // Refresh entire devices list
+        get().fetchDevices(cc_ip);
+      }, 2000);
+
     } catch (error: any) {
       const message = error?.response?.data?.detail || error?.message || 'Failed to delete device';
       set({ error: message, isLoading: false });

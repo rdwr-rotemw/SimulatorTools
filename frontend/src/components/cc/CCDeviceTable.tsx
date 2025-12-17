@@ -23,7 +23,7 @@ import { CCDevice } from '../../types/cc.types';
 
 interface CCDeviceTableProps {
   devices: CCDevice[];
-  onDelete: (management_ip: string) => void;
+  onDelete: (device_id: string) => void;
   isLoading: boolean;
   sortBy: 'management_ip' | 'name' | 'device_type' | 'status';
   sortOrder: 'asc' | 'desc';
@@ -184,7 +184,7 @@ export const CCDeviceTable: React.FC<CCDeviceTableProps> = ({ devices, onDelete,
                     </Tooltip>
                   </TableCell>
                   <TableCell>
-                    <IconButton aria-label="delete" color="error" onClick={() => onDelete(device.management_ip)}>
+                    <IconButton aria-label="delete" color="error" onClick={() => onDelete(device.device_id || device.management_ip)}>
                       <DeleteIcon />
                     </IconButton>
                   </TableCell>

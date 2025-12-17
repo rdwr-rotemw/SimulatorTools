@@ -5,7 +5,7 @@ Endpoints:
 - POST   /api/cc/{cc_ip}/logout                               -> logout from CC handler
 - GET    /api/cc/{cc_ip}/simulators                           -> list devices from CC
 - POST   /api/cc/{cc_ip}/simulators                           -> add device to CC
-- DELETE /api/cc/{cc_ip}/simulators/{simulator_ip}            -> delete device from CC
+- DELETE /api/cc/{cc_ip}/simulators/{device_id}            -> delete device from CC
 - GET    /api/cc/{cc_ip}/irp/IdsDataFormat                    -> get IdsDataFormat XML files
 
 All endpoints require the caller to possess either 'admin' or 'cc_admin' role
@@ -450,13 +450,13 @@ async def add_cc_simulator(
 
 
 @router.delete(
-    "/cc/{cc_ip}/simulators/{simulator_ip}",
+    "/cc/{cc_ip}/simulators/{device_id}",
     status_code=status.HTTP_200_OK,
     response_model=CCDeleteResponse,
 )
 async def delete_cc_simulator(
         cc_ip: str,
-        simulator_ip: str,
+        device_id: str,
         db: Session = Depends(get_db),
         current_user: User = Depends(require_cc_access),
 ) -> CCDeleteResponse:
@@ -464,7 +464,7 @@ async def delete_cc_simulator(
 
     Args:
         cc_ip: CyberController IP address or hostname
-        simulator_ip: IP address of the simulator to delete
+        device_id: ID of the simulator to delete (as reported by the CC)
         db: Database session
         current_user: Authenticated user with cc_admin or admin role
 
@@ -496,8 +496,8 @@ async def delete_cc_simulator(
         except Exception:
             pass
 
-        # Delete device
-        ok, msg = handler.delete_device(simulator_ip)
+        # Delete device by device_id
+        ok, msg = handler.delete_device(device_id)
 
         if not ok:
             raise HTTPException(

@@ -56,7 +56,7 @@ export interface CCState {
   fetchDevices: (cc_ip: string) => Promise<void>;
   fetchManagementPorts: (cc_ip: string) => Promise<void>;
   addDevice: (cc_ip: string, data: CCAddDeviceRequest) => Promise<void>;
-  deleteDevice: (cc_ip: string, simulator_ip: string) => Promise<void>;
+  deleteDevice: (cc_ip: string, device_id: string) => Promise<void>;
   clearError: () => void;
   clearState: () => void;
 }

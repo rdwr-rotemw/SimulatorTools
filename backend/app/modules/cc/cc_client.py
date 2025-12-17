@@ -516,33 +516,36 @@ class CCHandler:
             logger.exception("Request exception in add_device: %s", exc)
             return False, f"Exception in add_device: {exc!s}"
 
-    def delete_device(self, ip_address: str) -> Tuple[bool, str]:
-        """Delete a device from CyberController identified by IP address.
+    def delete_device(self, device_id: str) -> Tuple[bool, str]:
+        """Delete a device from CyberController identified by device_id.
+
+        This uses the CC API endpoint that deletes by device id (byid).
+
+        Args:
+            device_id: device identifier as returned by CC (string)
 
         Returns:
-            (True, 'OK') on success or (False, error_message) on failure.
+            (True, 'success') on HTTP 200, or (False, error_message) on failure.
         """
         try:
             if not self.is_logged_in():
                 ok, msg = self.refresh_session()
                 if not ok:
                     raise RuntimeError(f"Authentication required and refresh failed: {msg}")
-            # Discover device id first
-            ok, found = self.get_device_by_ip(ip_address)
-            if not ok:
-                return False, f"Device lookup failed: {found}"
 
-            device: CCDevice = found  # type: ignore
-            if not device.device_id:
-                url = f"{self.base_url}/api/devices?managementIp={ip_address}"
-                resp = self._session.delete(url, verify=self._verify_ssl, timeout=30)
-            else:
-                url = f"{self.base_url}/api/devices/{device.device_id}"
-                resp = self._session.delete(url, verify=self._verify_ssl, timeout=30)
+            # Build delete URL and issue DELETE with extended timeout
+            url = f"{self.base_url}/mgmt/system/config/tree/device/byid/{device_id}"
+            resp = self._session.delete(url, verify=self._verify_ssl, timeout=300)
 
-            if resp.status_code in (200, 204):
-                return True, "OK"
-            return False, f"Failed to delete device: HTTP {resp.status_code} - {resp.text}"
+            if resp.status_code == 200:
+                return True, "success"
+            # attempt to include response body for debugging
+            body = ''
+            try:
+                body = resp.text
+            except Exception:
+                body = '<unreadable response body>'
+            return False, f"Failed to delete device: HTTP {resp.status_code} - {body}"
         except requests.RequestException as exc:
             logger.exception("Exception in delete_device: %s", exc)
             return False, f"Exception in delete_device: {exc!s}"
