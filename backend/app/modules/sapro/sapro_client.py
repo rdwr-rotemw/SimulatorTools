@@ -17,6 +17,7 @@ from backend.app.modules.sapro.src.saproDeviceFunctions import GetDeviceListOfMa
 from backend.app.modules.sapro.src.saproException import SaproException
 from backend.app.modules.sapro.src.saproMapFunctions import getMapListFromServer
 from backend.app.utils.config import settings
+from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 from backend.app.utils.snmp import SnmpClient
 from backend.app.utils.logger import logger
 
@@ -412,7 +413,7 @@ class SaproCommunicationHandler:
             logger.debug("Stopping device before delete raised: %s", e)
 
         # 2) Execute remote sapcnsl delete command over SSH on the Sapro server using centralized SSH client
-        cmd = f"/opt/sapro/sapcnsl -p {self.sapro_port} -m {map_full_name} -c deldev -d {device_ip}"
+        cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_full_name} -c deldev -d {device_ip}"
 
         try:
             ssh_client = get_sapro_ssh_client()
