@@ -235,6 +235,7 @@ export const SimulatorTable: React.FC<SimulatorTableProps> = ({
                       color="primary"
                       onClick={() => onEdit(sim)}
                       disabled={isOperating}
+                      title="Edit simulator"
                     >
                       <EditIcon />
                     </IconButton>
@@ -245,6 +246,7 @@ export const SimulatorTable: React.FC<SimulatorTableProps> = ({
                       color="error"
                       onClick={() => onDelete(sim.ip_address)}
                       disabled={isOperating}
+                      title="Delete simulator"
                     >
                       <DeleteIcon />
                     </IconButton>
