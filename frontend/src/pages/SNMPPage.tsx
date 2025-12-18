@@ -39,6 +39,7 @@ import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 
 import Layout from '../components/common/Layout';
 import useCCStore from '../store/ccStore';
+import useLoopStore from '../store/useLoopStore';
 import { SNMPTrapForm } from '../components/snmp/SNMPTrapForm';
 import { SNMPTrap, SNMPFormErrors } from '../types/snmp.types';
 import { SNMP_FIELD_DEFAULTS } from '../constants/snmp.constants';
@@ -67,7 +68,7 @@ export const SNMPPage: React.FC = () => {
   const [loopDialogOpen, setLoopDialogOpen] = useState(false);
   const [loopDelay, setLoopDelay] = useState<number>(15); // seconds - default 15s
   const [loopTimeout, setLoopTimeout] = useState<number>(600); // seconds - default 10 minutes, mandatory
-  const [isLooping, setIsLooping] = useState(false);
+  const isLooping = useLoopStore((state) => state.snmp.isLooping);
   const loopIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const loopTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -88,13 +89,65 @@ export const SNMPPage: React.FC = () => {
     }
   }, [currentCC, navigate]);
 
-  // Cleanup loop on unmount
+  // Restore loop on mount if it was running
   useEffect(() => {
+    const loopState = useLoopStore.getState().getSnmpLoopState();
+
+    if (loopState.isLooping && loopState.startTime) {
+      // Check if loop hasn't expired
+      const remaining = useLoopStore.getState().getRemainingTime('snmp');
+
+      if (remaining > 0) {
+        // Restore state to local
+        setSelectedSimulator(loopState.simulator);
+        setSelectedDestinationPort(loopState.destinationPort);
+        setLoopDelay(loopState.loopDelay);
+        setLoopTimeout(loopState.loopTimeout);
+
+        // Show restoration message
+        setSnackbar({
+          open: true,
+          message: `Loop resumed - ${remaining} seconds remaining, ${loopState.batchesSent} batch(es) sent`,
+          severity: 'info'
+        });
+
+        // Recreate interval for remaining sends
+        loopIntervalRef.current = setInterval(async () => {
+          const success = await sendTrapsOnce();
+          if (success) {
+            useLoopStore.getState().incrementSnmpBatches();
+            const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
+            setSnackbar({
+              open: true,
+              message: `Loop running - Sent batch #${currentBatches}`,
+              severity: 'info'
+            });
+          }
+        }, loopState.loopDelay * 1000);
+
+        // Recreate timeout for remaining duration
+        loopTimeoutRef.current = setTimeout(() => {
+          handleStopLoop();
+          const elapsed = useLoopStore.getState().getElapsedTime('snmp');
+          const finalBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
+          setSnackbar({
+            open: true,
+            message: `Loop stopped after ${elapsed}s - Sent ${finalBatches} batch(es)`,
+            severity: 'success'
+          });
+        }, remaining * 1000);
+      } else {
+        // Loop expired, clear it
+        useLoopStore.getState().clearSnmpLoop();
+      }
+    }
+
+    // Cleanup on unmount - DO NOT stop loop, just clear local refs
     return () => {
-      if (loopIntervalRef.current) clearInterval(loopIntervalRef.current);
-      if (loopTimeoutRef.current) clearTimeout(loopTimeoutRef.current);
+      // DO NOT clear intervals - loop should persist
+      // Store state is preserved automatically in localStorage
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // When management ports update, pick a sensible default (prefer G2, then G1)
   useEffect(() => {
@@ -375,16 +428,26 @@ export const SNMPPage: React.FC = () => {
     }
 
     setLoopDialogOpen(false);
-    setIsLooping(true);
 
-    let trapsSentCount = 0;
     const startTime = Date.now();
+
+    // Save to store BEFORE creating interval
+    useLoopStore.getState().setSnmpLoopState({
+      isLooping: true,
+      loopDelay: loopDelay,
+      loopTimeout: loopTimeout,
+      startTime: startTime,
+      batchesSent: 0,
+      simulator: selectedSimulator,
+      destinationPort: selectedDestinationPort,
+    });
 
     // Send first trap immediately
     sendTrapsOnce().then(success => {
       if (success) {
-        trapsSentCount++;
-        setSnackbar({ open: true, message: `Loop started - Sent batch #${trapsSentCount}`, severity: 'info' });
+        useLoopStore.getState().incrementSnmpBatches();
+        const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
+        setSnackbar({ open: true, message: `Loop started - Sent batch #${currentBatches}`, severity: 'info' });
       }
     });
 
@@ -392,18 +455,20 @@ export const SNMPPage: React.FC = () => {
     loopIntervalRef.current = setInterval(async () => {
       const success = await sendTrapsOnce();
       if (success) {
-        trapsSentCount++;
-        setSnackbar({ open: true, message: `Loop running - Sent batch #${trapsSentCount}`, severity: 'info' });
+        useLoopStore.getState().incrementSnmpBatches();
+        const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
+        setSnackbar({ open: true, message: `Loop running - Sent batch #${currentBatches}`, severity: 'info' });
       }
     }, loopDelay * 1000);
 
     // Set up timeout - always runs since timeout is mandatory
     loopTimeoutRef.current = setTimeout(() => {
       handleStopLoop();
-      const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+      const elapsedSeconds = useLoopStore.getState().getElapsedTime('snmp');
+      const finalBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
       setSnackbar({
         open: true,
-        message: `Loop stopped after ${elapsedSeconds}s - Sent ${trapsSentCount} batch(es)`,
+        message: `Loop stopped after ${elapsedSeconds}s - Sent ${finalBatches} batch(es)`,
         severity: 'success'
       });
     }, loopTimeout * 1000);
@@ -418,7 +483,11 @@ export const SNMPPage: React.FC = () => {
       clearTimeout(loopTimeoutRef.current);
       loopTimeoutRef.current = null;
     }
-    setIsLooping(false);
+
+    // Update store to mark loop as stopped (keep startTime for reference)
+    useLoopStore.getState().setSnmpLoopState({
+      isLooping: false,
+    });
   };
 
   const handleOpenLoopDialog = () => {

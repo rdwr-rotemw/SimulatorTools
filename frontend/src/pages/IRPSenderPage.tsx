@@ -42,6 +42,7 @@ import UnfoldLessIcon from '@mui/icons-material/UnfoldLess'
 
 import Layout from '../components/common/Layout'
 import useCCStore from '../store/ccStore'
+import useLoopStore from '../store/useLoopStore'
 import { irpSchemaService, SchemaMessage } from '../api/services/irpSchema.service'
 import IRPMessageForm from '../components/irp/IRPMessageForm'
 
@@ -502,7 +503,7 @@ export const IRPSenderPage: React.FC = () => {
   const [loopDialogOpen, setLoopDialogOpen] = useState(false)
   const [loopDelay, setLoopDelay] = useState<number>(15) // seconds - default 15s
   const [loopTimeout, setLoopTimeout] = useState<number>(600) // seconds - default 10 minutes, mandatory
-  const [isLooping, setIsLooping] = useState(false)
+  const isLooping = useLoopStore((state) => state.irp.isLooping)
   const loopIntervalRef = React.useRef<NodeJS.Timeout | null>(null)
   const loopTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
 
@@ -516,13 +517,65 @@ export const IRPSenderPage: React.FC = () => {
     }
   }, [currentCC, schemaId, navigate])
 
-  // Cleanup loop on unmount
+  // Restore loop on mount if it was running
   useEffect(() => {
-    return () => {
-      if (loopIntervalRef.current) clearInterval(loopIntervalRef.current)
-      if (loopTimeoutRef.current) clearTimeout(loopTimeoutRef.current)
+    const loopState = useLoopStore.getState().getIrpLoopState()
+
+    if (loopState.isLooping && loopState.startTime) {
+      // Check if loop hasn't expired
+      const remaining = useLoopStore.getState().getRemainingTime('irp')
+
+      if (remaining > 0) {
+        // Restore state to local
+        setSelectedSimulator(loopState.simulator)
+        setSelectedDestinationPort(loopState.destinationPort)
+        setLoopDelay(loopState.loopDelay)
+        setLoopTimeout(loopState.loopTimeout)
+
+        // Show restoration message
+        setSnackbar({
+          open: true,
+          message: `Loop resumed - ${remaining} seconds remaining, ${loopState.batchesSent} batch(es) sent`,
+          severity: 'info'
+        })
+
+        // Recreate interval for remaining sends
+        loopIntervalRef.current = setInterval(async () => {
+          const success = await sendMessagesOnce()
+          if (success) {
+            useLoopStore.getState().incrementIrpBatches()
+            const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
+            setSnackbar({
+              open: true,
+              message: `Loop running - Sent batch #${currentBatches}`,
+              severity: 'info'
+            })
+          }
+        }, loopState.loopDelay * 1000)
+
+        // Recreate timeout for remaining duration
+        loopTimeoutRef.current = setTimeout(() => {
+          handleStopLoop()
+          const elapsed = useLoopStore.getState().getElapsedTime('irp')
+          const finalBatches = useLoopStore.getState().getIrpLoopState().batchesSent
+          setSnackbar({
+            open: true,
+            message: `Loop stopped after ${elapsed}s - Sent ${finalBatches} batch(es)`,
+            severity: 'success'
+          })
+        }, remaining * 1000)
+      } else {
+        // Loop expired, clear it
+        useLoopStore.getState().clearIrpLoop()
+      }
     }
-  }, [])
+
+    // Cleanup on unmount - DO NOT stop loop, just clear local refs
+    return () => {
+      // DO NOT clear intervals - loop should persist
+      // Store state is preserved automatically in localStorage
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const compatibleSimulators = devices.filter((d) => d.version === schemaInfo?.version)
 
@@ -889,16 +942,26 @@ export const IRPSenderPage: React.FC = () => {
     }
 
     setLoopDialogOpen(false)
-    setIsLooping(true)
 
-    let messagesSentCount = 0
     const startTime = Date.now()
+
+    // Save to store BEFORE creating interval
+    useLoopStore.getState().setIrpLoopState({
+      isLooping: true,
+      loopDelay: loopDelay,
+      loopTimeout: loopTimeout,
+      startTime: startTime,
+      batchesSent: 0,
+      simulator: selectedSimulator,
+      destinationPort: selectedDestinationPort,
+    })
 
     // Send first batch immediately
     sendMessagesOnce().then(success => {
       if (success) {
-        messagesSentCount++
-        setSnackbar({ open: true, message: `Loop started - Sent batch #${messagesSentCount}`, severity: 'info' })
+        useLoopStore.getState().incrementIrpBatches()
+        const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
+        setSnackbar({ open: true, message: `Loop started - Sent batch #${currentBatches}`, severity: 'info' })
       }
     })
 
@@ -906,18 +969,20 @@ export const IRPSenderPage: React.FC = () => {
     loopIntervalRef.current = setInterval(async () => {
       const success = await sendMessagesOnce()
       if (success) {
-        messagesSentCount++
-        setSnackbar({ open: true, message: `Loop running - Sent batch #${messagesSentCount}`, severity: 'info' })
+        useLoopStore.getState().incrementIrpBatches()
+        const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
+        setSnackbar({ open: true, message: `Loop running - Sent batch #${currentBatches}`, severity: 'info' })
       }
     }, loopDelay * 1000)
 
     // Set up timeout - always runs since timeout is mandatory
     loopTimeoutRef.current = setTimeout(() => {
       handleStopLoop()
-      const elapsedSeconds = Math.floor((Date.now() - startTime) / 1000)
+      const elapsedSeconds = useLoopStore.getState().getElapsedTime('irp')
+      const finalBatches = useLoopStore.getState().getIrpLoopState().batchesSent
       setSnackbar({
         open: true,
-        message: `Loop stopped after ${elapsedSeconds}s - Sent ${messagesSentCount} batch(es)`,
+        message: `Loop stopped after ${elapsedSeconds}s - Sent ${finalBatches} batch(es)`,
         severity: 'success'
       })
     }, loopTimeout * 1000)
@@ -932,7 +997,11 @@ export const IRPSenderPage: React.FC = () => {
       clearTimeout(loopTimeoutRef.current)
       loopTimeoutRef.current = null
     }
-    setIsLooping(false)
+
+    // Update store to mark loop as stopped (keep startTime for reference)
+    useLoopStore.getState().setIrpLoopState({
+      isLooping: false,
+    })
   }
 
   const handleOpenLoopDialog = () => {
