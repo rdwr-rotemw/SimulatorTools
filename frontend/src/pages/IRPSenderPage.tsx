@@ -113,7 +113,12 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
 
       return Math.floor(Math.random() * (max - min + 1)) + min
     }
-    if (fieldType === 'float') return parseFloat((Math.random() * 1000).toFixed(2))
+    if (fieldType === 'float') {
+      // Always generate 2 digits before decimal (10-99) and max 2 digits after
+      const beforeDecimal = Math.floor(Math.random() * 90) + 10 // 10-99
+      const afterDecimal = Math.floor(Math.random() * 100) // 0-99
+      return parseFloat(`${beforeDecimal}.${afterDecimal.toString().padStart(2, '0')}`)
+    }
     if (fieldType === 'boolean') {
       const hasConditionalFields = fieldSchema?.fields && Object.keys(fieldSchema.fields).length > 0
 
