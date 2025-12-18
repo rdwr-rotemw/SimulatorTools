@@ -1045,6 +1045,7 @@ class MessageBuilder:
     def _process_fixed_array(self, fixed_array, values):
         """
         Process a fixed array element using the type handler.
+        If the provided array has fewer elements than required, it will be padded with zero values.
         """
         binary_data = b''
 
@@ -1057,8 +1058,14 @@ class MessageBuilder:
         except (ValueError, TypeError):
             raise ValueError(f"Invalid array size '{fixed_array.size}' for fixed array '{fixed_array.name}'")
 
-        # Validate array size matches
-        if len(values) != array_size:
+        # If array has fewer elements than required, pad with zero values
+        if len(values) < array_size:
+            # Determine the zero value based on the array type
+            zero_value = self._get_zero_value_for_type(fixed_array.array_type)
+            padding_needed = array_size - len(values)
+            values = values + [zero_value] * padding_needed
+        elif len(values) > array_size:
+            # If too many elements provided, raise error
             raise ValueError(f"Fixed array '{fixed_array.name}' expects {array_size} elements, got {len(values)}")
 
         # Process each element using the array type handler
@@ -1071,6 +1078,38 @@ class MessageBuilder:
                 f"Failed to process fixed array '{fixed_array.name}' of type '{fixed_array.array_type}': {e}")
 
         return binary_data
+
+    def _get_zero_value_for_type(self, type_name):
+        """
+        Get the appropriate zero/default value for a given type.
+        """
+        # Integer types
+        if type_name in ['uint-8', 'uint-16', 'uint-32', 'uint-64',
+                         'int-8', 'int-16', 'int-32', 'int-64']:
+            return 0
+
+        # Float types
+        if type_name in ['float', 'double']:
+            return 0.0
+
+        # String types
+        if type_name in ['string', 'utf8-string']:
+            return ""
+
+        # Boolean
+        if type_name == 'boolean':
+            return False
+
+        # IP addresses
+        if type_name in ['ipv4', 'ipv4and6', 'ipv6']:
+            return "0.0.0.0"
+
+        # MAC address
+        if type_name == 'mac':
+            return "00:00:00:00:00:00"
+
+        # Default to 0 for unknown types (likely numeric)
+        return 0
 
     def _create_field_mapping(self, message_data):
         """
