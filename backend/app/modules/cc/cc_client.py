@@ -635,6 +635,7 @@ class CCHandler:
         Examples:
           "10.3.0" -> "100300"
           "8.30.0" -> "83000"
+          "8.29.0" -> "82900"
           "8.32.1" -> "83201"
         """
         parts = version.split('.') if version is not None else []
@@ -644,7 +645,8 @@ class CCHandler:
         parts_to_process = min(3, len(parts)) if needs_padding else len(parts)
         for i in range(parts_to_process):
             part = parts[i]
-            if needs_padding and len(part) == 1:
+            # Only pad minor/patch versions (i > 0), not the major version
+            if needs_padding and i > 0 and len(part) == 1:
                 result += '0' + part
             else:
                 result += part
