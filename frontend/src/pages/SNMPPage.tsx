@@ -72,6 +72,9 @@ export const SNMPPage: React.FC = () => {
   const loopIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const loopTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Ref to hold current send function to prevent stale closures
+  const sendTrapsOnceRef = useRef<() => Promise<boolean>>(async () => false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pcapFileInputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -113,7 +116,7 @@ export const SNMPPage: React.FC = () => {
 
         // Recreate interval for remaining sends
         loopIntervalRef.current = setInterval(async () => {
-          const success = await sendTrapsOnce();
+          const success = await sendTrapsOnceRef.current();
           if (success) {
             useLoopStore.getState().incrementSnmpBatches();
             const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
@@ -401,6 +404,11 @@ export const SNMPPage: React.FC = () => {
     }
   };
 
+  // Update ref whenever dependencies change to prevent stale closures
+  useEffect(() => {
+    sendTrapsOnceRef.current = sendTrapsOnce;
+  }, [selectedDestinationPort, selectedSimulator, traps]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleStartLoop = () => {
     if (!selectedSimulator) {
       setSnackbar({ open: true, message: 'Please select a simulator', severity: 'error' });
@@ -453,7 +461,7 @@ export const SNMPPage: React.FC = () => {
 
     // Set up interval for subsequent sends (convert seconds to milliseconds)
     loopIntervalRef.current = setInterval(async () => {
-      const success = await sendTrapsOnce();
+      const success = await sendTrapsOnceRef.current();
       if (success) {
         useLoopStore.getState().incrementSnmpBatches();
         const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;

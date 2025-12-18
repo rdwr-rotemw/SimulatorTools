@@ -507,6 +507,9 @@ export const IRPSenderPage: React.FC = () => {
   const loopIntervalRef = React.useRef<NodeJS.Timeout | null>(null)
   const loopTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
 
+  // Ref to hold current send function to prevent stale closures
+  const sendMessagesOnceRef = React.useRef<() => Promise<boolean>>(async () => false)
+
   // Log render for debugging
   console.log('IRPSenderPage rendered')
 
@@ -541,7 +544,7 @@ export const IRPSenderPage: React.FC = () => {
 
         // Recreate interval for remaining sends
         loopIntervalRef.current = setInterval(async () => {
-          const success = await sendMessagesOnce()
+          const success = await sendMessagesOnceRef.current()
           if (success) {
             useLoopStore.getState().incrementIrpBatches()
             const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
@@ -915,6 +918,11 @@ export const IRPSenderPage: React.FC = () => {
     }
   }
 
+  // Update ref whenever dependencies change to prevent stale closures
+  useEffect(() => {
+    sendMessagesOnceRef.current = sendMessagesOnce
+  }, [selectedDestinationPort, selectedSimulator, messages, schemaId]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleStartLoop = () => {
     if (!selectedSimulator) {
       setSnackbar({ open: true, message: 'Please select a simulator', severity: 'error' })
@@ -967,7 +975,7 @@ export const IRPSenderPage: React.FC = () => {
 
     // Set up interval for subsequent sends (convert seconds to milliseconds)
     loopIntervalRef.current = setInterval(async () => {
-      const success = await sendMessagesOnce()
+      const success = await sendMessagesOnceRef.current()
       if (success) {
         useLoopStore.getState().incrementIrpBatches()
         const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
