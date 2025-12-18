@@ -40,6 +40,7 @@ import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 import Layout from '../components/common/Layout';
 import useCCStore from '../store/ccStore';
 import useLoopStore from '../store/useLoopStore';
+import useFormStore from '../store/useFormStore';
 import { SNMPTrapForm } from '../components/snmp/SNMPTrapForm';
 import { SNMPTrap, SNMPFormErrors } from '../types/snmp.types';
 import { SNMP_FIELD_DEFAULTS } from '../constants/snmp.constants';
@@ -91,6 +92,26 @@ export const SNMPPage: React.FC = () => {
       navigate('/cc/login');
     }
   }, [currentCC, navigate]);
+
+  // Restore form state from localStorage on mount
+  useEffect(() => {
+    const formState = useFormStore.getState().getSnmpFormState();
+
+    // Only restore if we have saved form state AND current traps is still the default empty trap
+    const hasDefaultTrap = traps.length === 1 &&
+                          !traps[0].attackName &&
+                          !traps[0].policy;
+
+    if (formState.traps && formState.traps.length > 0 && hasDefaultTrap) {
+      setTraps(formState.traps);
+      setExpandedTraps(formState.expandedTraps);
+      setSnackbar({
+        open: true,
+        message: `Form restored from previous session (${formState.traps.length} trap(s))`,
+        severity: 'info'
+      });
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Restore loop on mount if it was running
   useEffect(() => {
@@ -232,6 +253,8 @@ export const SNMPPage: React.FC = () => {
         if (data.traps && Array.isArray(data.traps)) {
           setTraps(data.traps);
           setExpandedTraps(data.traps.map((_: any, i: number) => i));
+          // Clear form store since we're loading new data
+          useFormStore.getState().clearSnmpFormState();
           setSnackbar({ open: true, message: 'Traps imported successfully', severity: 'success' });
         } else {
           setSnackbar({ open: true, message: 'JSON does not contain traps array', severity: 'error' });
@@ -284,6 +307,8 @@ export const SNMPPage: React.FC = () => {
       const normalizedTraps = mapPcapEnumsToFormValues(parsedTraps);
       setTraps(normalizedTraps.length > 0 ? normalizedTraps : parsedTraps);
       setExpandedTraps(parsedTraps.map((_: any, i: number) => i));
+      // Clear form store since we're loading new data
+      useFormStore.getState().clearSnmpFormState();
       setSnackbar({ open: true, message: `Imported ${parsedTraps.length} trap(s) from PCAP`, severity: 'success' });
 
       if (data.warning) {
@@ -335,6 +360,8 @@ export const SNMPPage: React.FC = () => {
       const template = await snmpTemplateService.getTemplate(currentCC!, name);
       setTraps(template.traps);
       setExpandedTraps(template.traps.map((_: any, i: number) => i));
+      // Clear form store since we're loading a template
+      useFormStore.getState().clearSnmpFormState();
       setSnackbar({ open: true, message: `Template "${name}" loaded`, severity: 'success' });
       setLoadDialogOpen(false);
     } catch (error: any) {
@@ -408,6 +435,13 @@ export const SNMPPage: React.FC = () => {
   useEffect(() => {
     sendTrapsOnceRef.current = sendTrapsOnce;
   }, [selectedDestinationPort, selectedSimulator, traps]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-save form state to localStorage on every change
+  useEffect(() => {
+    // Save whenever traps or expandedTraps changes
+    // This keeps localStorage in sync with current form state
+    useFormStore.getState().setSnmpFormState(traps, expandedTraps);
+  }, [traps, expandedTraps]);
 
   const handleStartLoop = () => {
     if (!selectedSimulator) {

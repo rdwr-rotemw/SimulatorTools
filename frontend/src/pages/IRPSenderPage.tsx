@@ -43,6 +43,7 @@ import UnfoldLessIcon from '@mui/icons-material/UnfoldLess'
 import Layout from '../components/common/Layout'
 import useCCStore from '../store/ccStore'
 import useLoopStore from '../store/useLoopStore'
+import useFormStore from '../store/useFormStore'
 import { irpSchemaService, SchemaMessage } from '../api/services/irpSchema.service'
 import IRPMessageForm from '../components/irp/IRPMessageForm'
 
@@ -520,6 +521,22 @@ export const IRPSenderPage: React.FC = () => {
     }
   }, [currentCC, schemaId, navigate])
 
+  // Restore form state from localStorage on mount
+  useEffect(() => {
+    const formState = useFormStore.getState().getIrpFormState()
+
+    // Only restore if we have saved form state AND current messages array is empty
+    if (formState.messages && formState.messages.length > 0 && messages.length === 0) {
+      setMessages(formState.messages)
+      setExpandedMessages(formState.expandedMessages)
+      setSnackbar({
+        open: true,
+        message: `Messages restored from previous session (${formState.messages.length} message(s))`,
+        severity: 'info'
+      })
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   // Restore loop on mount if it was running
   useEffect(() => {
     const loopState = useLoopStore.getState().getIrpLoopState()
@@ -748,6 +765,8 @@ export const IRPSenderPage: React.FC = () => {
 
       setMessages(messagesWithSchemas)
       setLoadDialogOpen(false)
+      // Clear form store since we're loading a template
+      useFormStore.getState().clearIrpFormState()
       alert('Template loaded successfully')
     } catch (error) {
       console.error('Failed to load template:', error)
@@ -922,6 +941,15 @@ export const IRPSenderPage: React.FC = () => {
   useEffect(() => {
     sendMessagesOnceRef.current = sendMessagesOnce
   }, [selectedDestinationPort, selectedSimulator, messages, schemaId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-save form state to localStorage on every change
+  useEffect(() => {
+    // Save whenever messages or expandedMessages changes
+    // This keeps localStorage in sync with current form state
+    if (messages.length > 0) {
+      useFormStore.getState().setIrpFormState(messages, expandedMessages)
+    }
+  }, [messages, expandedMessages])
 
   const handleStartLoop = () => {
     if (!selectedSimulator) {
