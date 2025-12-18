@@ -15,8 +15,10 @@ import logging
 from typing import Any, Dict, Union
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from pydantic import BaseModel
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
 
 from backend.app.models.user import User
 from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo, send_irp_messages
@@ -32,6 +34,9 @@ from backend.app.utils.database import get_mongo_db
 
 router = APIRouter(prefix="/api", tags=["reporter"])
 logger = logging.getLogger("sim-tools.reporter")
+
+# Module-level executor for blocking PCAP parsing
+_executor = ThreadPoolExecutor(max_workers=2)
 
 
 class IRPSendPayload(BaseModel):
@@ -212,7 +217,8 @@ async def send_irp_messages_endpoint(
             if not any_success:
                 # All failed - treat as server error
                 logger.error(f"All IRP messages failed: {results}")
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"All IRP messages failed: {results}")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    detail=f"All IRP messages failed: {results}")
 
             # Mixed results - partial success
             logger.warning(f"Partial IRP results: {results}")
@@ -224,7 +230,8 @@ async def send_irp_messages_endpoint(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to send IRP messages: {exc!s}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Failed to send IRP messages: {exc!s}")
 
 
 @router.post(
@@ -321,9 +328,9 @@ def deserialize_from_mongo(data: Any) -> Any:
 # IRP Template Management
 @router.post("/cc/{cc_ip}/irp/templates")
 async def save_irp_template(
-    cc_ip: str,
-    template_data: dict,
-    current_user: dict = Depends(get_current_user)
+        cc_ip: str,
+        template_data: dict,
+        current_user: dict = Depends(get_current_user)
 ):
     """Save an IRP message template"""
     try:
@@ -355,8 +362,8 @@ async def save_irp_template(
 
 @router.get("/cc/{cc_ip}/irp/templates")
 async def list_irp_templates(
-    cc_ip: str,
-    current_user: dict = Depends(get_current_user)
+        cc_ip: str,
+        current_user: dict = Depends(get_current_user)
 ):
     """List all IRP templates for current user and CC"""
     try:
@@ -378,9 +385,9 @@ async def list_irp_templates(
 
 @router.get("/cc/{cc_ip}/irp/templates/{template_id}")
 async def load_irp_template(
-    cc_ip: str,
-    template_id: str,
-    current_user: dict = Depends(get_current_user)
+        cc_ip: str,
+        template_id: str,
+        current_user: dict = Depends(get_current_user)
 ):
     """Load a specific IRP template"""
     try:
@@ -411,9 +418,9 @@ async def load_irp_template(
 
 @router.delete("/cc/{cc_ip}/irp/templates/{template_id}")
 async def delete_irp_template(
-    cc_ip: str,
-    template_id: str,
-    current_user: dict = Depends(get_current_user)
+        cc_ip: str,
+        template_id: str,
+        current_user: dict = Depends(get_current_user)
 ):
     """Delete an IRP template"""
     try:
@@ -436,8 +443,8 @@ async def delete_irp_template(
 
 @router.post("/reporter/irp/test-message")
 async def test_irp_message(
-    payload: dict,
-    current_user: User = Depends(get_current_user)
+        payload: dict,
+        current_user: User = Depends(get_current_user)
 ):
     """Test IRP message with full e2e workflow (UDP capture + Java parser)."""
     try:
@@ -505,7 +512,8 @@ async def test_irp_message(
 
             if not used_cached_blob:
                 # Fallback: use local data_formats copy shipped with the repo
-                xml_file_source = Path(__file__).parent.parent / "modules" / "reporter" / "irp" / "data_formats" / "IdsDataFormat100600.xml"
+                xml_file_source = Path(
+                    __file__).parent.parent / "modules" / "reporter" / "irp" / "data_formats" / "IdsDataFormat100600.xml"
 
                 if not xml_file_source.exists():
                     logger.error("No xml_blob in schema and local fallback XML not found for schema %s", schema_id)
@@ -567,6 +575,87 @@ async def test_irp_message(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error testing message: {exc!s}"
         )
+
+
+@router.post("/reporter/snmp/import-from-pcap")
+async def import_snmp_from_pcap(
+        file: UploadFile = File(...),
+        current_user: dict = Depends(get_current_user)
+):
+    """Upload a PCAP file and extract SNMP traps."""
+    import tempfile
+    import os
+    from backend.app.utils.pcap_converter import pcap_to_traps, PcapParseError
+
+    try:
+        # Validate file extension
+        if not file.filename.lower().endswith('.pcap'):
+            raise ValueError("Invalid file format. Please upload a .pcap file.")
+
+        # Save uploaded file to temporary location
+        with tempfile.NamedTemporaryFile(suffix='.pcap', delete=False) as tmp_file:
+            contents = await file.read()
+            tmp_file.write(contents)
+            tmp_path = tmp_file.name
+
+        try:
+            # Define a blocking wrapper that creates its own event loop in the worker thread
+            def _parse_in_thread(path: str, limit: int):
+                # pyshark needs an asyncio loop available in the thread where it runs.
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return pcap_to_traps(path, limit)
+                finally:
+                    # Clean up the loop in the thread
+                    try:
+                        asyncio.set_event_loop(None)
+                    except Exception:
+                        pass
+                    try:
+                        loop.close()
+                    except Exception:
+                        pass
+
+            # Run PCAP parsing in thread pool to avoid event loop conflict
+            running_loop = asyncio.get_running_loop()
+            result = await running_loop.run_in_executor(_executor, _parse_in_thread, tmp_path, 50)
+
+            warning = None
+            if result.get('truncated'):
+                warning = (
+                    f"PCAP contained {result.get('total_extracted')} traps but only the first 50 are displayed. "
+                    "Please split the PCAP file if you need more traps."
+                )
+
+            response = {
+                "success": True,
+                "data": result,
+                "message": f"Successfully extracted {result.get('total_returned')} traps from PCAP file."
+            }
+
+            if warning:
+                response["warning"] = warning
+
+            return response
+
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    except PcapParseError as e:
+        # Treat parsing issues as client-side bad request per latest requirement
+        logger.exception("PCAP parsing failed: %s", str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    except ValueError as e:
+        # Validation error - bad request
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+    except Exception as e:
+        # Unexpected error
+        logger.exception("Error processing PCAP: %s", str(e))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
 __all__ = ["router"]

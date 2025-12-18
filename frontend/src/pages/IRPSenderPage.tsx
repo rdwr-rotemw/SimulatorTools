@@ -37,6 +37,8 @@ import CasinoIcon from '@mui/icons-material/Casino'
 import LoopIcon from '@mui/icons-material/Loop'
 import StopIcon from '@mui/icons-material/Stop'
 import ScienceIcon from '@mui/icons-material/Science'
+import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore'
+import UnfoldLessIcon from '@mui/icons-material/UnfoldLess'
 
 import Layout from '../components/common/Layout'
 import useCCStore from '../store/ccStore'
@@ -591,6 +593,15 @@ export const IRPSenderPage: React.FC = () => {
     }
   }
 
+  const handleToggleAllMessages = () => {
+    const allExpanded = expandedMessages.length === messages.length && messages.length > 0
+    if (allExpanded) {
+      setExpandedMessages([])
+    } else {
+      setExpandedMessages(messages.map((_, i) => i))
+    }
+  }
+
   const deleteMessage = (index: number) => {
     setMessages((prev) => prev.filter((_, i) => i !== index))
     setExpandedMessages((prev) => prev.filter((i) => i !== index).map((i) => (i > index ? i - 1 : i)))
@@ -1032,6 +1043,14 @@ export const IRPSenderPage: React.FC = () => {
         <Box sx={{ padding: 3, borderTop: '1px solid #E0E0E0', display: 'flex', gap: 2, flexWrap: 'wrap' }}>
           <Button variant="outlined" startIcon={<AddIcon />} onClick={() => setAddMessageDialogOpen(true)}>
             Add Message
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={expandedMessages.length === messages.length && messages.length > 0 ? <UnfoldLessIcon /> : <UnfoldMoreIcon />}
+            onClick={handleToggleAllMessages}
+            disabled={messages.length === 0}
+          >
+            {expandedMessages.length === messages.length && messages.length > 0 ? 'Collapse All' : 'Expand All'}
           </Button>
           <Button
             variant="contained"

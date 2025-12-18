@@ -1,3 +1,10 @@
+// IMPORTANT: Frontend API call convention
+// - Do NOT prefix request paths with a leading '/api' (for example, avoid apiClient.post('/api/xyz')).
+// - The axios instance `apiClient` is configured with a baseURL (from REACT_APP_API_BASE_URL) which may already
+//   include the '/api' segment when needed. Adding '/api' again at call sites results in duplicated paths
+//   like '/api/api/...' and causes requests to fail. Always supply paths relative to the configured baseURL,
+//   e.g. apiClient.post('/reporter/snmp/import-from-pcap', formData).
+
 import axios, { AxiosInstance, AxiosError } from 'axios';
 
 const DEFAULT_TIMEOUT = 30000;

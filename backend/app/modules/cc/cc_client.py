@@ -634,11 +634,13 @@ class CCHandler:
 
         Examples:
           "10.3.0" -> "100300"
-          "8.2.1"  -> "821"
+          "8.30.0" -> "83000"
+          "8.32.1" -> "83201"
         """
         parts = version.split('.') if version is not None else []
         result = ''
-        needs_padding = len(parts) > 0 and parts[0] == '10'
+        # Both version 10 and version 8 use padding
+        needs_padding = len(parts) > 0 and (parts[0] == '10' or parts[0] == '8')
         parts_to_process = min(3, len(parts)) if needs_padding else len(parts)
         for i in range(parts_to_process):
             part = parts[i]
@@ -648,43 +650,236 @@ class CCHandler:
                 result += part
         return result
 
+    def _extract_version_from_filename(self, filename: str) -> Optional[str]:
+        """Extract version string from IdsDataFormat filename.
+
+        Reverse of _version_to_data_format logic.
+
+        Args:
+            filename: e.g., "IdsDataFormat100300.xml", "IdsDataFormat83000.xml"
+
+        Returns:
+            Version string like "10.3.0" or "8.30.0", or None if parsing fails.
+
+        Examples:
+            "IdsDataFormat100300.xml" -> "10.3.0"
+            "IdsDataFormat83000.xml"  -> "8.30.0"
+            "IdsDataFormat83201.xml"  -> "8.32.1"
+            "IdsDataFormat1003.xml"   -> "10.0.3"
+        """
+        try:
+            # Extract numeric part between "IdsDataFormat" and ".xml"
+            if not filename.startswith("IdsDataFormat") or not filename.endswith(".xml"):
+                return None
+
+            version_str = filename[len("IdsDataFormat"):-len(".xml")]
+            if not version_str.isdigit():
+                return None
+
+            # Version 10 uses padded format (6 digits: 100300 -> 10.03.00)
+            if version_str.startswith("10") and len(version_str) >= 4:
+                major = "10"
+                rest = version_str[2:]
+
+                # Parse pairs from rest
+                parts = [major]
+                for i in range(0, len(rest), 2):
+                    chunk = rest[i:i+2]
+                    # Remove leading zero if present
+                    parts.append(str(int(chunk)))
+
+                return ".".join(parts)
+
+            # Version 8 uses padded format (5 digits: 83000 -> 8.30.00, 83201 -> 8.32.01)
+            elif version_str.startswith("8") and len(version_str) >= 3:
+                major = "8"
+                rest = version_str[1:]
+
+                # Parse pairs from rest
+                parts = [major]
+                for i in range(0, len(rest), 2):
+                    chunk = rest[i:i+2]
+                    # Remove leading zero if present
+                    parts.append(str(int(chunk)))
+
+                return ".".join(parts)
+
+            else:
+                # Other versions: each digit is a part (unlikely but handle as fallback)
+                return ".".join(version_str)
+
+        except Exception as exc:
+            logger.debug("Failed to extract version from filename %s: %s", filename, exc)
+            return None
+
+    def _find_closest_lower_version(self, requested: str, available: List[str]) -> Optional[str]:
+        """Find the highest available version that is <= requested version.
+
+        Args:
+            requested: Requested version string (e.g., "10.3.0")
+            available: List of available version strings
+
+        Returns:
+            Closest version <= requested, or None if no match found.
+
+        Examples:
+            requested="10.3.0", available=["10.2.0", "10.3.0", "10.4.0"] -> "10.3.0"
+            requested="10.3.0", available=["10.1.0", "10.2.0"] -> "10.2.0"
+            requested="10.3.0", available=["10.4.0", "10.5.0"] -> None
+        """
+        try:
+            # Parse requested version into tuple of ints
+            req_parts = [int(p) for p in requested.split('.')]
+
+            # Parse and filter available versions
+            valid_versions = []
+            for ver in available:
+                try:
+                    ver_parts = [int(p) for p in ver.split('.')]
+                    # Pad to same length for comparison
+                    max_len = max(len(req_parts), len(ver_parts))
+                    req_padded = req_parts + [0] * (max_len - len(req_parts))
+                    ver_padded = ver_parts + [0] * (max_len - len(ver_parts))
+
+                    # Only keep versions <= requested
+                    if tuple(ver_padded) <= tuple(req_padded):
+                        valid_versions.append((tuple(ver_padded), ver))
+                except (ValueError, AttributeError):
+                    logger.debug("Skipping invalid version string: %s", ver)
+                    continue
+
+            if not valid_versions:
+                return None
+
+            # Return the highest valid version
+            valid_versions.sort(reverse=True, key=lambda x: x[0])
+            return valid_versions[0][1]
+
+        except Exception as exc:
+            logger.exception("Error finding closest version: %s", exc)
+            return None
+
     def download_ids_data_format(self, sim_version: str, username: str, password: str) -> Tuple[bool, str]:
         """Download IdsDataFormat XML file based on sim_version via SCP.
+
+        If exact version not found, falls back to closest lower version.
 
         Returns (True, local_path) or (False, error_message)
         """
         ssh = None
-        try:
-            format_version = self._version_to_data_format(sim_version or '')
-            filename = f"IdsDataFormat{format_version}.xml"
-            remote_path = f"/var/lib/docker/radware-storage/dc_config/kvision-configuration-service/config/conf/{filename}"
-            local_dir = "/tmp/data_formats"
-            local_path = f"{local_dir}/{filename}"
+        local_dir = "/tmp/data_formats"
+        os.makedirs(local_dir, exist_ok=True)
 
-            # Create local directory
-            os.makedirs(local_dir, exist_ok=True)
-
-            # SSH connect and SCP download
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(hostname=self.cc_ip, port=22, username=username, password=password, timeout=10)
-
-            with SCPClient(ssh.get_transport()) as scp_client:
-                scp_client.get(remote_path, local_path)
-
+        # Helper to attempt download of a specific version
+        def _attempt_download(version: str) -> Tuple[bool, str, Optional[Exception]]:
+            nonlocal ssh
             try:
-                ssh.close()
-            except Exception as exc:
-                logger.debug("Error closing SSH after download: %s", exc)
-            return True, local_path
-        except (paramiko.SSHException, paramiko.AuthenticationException, SCPException, FileNotFoundError, IOError) as exc:
+                format_version = self._version_to_data_format(version or '')
+                filename = f"IdsDataFormat{format_version}.xml"
+                remote_path = f"/var/lib/docker/radware-storage/dc_config/kvision-configuration-service/config/conf/{filename}"
+                local_path = f"{local_dir}/{filename}"
+
+                # SSH connect and SCP download
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(hostname=self.cc_ip, port=22, username=username, password=password, timeout=10)
+
+                with SCPClient(ssh.get_transport()) as scp_client:
+                    scp_client.get(remote_path, local_path)
+
+                try:
+                    ssh.close()
+                    ssh = None
+                except Exception as exc:
+                    logger.debug("Error closing SSH after download: %s", exc)
+
+                return True, local_path, None
+
+            except (SCPException, FileNotFoundError, IOError) as exc:
+                # File not found - this is where we want to fallback
+                try:
+                    if ssh:
+                        ssh.close()
+                        ssh = None
+                except Exception as exc2:
+                    logger.debug("Error closing SSH in exception handler: %s", exc2)
+                return False, "", exc
+
+            except (paramiko.SSHException, paramiko.AuthenticationException) as exc:
+                # Auth/connection error - don't fallback, propagate immediately
+                try:
+                    if ssh:
+                        ssh.close()
+                        ssh = None
+                except Exception as exc2:
+                    logger.debug("Error closing SSH in exception handler: %s", exc2)
+                logger.exception("SSH/Auth error for IdsDataFormat: %s", exc)
+                raise
+
+        try:
+            # First attempt: try exact version
+            logger.info("Attempting to download IdsDataFormat for version %s", sim_version)
+            success, result, exc = _attempt_download(sim_version)
+
+            if success:
+                logger.info("Successfully downloaded IdsDataFormat for exact version %s", sim_version)
+                return True, result
+
+            # Exact version failed - attempt fallback
+            logger.warning("Exact version %s not found, attempting fallback to closest lower version", sim_version)
+
+            # Get list of available files
+            ok, available_result = self.get_ids_data_formats(username, password)
+            if not ok:
+                logger.error("Failed to list available IdsDataFormat files: %s", available_result)
+                return False, f"Version {sim_version} not found and could not list available versions: {available_result}"
+
+            if not isinstance(available_result, list) or len(available_result) == 0:
+                logger.error("No IdsDataFormat files available on server")
+                return False, f"Version {sim_version} not found and no IdsDataFormat files available on server"
+
+            # Extract versions from filenames
+            available_versions = []
+            for filename in available_result:
+                extracted_ver = self._extract_version_from_filename(filename)
+                if extracted_ver:
+                    available_versions.append(extracted_ver)
+
+            if not available_versions:
+                logger.error("Could not extract valid versions from available files: %s", available_result)
+                return False, f"Version {sim_version} not found and could not parse available versions"
+
+            # Find closest lower version
+            fallback_version = self._find_closest_lower_version(sim_version, available_versions)
+            if not fallback_version:
+                logger.error("No suitable fallback version found for %s. Available: %s", sim_version, available_versions)
+                return False, f"No matching version found for {sim_version}. Available versions: {', '.join(sorted(available_versions))}"
+
+            # Attempt download with fallback version
+            logger.info("Falling back to version %s (requested: %s)", fallback_version, sim_version)
+            success, result, exc2 = _attempt_download(fallback_version)
+
+            if success:
+                logger.info("Successfully downloaded IdsDataFormat for fallback version %s (requested: %s)",
+                           fallback_version, sim_version)
+                return True, result
+            else:
+                logger.error("Fallback download also failed for version %s: %s", fallback_version, exc2)
+                return False, f"Both exact version {sim_version} and fallback version {fallback_version} failed: {exc2!s}"
+
+        except (paramiko.SSHException, paramiko.AuthenticationException) as exc:
+            # Auth/connection errors propagated from _attempt_download
+            return False, f"Connection/authentication error: {exc!s}"
+
+        except Exception as exc:
+            # Unexpected error
+            logger.exception("Unexpected error in download_ids_data_format: %s", exc)
             try:
                 if ssh:
                     ssh.close()
             except Exception as exc2:
-                logger.debug("Error closing SSH in download exception handler: %s", exc2)
-            logger.exception("Download error for IdsDataFormat: %s", exc)
-            return False, f"Download error: {exc!s}"
+                logger.debug("Error closing SSH in final exception handler: %s", exc2)
+            return False, f"Unexpected download error: {exc!s}"
 
     def get_management_ports(self) -> Tuple[bool, Union[str, List[Dict[str, str]]]]:
         """Fetch management port interfaces from CyberController.

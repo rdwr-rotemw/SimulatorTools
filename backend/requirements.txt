@@ -43,6 +43,7 @@ pymongo==4.15.3
 PyNaCl==1.6.1
 pysmi==1.6.2
 pysnmp==4.4.12
+pyshark>=0.6
 python-dotenv==1.2.1
 python-jose==3.3.0
 pywin32-ctypes==0.2.3
@@ -61,3 +62,5 @@ uvicorn==0.38.0
 watchfiles==1.1.1
 websockets==15.0.1
 xmltodict==1.0.2
+python-multipart>=0.0.6
+

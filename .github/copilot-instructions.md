@@ -41,10 +41,9 @@ The assistant will follow these rules for every session unless you explicitly ch
 - The assistant will use `insert_edit_into_file` for edits and will not produce raw file-diff codeblocks in replies.
 - The assistant will NOT perform git commit or git push operations automatically; it will only prepare suggested commits and ask for your explicit approval before executing any `git commit` or `git push` on your behalf.
 - If you run the compile helper locally and paste its output, the assistant will treat that output as canonical verification and proceed accordingly.
+- The assistant will NOT prefix frontend API request paths with a leading `/api` when making or suggesting frontend edits. The frontend's axios `apiClient` is configured with a baseURL (via REACT_APP_API_BASE_URL) which may already include `/api`; adding `/api` at call sites can create duplicated paths like `/api/api/...` and break requests. Provide paths relative to the configured baseURL (for example: use `/reporter/snmp/import-from-pcap`, not `/api/reporter/snmp/import-from-pcap`).
 
-How to request the assistant to run the global compile here
-
-If you DO want the assistant to run the global compile script within the workspace, request it explicitly with a command like:
+How to request the assistant to run the global compile script within the workspace, request it explicitly with a command like:
 
 ```bash
 bash -lc "python scripts/compile_backend.py"
@@ -85,4 +84,3 @@ The test suite validates:
 - Schema metadata is correctly structured
 
 Always run these tests after modifying template_generator.py to ensure no regressions.
-

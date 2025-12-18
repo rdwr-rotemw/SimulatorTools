@@ -21,6 +21,7 @@ import {
   List,
   ListItemText,
   ListItemButton,
+  CircularProgress,
 } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import AddIcon from '@mui/icons-material/Add';
@@ -32,14 +33,18 @@ import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import DeleteIcon from '@mui/icons-material/Delete';
 import LoopIcon from '@mui/icons-material/Loop';
 import StopIcon from '@mui/icons-material/Stop';
+import CloudUploadIcon from '@mui/icons-material/CloudUpload';
+import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
+import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 
 import Layout from '../components/common/Layout';
 import useCCStore from '../store/ccStore';
 import { SNMPTrapForm } from '../components/snmp/SNMPTrapForm';
 import { SNMPTrap, SNMPFormErrors } from '../types/snmp.types';
 import { SNMP_FIELD_DEFAULTS } from '../constants/snmp.constants';
-import { validateIPAddress, validatePort, validatePositiveInteger, isValidSamplesFormat } from '../utils/snmp.utils';
+import { validateIPAddress, validatePort, validatePositiveInteger, isValidSamplesFormat, mapPcapEnumsToFormValues } from '../utils/snmp.utils';
 import { snmpTemplateService } from '../api/services/snmpTemplate.service';
+import apiClient from '../api/client';
 
 export const SNMPPage: React.FC = () => {
   const navigate = useNavigate();
@@ -67,6 +72,9 @@ export const SNMPPage: React.FC = () => {
   const loopTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const pcapFileInputRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   // Dialog / templates state
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
@@ -101,6 +109,15 @@ export const SNMPPage: React.FC = () => {
   const addTrap = () => {
     setTraps([...traps, { attackName: '', policy: '', ...SNMP_FIELD_DEFAULTS }]);
     setExpandedTraps([...expandedTraps, traps.length]);
+  };
+
+  const handleToggleAllTraps = () => {
+    const allExpanded = expandedTraps.length === traps.length;
+    if (allExpanded) {
+      setExpandedTraps([]);
+    } else {
+      setExpandedTraps(traps.map((_, i) => i));
+    }
   };
 
   const deleteTrap = (index: number) => {
@@ -170,6 +187,60 @@ export const SNMPPage: React.FC = () => {
     reader.readAsText(file);
     // reset input so same file can be re-picked
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handlePcapUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Validate extension
+    if (!file.name.toLowerCase().endsWith('.pcap')) {
+      setUploadError('Please select a .pcap file');
+      if (pcapFileInputRef.current) pcapFileInputRef.current.value = '';
+      return;
+    }
+
+    setUploading(true);
+    setUploadError(null);
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      const response = await apiClient.post('/reporter/snmp/import-from-pcap', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+
+      const data = response.data || {};
+
+      // 1) If API indicates failure, throw its error message first
+      if (typeof data.success !== 'undefined' && data.success === false) {
+        throw new Error(data.error || 'Server reported an error while parsing PCAP');
+      }
+
+      // 2) Ensure parsed traps exist in the expected location: data.data.traps
+      const parsedTraps = data?.data?.traps;
+      if (!parsedTraps || !Array.isArray(parsedTraps) || parsedTraps.length === 0) {
+        throw new Error('No traps were parsed from the PCAP file');
+      }
+
+      // 3) Success - replace traps and show notifications
+      const normalizedTraps = mapPcapEnumsToFormValues(parsedTraps);
+      setTraps(normalizedTraps.length > 0 ? normalizedTraps : parsedTraps);
+      setExpandedTraps(parsedTraps.map((_: any, i: number) => i));
+      setSnackbar({ open: true, message: `Imported ${parsedTraps.length} trap(s) from PCAP`, severity: 'success' });
+
+      if (data.warning) {
+        setSnackbar({ open: true, message: data.warning, severity: 'info' });
+      }
+    } catch (err: any) {
+      // Error precedence: API error message (response.data.error) -> thrown Error message -> default
+      const msg = err?.response?.data?.error || err?.message || 'Failed to upload PCAP';
+      setUploadError(msg);
+    } finally {
+      setUploading(false);
+      if (pcapFileInputRef.current) pcapFileInputRef.current.value = '';
+    }
   };
 
   const handleSave = () => {
@@ -428,6 +499,14 @@ export const SNMPPage: React.FC = () => {
             Add Trap
           </Button>
 
+          <Button
+            variant="outlined"
+            startIcon={expandedTraps.length === traps.length ? <UnfoldLessIcon /> : <UnfoldMoreIcon />}
+            onClick={handleToggleAllTraps}
+          >
+            {expandedTraps.length === traps.length ? 'Collapse All' : 'Expand All'}
+          </Button>
+
           <Button variant="outlined" startIcon={<SaveIcon />} onClick={handleSave}>
             Save Template
           </Button>
@@ -446,6 +525,30 @@ export const SNMPPage: React.FC = () => {
             style={{ display: 'none' }}
             onChange={handleImport}
           />
+
+          <Button
+            variant="outlined"
+            startIcon={uploading ? <CircularProgress size={18} color="inherit" /> : <CloudUploadIcon />}
+            onClick={() => pcapFileInputRef.current?.click()}
+            disabled={uploading}
+          >
+            {uploading ? 'Importing PCAP...' : 'Import from PCAP'}
+          </Button>
+          <input
+            ref={pcapFileInputRef}
+            type="file"
+            accept=".pcap"
+            style={{ display: 'none' }}
+            onChange={handlePcapUpload}
+          />
+
+          {uploadError && (
+            <Box sx={{ width: '100%' }}>
+              <Alert severity="error" onClose={() => setUploadError(null)} sx={{ mt: 1 }}>
+                {uploadError}
+              </Alert>
+            </Box>
+          )}
 
           <Box sx={{ flex: 1 }} />
 

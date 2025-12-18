@@ -1,3 +1,13 @@
+import { SNMPTrap } from '../types/snmp.types';
+import {
+  AttackCategory,
+  AttackProtocol,
+  AttackStatus,
+  AttackRisk,
+  AttackAction,
+  AttackDirection,
+} from '../constants/snmp.constants';
+
 export const generateRadwareId = (): string => {
   return String(Math.floor(Math.random() * 999999) + 1);
 };
@@ -45,3 +55,42 @@ export const isValidSamplesFormat = (samples: string): boolean => {
   const pattern = /^\d+-\d+-\d+$/;
   return pattern.test(samples);
 };
+
+// Map enum NAME (from API/PCAP) to enum VALUE used in form Selects
+export function mapPcapEnumsToFormValues(traps: any[]): SNMPTrap[] {
+  if (!Array.isArray(traps)) return [];
+
+  return traps.map((t: any) => {
+    const mapped: any = { ...t };
+
+    // Helper to map if key exists in enum
+    const mapIfExists = (enumObj: any, key: any) => {
+      if (!key && key !== 0) return key;
+      if (typeof key !== 'string') return key;
+      // Some APIs may provide enum names in uppercase or mixed; try exact match first
+      if (enumObj && Object.prototype.hasOwnProperty.call(enumObj, key)) {
+        return enumObj[key];
+      }
+      // Also try converting from uppercase with underscores to enum key
+      const altKey = key.toUpperCase();
+      if (enumObj && Object.prototype.hasOwnProperty.call(enumObj, altKey)) {
+        return enumObj[altKey];
+      }
+      // Fallback: return original key
+      return key;
+    };
+
+    try {
+      mapped.attackCategory = mapIfExists(AttackCategory, t.attackCategory);
+      mapped.protocol = mapIfExists(AttackProtocol, t.protocol);
+      mapped.status = mapIfExists(AttackStatus, t.status);
+      mapped.risk = mapIfExists(AttackRisk, t.risk);
+      mapped.action = mapIfExists(AttackAction, t.action);
+      mapped.direction = mapIfExists(AttackDirection, t.direction);
+    } catch (e) {
+      // In case of any unexpected mapping error, leave original values
+    }
+
+    return mapped as SNMPTrap;
+  });
+}
