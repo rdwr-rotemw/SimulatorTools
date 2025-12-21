@@ -1,8 +1,7 @@
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 from typing import Optional, Tuple
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
-import paramiko
 
 # removed devices_templates import (DB-only templates now)
 from backend.app.modules.sapro.src import (
@@ -17,9 +16,9 @@ from backend.app.modules.sapro.src.saproDeviceFunctions import GetDeviceListOfMa
 from backend.app.modules.sapro.src.saproException import SaproException
 from backend.app.modules.sapro.src.saproMapFunctions import getMapListFromServer
 from backend.app.utils.config import settings
+from backend.app.utils.logger import logger
 from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 from backend.app.utils.snmp import SnmpClient
-from backend.app.utils.logger import logger
 
 
 class SaproCommunicationHandler:
