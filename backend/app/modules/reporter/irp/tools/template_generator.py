@@ -662,8 +662,25 @@ class TemplateGenerator:
                             "default": []
                         }
                     else:
-                        # Resolve template into the simple template dict (no schema available)
-                        self._resolve_template_with_metadata(template_ref, template_dict, schema_dict)
+                        # Check if this template has a name - if so, nest the resolved template under that name
+                        if hasattr(element, 'name') and element.name:
+                            # Create nested dictionaries for this named template
+                            template_dict[element.name] = {}
+                            # Wrap schema with proper object metadata
+                            schema_dict[element.name] = {
+                                "type": "object",
+                                "fieldType": "object",
+                                "fields": {}
+                            }
+                            # Resolve template into the nested dictionaries (fills the "fields" object)
+                            self._resolve_template_with_metadata(
+                                template_ref,
+                                template_dict[element.name],
+                                schema_dict[element.name]["fields"]
+                            )
+                        else:
+                            # No name - resolve directly into parent dict (legacy behavior)
+                            self._resolve_template_with_metadata(template_ref, template_dict, schema_dict)
 
             elif element_type == 'Composite':
                 if hasattr(element, 'body') and element.body:
@@ -987,6 +1004,36 @@ class TemplateGenerator:
                                 schema_dict[field.name] = self._get_field_metadata(field.name, field.type)
                         return
                     elif hasattr(template_def, 'data'):
+                        # Check if template data is a single element that should be unwrapped
+                        if len(template_def.data) == 1:
+                            single_elem = template_def.data[0]
+                            elem_type = type(single_elem).__name__
+
+                            # Unwrap single Struct: process struct's children directly
+                            if elem_type == 'Struct' and hasattr(single_elem, 'data'):
+                                self._process_elements_with_metadata(single_elem.data, template_dict, schema_dict)
+                                return
+
+                            # Unwrap single Clone: process clone but extract its generated content
+                            elif elem_type == 'Clone':
+                                # Process the clone into a temporary dict
+                                temp_dict = {}
+                                temp_schema = {}
+                                self._process_elements_with_metadata([single_elem], temp_dict, temp_schema)
+
+                                # Extract the clone's content (which is nested under enum name)
+                                if len(temp_dict) == 1:
+                                    enum_key = list(temp_dict.keys())[0]
+                                    # Copy the enum's content directly into parent
+                                    template_dict.update(temp_dict[enum_key])
+                                    schema_dict.update(temp_schema[enum_key].get('fields', {}))
+                                else:
+                                    # Fallback: use as-is
+                                    template_dict.update(temp_dict)
+                                    schema_dict.update(temp_schema)
+                                return
+
+                        # Normal: process data as-is
                         self._process_elements_with_metadata(template_def.data, template_dict, schema_dict)
                         return
 
@@ -1003,6 +1050,36 @@ class TemplateGenerator:
                             schema_dict[field.name] = self._get_field_metadata(field.name, field.type)
                     return
                 elif hasattr(template_def, 'data') and template_def.data:
+                    # Check if template data is a single element that should be unwrapped
+                    if len(template_def.data) == 1:
+                        single_elem = template_def.data[0]
+                        elem_type = type(single_elem).__name__
+
+                        # Unwrap single Struct: process struct's children directly
+                        if elem_type == 'Struct' and hasattr(single_elem, 'data'):
+                            self._process_elements_with_metadata(single_elem.data, template_dict, schema_dict)
+                            return
+
+                        # Unwrap single Clone: process clone but extract its generated content
+                        elif elem_type == 'Clone':
+                            # Process the clone into a temporary dict
+                            temp_dict = {}
+                            temp_schema = {}
+                            self._process_elements_with_metadata([single_elem], temp_dict, temp_schema)
+
+                            # Extract the clone's content (which is nested under enum name)
+                            if len(temp_dict) == 1:
+                                enum_key = list(temp_dict.keys())[0]
+                                # Copy the enum's content directly into parent
+                                template_dict.update(temp_dict[enum_key])
+                                schema_dict.update(temp_schema[enum_key].get('fields', {}))
+                            else:
+                                # Fallback: use as-is
+                                template_dict.update(temp_dict)
+                                schema_dict.update(temp_schema)
+                            return
+
+                    # Normal: process data as-is
                     self._process_elements_with_metadata(template_def.data, template_dict, schema_dict)
                     return
 
@@ -1228,8 +1305,15 @@ class TemplateGenerator:
                         else:
                             template_dict[element.name] = []
                     else:
-                        # Resolve template into the simple template dict (no schema available)
-                        self._resolve_template_reference(template_ref, template_dict)
+                        # Check if this template has a name - if so, nest the resolved template under that name
+                        if hasattr(element, 'name') and element.name:
+                            # Create nested dictionary for this named template
+                            template_dict[element.name] = {}
+                            # Resolve template into the nested dictionary
+                            self._resolve_template_reference(template_ref, template_dict[element.name])
+                        else:
+                            # No name - resolve directly into parent dict (legacy behavior)
+                            self._resolve_template_reference(template_ref, template_dict)
             elif element_type == 'Composite':
                 if hasattr(element, 'body') and element.body:
                     if hasattr(element, 'name') and element.name:
@@ -1413,6 +1497,33 @@ class TemplateGenerator:
                                 template_def = namespace_obj.structs[template_local_name]
 
                                 if hasattr(template_def, 'data'):
+                                    # Check if template data is a single element that should be unwrapped
+                                    if len(template_def.data) == 1:
+                                        single_elem = template_def.data[0]
+                                        elem_type = type(single_elem).__name__
+
+                                        # Unwrap single Struct: process struct's children directly
+                                        if elem_type == 'Struct' and hasattr(single_elem, 'data'):
+                                            self._process_elements(single_elem.data, template_dict)
+                                            return
+
+                                        # Unwrap single Clone: process clone but extract its generated content
+                                        elif elem_type == 'Clone':
+                                            # Process the clone into a temporary dict
+                                            temp_dict = {}
+                                            self._process_elements([single_elem], temp_dict)
+
+                                            # Extract the clone's content (which is nested under enum name)
+                                            if len(temp_dict) == 1:
+                                                enum_key = list(temp_dict.keys())[0]
+                                                # Copy the enum's content directly into parent
+                                                template_dict.update(temp_dict[enum_key])
+                                            else:
+                                                # Fallback: use as-is
+                                                template_dict.update(temp_dict)
+                                            return
+
+                                    # Normal: process data as-is
                                     self._process_elements(template_def.data, template_dict)
                                 elif hasattr(template_def, 'fields'):
                                     self._process_elements(template_def.fields, template_dict)
