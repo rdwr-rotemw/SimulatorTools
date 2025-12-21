@@ -157,9 +157,26 @@ class MessageBuilder:
 
                 # If template has data, search in it
                 elif hasattr(template_def, 'data'):
-                    result = self._find_and_process_field(template_def.data, field_name, field_value)
-                    if result is not None:
-                        return result
+                    # SPECIAL CASE: If template data is a single Struct element, unwrap and search inside it
+                    # This handles cases like bdos.all-protections-data which has a struct wrapping a Clone
+                    if (len(template_def.data) == 1 and
+                        isinstance(template_def.data[0], ConvertXml.Struct)):
+                        struct = template_def.data[0]
+                        # Search in struct's data (which may contain Clones)
+                        if hasattr(struct, 'data') and struct.data:
+                            result = self._find_and_process_field(struct.data, field_name, field_value)
+                            if result is not None:
+                                return result
+                        # Also search in struct's fields if it has them
+                        if hasattr(struct, 'fields') and struct.fields:
+                            result = self._find_and_process_field(struct.fields, field_name, field_value)
+                            if result is not None:
+                                return result
+                    else:
+                        # Normal case: search directly in template data
+                        result = self._find_and_process_field(template_def.data, field_name, field_value)
+                        if result is not None:
+                            return result
 
                 # NEW: Enhanced template field expansion for structs
                 # If the template is a struct, expand its fields to make them available for matching
@@ -689,23 +706,44 @@ class MessageBuilder:
             return self._process_footprint_struct(struct, values)
 
         # Process fields in JSON order using deep search
-        for json_key, json_value in values.items():
-            # Skip objects without definitive field values - process their children directly
-            if isinstance(json_value, dict) and not self._has_definitive_value(json_value):
-                # This is a nested object, process its children instead
-                for child_key, child_value in json_value.items():
-                    found_element = self._find_and_process_field(struct.fields, child_key, child_value)
+        # Get the fields/data to search in
+        search_list = struct.fields if hasattr(struct, 'fields') and struct.fields else (struct.data if hasattr(struct, 'data') and struct.data else [])
+
+        if not search_list:
+            raise ValueError(f"Struct '{struct.name}' has no fields or data to process")
+
+        # SPECIAL CASE: Check if struct contains a Clone that should consume all values at once
+        # This handles cases like bdos.all-protections-data where all keys are enum values
+        clone_element = None
+        for element in search_list:
+            if isinstance(element, ConvertXml.Clone):
+                clone_element = element
+                break
+
+        # If we found a Clone and all JSON keys look like enum values (no nested processing needed),
+        # process the entire values dict with the Clone at once
+        if clone_element and all(not (isinstance(v, dict) and not self._has_definitive_value(v)) for v in values.values()):
+            # All values are definitive (enum-value-like), process the Clone with entire dict
+            binary_data += self._process_xml_element(clone_element, values)
+        else:
+            # Normal field-by-field processing
+            for json_key, json_value in values.items():
+                # Skip objects without definitive field values - process their children directly
+                if isinstance(json_value, dict) and not self._has_definitive_value(json_value):
+                    # This is a nested object, process its children instead
+                    for child_key, child_value in json_value.items():
+                        found_element = self._find_and_process_field(search_list, child_key, child_value)
+                        if found_element is not None:
+                            binary_data += found_element
+                        else:
+                            raise ValueError(f"Field '{child_key}' not found in struct '{struct.name}'")
+                else:
+                    # This is a field with a definitive value, process normally
+                    found_element = self._find_and_process_field(search_list, json_key, json_value)
                     if found_element is not None:
                         binary_data += found_element
                     else:
-                        raise ValueError(f"Field '{child_key}' not found in struct '{struct.name}'")
-            else:
-                # This is a field with a definitive value, process normally
-                found_element = self._find_and_process_field(struct.fields, json_key, json_value)
-                if found_element is not None:
-                    binary_data += found_element
-                else:
-                    raise ValueError(f"Field '{json_key}' not found in struct '{struct.name}'")
+                        raise ValueError(f"Field '{json_key}' not found in struct '{struct.name}'")
 
         return binary_data
 

@@ -663,7 +663,8 @@ class TemplateGenerator:
                         }
                     else:
                         # Check if this template has a name - if so, nest the resolved template under that name
-                        if hasattr(element, 'name') and element.name:
+                        # SPECIAL CASE: report-id should always be flattened (for attack-id transformation in UI)
+                        if hasattr(element, 'name') and element.name and element.name != 'report-id':
                             # Create nested dictionaries for this named template
                             template_dict[element.name] = {}
                             # Wrap schema with proper object metadata
@@ -679,7 +680,7 @@ class TemplateGenerator:
                                 schema_dict[element.name]["fields"]
                             )
                         else:
-                            # No name - resolve directly into parent dict (legacy behavior)
+                            # No name OR special case (report-id) - resolve directly into parent dict (flattens)
                             self._resolve_template_with_metadata(template_ref, template_dict, schema_dict)
 
             elif element_type == 'Composite':
@@ -1009,9 +1010,12 @@ class TemplateGenerator:
                             single_elem = template_def.data[0]
                             elem_type = type(single_elem).__name__
 
-                            # Unwrap single Struct: process struct's children directly
-                            if elem_type == 'Struct' and hasattr(single_elem, 'data'):
-                                self._process_elements_with_metadata(single_elem.data, template_dict, schema_dict)
+                            # Unwrap single Struct: get struct's children and process them directly (SPECIAL CASE for report-id)
+                            if elem_type == 'Struct':
+                                struct_children = self._get_element_children(single_elem)
+                                if struct_children:
+                                    # Process children directly, flattening into parent (bypasses struct wrapper)
+                                    self._process_elements_with_metadata(struct_children, template_dict, schema_dict, [], False)
                                 return
 
                             # Unwrap single Clone: process clone but extract its generated content
@@ -1055,9 +1059,12 @@ class TemplateGenerator:
                         single_elem = template_def.data[0]
                         elem_type = type(single_elem).__name__
 
-                        # Unwrap single Struct: process struct's children directly
-                        if elem_type == 'Struct' and hasattr(single_elem, 'data'):
-                            self._process_elements_with_metadata(single_elem.data, template_dict, schema_dict)
+                        # Unwrap single Struct: get struct's children and process them directly (SPECIAL CASE for report-id)
+                        if elem_type == 'Struct':
+                            struct_children = self._get_element_children(single_elem)
+                            if struct_children:
+                                # Process children directly, flattening into parent (bypasses struct wrapper)
+                                self._process_elements_with_metadata(struct_children, template_dict, schema_dict, [], False)
                             return
 
                         # Unwrap single Clone: process clone but extract its generated content
@@ -1502,9 +1509,12 @@ class TemplateGenerator:
                                         single_elem = template_def.data[0]
                                         elem_type = type(single_elem).__name__
 
-                                        # Unwrap single Struct: process struct's children directly
-                                        if elem_type == 'Struct' and hasattr(single_elem, 'data'):
-                                            self._process_elements(single_elem.data, template_dict)
+                                        # Unwrap single Struct: get struct's children and process them directly (SPECIAL CASE for report-id)
+                                        if elem_type == 'Struct':
+                                            struct_children = self._get_element_children(single_elem)
+                                            if struct_children:
+                                                # Process children directly, flattening into parent (bypasses struct wrapper)
+                                                self._process_elements(struct_children, template_dict, [], False)
                                             return
 
                                         # Unwrap single Clone: process clone but extract its generated content

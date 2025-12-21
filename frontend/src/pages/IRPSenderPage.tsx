@@ -1373,7 +1373,32 @@ export const IRPSenderPage: React.FC = () => {
                 Status: {testResult.success ? 'Success' : 'Failed'}
               </Typography>
 
-              {/* Display errors if they exist */}
+              {/* Display main error if it exists (singular error field) */}
+              {testResult.result?.error && (
+                <Box sx={{ marginTop: 2 }}>
+                  <Typography variant="subtitle2" gutterBottom color="error">
+                    Error:
+                  </Typography>
+                  <TextField
+                    multiline
+                    fullWidth
+                    rows={8}
+                    value={testResult.result.error}
+                    InputProps={{
+                      readOnly: true,
+                      sx: { fontFamily: 'monospace', fontSize: '0.85rem', color: 'error.main' }
+                    }}
+                    sx={{
+                      marginTop: 1,
+                      '& .MuiOutlinedInput-root': {
+                        '& fieldset': { borderColor: 'error.main' }
+                      }
+                    }}
+                  />
+                </Box>
+              )}
+
+              {/* Display errors if they exist (plural errors array) */}
               {testResult.result?.errors && testResult.result.errors.length > 0 && (
                 <Box sx={{ marginTop: 2 }}>
                   <Typography variant="subtitle2" gutterBottom color="error">
