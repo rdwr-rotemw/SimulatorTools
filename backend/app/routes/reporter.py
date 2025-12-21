@@ -550,15 +550,19 @@ async def test_irp_message(
                 timeout=30
             )
 
+            # Always try to read parsed XML, even if test failed
+            # This allows users to see parser errors in the XML output
             parsed_xml = None
-            if result.get("status") == "completed":
-                for step in result.get("steps", []):
-                    if step.get("step") == "parse_message" and step.get("parse_result_file"):
-                        parse_file = Path(step["parse_result_file"])
-                        if parse_file.exists():
+            for step in result.get("steps", []):
+                if step.get("step") == "parse_message" and step.get("parse_result_file"):
+                    parse_file = Path(step["parse_result_file"])
+                    if parse_file.exists():
+                        try:
                             with open(parse_file, 'r') as f:
                                 parsed_xml = f.read()
-                        break
+                        except Exception as read_exc:
+                            logger.warning(f"Could not read parse result file: {read_exc}")
+                    break
 
             return {
                 "success": result.get("status") == "completed",
