@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { ccService, ManagementPort } from '../api/services/cc.service';
 import { CCState, CCAddDeviceRequest, ManagementPort as ManagementPortType } from '../types/cc.types';
+import useFormStore from './useFormStore';
 
 export const useCCStore = create<CCState>((set, get) => ({
   currentCC: null,
@@ -14,6 +15,8 @@ export const useCCStore = create<CCState>((set, get) => ({
     try {
       await ccService.login(cc_ip, username, password);
       set({ currentCC: cc_ip, isLoading: false });
+      // Clear form state when switching to a different CC
+      useFormStore.getState().clearAllFormState();
       // Fetch devices immediately after login
       await get().fetchDevices(cc_ip);
       // Also fetch management ports right after login
@@ -31,6 +34,8 @@ export const useCCStore = create<CCState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       await ccService.logout(cc_ip);
+      // Clear form state on CC logout
+      useFormStore.getState().clearAllFormState();
       set({ currentCC: null, devices: [], isLoading: false });
     } catch (error: any) {
       const message = error?.response?.data?.message || error?.message || 'Logout failed';

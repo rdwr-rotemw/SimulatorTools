@@ -41,6 +41,7 @@ import Layout from '../components/common/Layout';
 import useCCStore from '../store/ccStore';
 import useLoopStore from '../store/useLoopStore';
 import useFormStore from '../store/useFormStore';
+import useAuthStore from '../store/authStore';
 import { SNMPTrapForm } from '../components/snmp/SNMPTrapForm';
 import { SNMPTrap, SNMPFormErrors } from '../types/snmp.types';
 import { SNMP_FIELD_DEFAULTS } from '../constants/snmp.constants';
@@ -53,6 +54,7 @@ export const SNMPPage: React.FC = () => {
   const currentCC = useCCStore((state) => state.currentCC);
   const devicesList = useCCStore((state) => state.devices);
   const managementPorts = useCCStore((state) => state.managementPorts);
+  const user = useAuthStore((state) => state.user);
 
   const [selectedSimulator, setSelectedSimulator] = useState<string>('');
   const [selectedDestinationPort, setSelectedDestinationPort] = useState<string>('');
@@ -93,8 +95,14 @@ export const SNMPPage: React.FC = () => {
     }
   }, [currentCC, navigate]);
 
-  // Restore form state from localStorage on mount
+  // Set current session and restore form state on mount
   useEffect(() => {
+    // Step 1: Set current session (auto-clears if session changed)
+    if (currentCC && user) {
+      useFormStore.getState().setCurrentSession(currentCC, user.username);
+    }
+
+    // Step 2: Try to restore form state (will be null if session was cleared)
     const formState = useFormStore.getState().getSnmpFormState();
 
     // Only restore if we have saved form state AND current traps is still the default empty trap

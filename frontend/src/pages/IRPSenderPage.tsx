@@ -44,6 +44,7 @@ import Layout from '../components/common/Layout'
 import useCCStore from '../store/ccStore'
 import useLoopStore from '../store/useLoopStore'
 import useFormStore from '../store/useFormStore'
+import useAuthStore from '../store/authStore'
 import { irpSchemaService, SchemaMessage } from '../api/services/irpSchema.service'
 import IRPMessageForm from '../components/irp/IRPMessageForm'
 
@@ -472,6 +473,7 @@ export const IRPSenderPage: React.FC = () => {
   const currentCC = useCCStore((state) => state.currentCC)
   const devices = useCCStore((state) => state.devices)
   const managementPorts = useCCStore((state) => state.managementPorts)
+  const user = useAuthStore((state) => state.user)
 
   const [schemaInfo, setSchemaInfo] = useState<{ name: string; version: string } | null>(null)
   const [selectedSimulator, setSelectedSimulator] = useState<string>('')
@@ -526,8 +528,14 @@ export const IRPSenderPage: React.FC = () => {
     }
   }, [currentCC, schemaId, navigate])
 
-  // Restore form state from localStorage on mount
+  // Set current session and restore form state on mount
   useEffect(() => {
+    // Step 1: Set current session (auto-clears if session changed)
+    if (currentCC && user) {
+      useFormStore.getState().setCurrentSession(currentCC, user.username)
+    }
+
+    // Step 2: Try to restore form state (will be null if session was cleared)
     const formState = useFormStore.getState().getIrpFormState()
 
     // Only restore if we have saved form state AND current messages array is empty

@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import authService from '../api/services/auth.service';
 import { AuthState } from '../types/auth';
+import useFormStore from './useFormStore';
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
@@ -31,6 +32,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     authService.clearToken();
     // Remove persisted user on logout
     localStorage.removeItem('user');
+    // Clear form state on logout
+    useFormStore.getState().clearAllFormState();
     set({ user: null, token: null, isAuthenticated: false, error: null });
   },
 
