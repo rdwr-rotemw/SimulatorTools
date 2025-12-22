@@ -48,6 +48,36 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
 
     // Set the value
     current[path[path.length - 1]] = value
+
+    // Helper: recursively flatten struct-wrapper patterns like {tcp: {tcp: {...}}} -> {tcp: {...}}
+    const flattenStructWrappers = (obj: any) => {
+      if (!obj || typeof obj !== 'object') return
+
+      if (Array.isArray(obj)) {
+        obj.forEach(item => flattenStructWrappers(item))
+        return
+      }
+
+      Object.keys(obj).forEach((key) => {
+        const val = obj[key]
+        if (val && typeof val === 'object' && !Array.isArray(val)) {
+          const innerKeys = Object.keys(val)
+          // Detect exact wrapper pattern: single inner key equals outer key
+          if (innerKeys.length === 1 && innerKeys[0] === key && val[innerKeys[0]] && typeof val[innerKeys[0]] === 'object') {
+            obj[key] = val[innerKeys[0]]
+            // Recurse into the unwrapped object
+            flattenStructWrappers(obj[key])
+          } else {
+            // Recurse into child
+            flattenStructWrappers(val)
+          }
+        }
+      })
+    }
+
+    // Flatten any struct wrappers across the new data to match backend expectations
+    flattenStructWrappers(newData)
+
     onChange(newData)
   }
 
@@ -170,7 +200,8 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
     }
 
     // Common metadata keys to exclude from rendering when iterating schema.fields
-    const metadataKeys = ['type', 'fieldType', 'default', 'min', 'max', 'required', 'itemType', 'itemSchema']
+    const metadataKeys = ['type', 'fieldType', 'default', 'min', 'max', 'required', 'itemType', 'itemSchema',
+                          '_switchSelector', '_switchCases', '_selectedCase']
 
     // Boolean → Switch (with optional conditional fields)
     if (fieldType === 'boolean') {
@@ -228,12 +259,19 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
 
     // Enum → Select
     if (fieldType === 'enum' && Array.isArray(fieldSchema?.options)) {
+      // Ensure we have a valid value - if current value is undefined/null/empty, use default or first option
+      const currentEnumValue = value ?? fieldSchema.default ?? fieldSchema.options[0] ?? ''
+
+      const handleEnumChange = (newValue: string) => {
+        handleFieldChange(currentPath, newValue)
+      }
+
       return (
         <FormControl key={pathString} fullWidth margin="normal" size="small">
           <InputLabel>{key}</InputLabel>
           <Select
-            value={value ?? fieldSchema.default ?? ''}
-            onChange={(e) => handleFieldChange(currentPath, e.target.value)}
+            value={currentEnumValue}
+            onChange={(e) => handleEnumChange(e.target.value)}
             label={key}
           >
             {fieldSchema.options.map((option: string) => (
@@ -431,7 +469,12 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
             // For complex objects, initialize fields from schema
             Object.keys(itemSchema).forEach((k) => {
               if (!['type', 'fieldType', 'default', 'min', 'max', 'required'].includes(k)) {
-                newItem[k] = itemSchema[k]?.default ?? ''
+                // Special case: if field name contains 'url', default to 'radware.com'
+                if (k.toLowerCase().includes('url')) {
+                  newItem[k] = itemSchema[k]?.default ?? 'radware.com'
+                } else {
+                  newItem[k] = itemSchema[k]?.default ?? ''
+                }
               }
             })
           }
@@ -506,24 +549,23 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
             arrayValue.map((item: any, idx: number) => (
               <Accordion key={`${pathString}-${idx}`} sx={{ marginBottom: 1 }}>
                 <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-                    <Typography variant="body2">
-                      {isSwitchArray ? Object.keys(item)[0] : `Iteration ${idx + 1}`}
-                    </Typography>
-                    <IconButton
-                      size="small"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        handleRemoveIteration(idx)
-                      }}
-                      sx={{ marginRight: 1 }}
-                    >
-                      <span style={{ fontSize: '16px' }}>×</span>
-                    </IconButton>
-                  </Box>
+                  <Typography variant="body2">
+                    {isSwitchArray ? Object.keys(item)[0] : `Iteration ${idx + 1}`}
+                  </Typography>
                 </AccordionSummary>
                 <AccordionDetails>
                   <Box sx={{ paddingLeft: 2 }}>
+                    {/* Delete button moved here to avoid button-in-button nesting */}
+                    <Box sx={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 1 }}>
+                      <Button
+                        size="small"
+                        color="error"
+                        onClick={() => handleRemoveIteration(idx)}
+                      >
+                        Remove
+                      </Button>
+                    </Box>
+
                     {isSwitchArray ? (
                       // For switch arrays, item has ONE key (the selected option)
                       (() => {
@@ -789,7 +831,8 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
                     // Merged selector/switch pattern - find which case is currently selected
                     selectorValue = availableCases.find(caseName => caseName in switchValue)
 
-                    // Render a selector dropdown for choosing the case
+                    // If no case selected, use first available case as display value
+                    // The dropdown will initialize data when user interacts with it
                     if (!selectorValue && availableCases.length > 0) {
                       selectorValue = availableCases[0]
                     }
@@ -808,9 +851,75 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
                   const caseSchema = fieldDef.fields[selectedCase]
                   const caseValue = switchValue[selectedCase] ?? {}
 
+                  // Check if this case has nested switch metadata
+                  const hasNestedSwitch = caseSchema?.fields?._switchSelector && caseSchema?.fields?._switchCases
+
                   // For merged pattern, render selector dropdown
                   const isMergedPattern = fieldDef.selectorField === nestedKey
                   const hasFields = caseSchema?.fields && Object.keys(caseSchema.fields).length > 0
+
+                  // For merged pattern with nested switch, render dropdown + nested switch
+                  if (isMergedPattern && hasNestedSwitch) {
+                    return (
+                      <Box key={`${pathString}-${nestedKey}-case`} sx={{ marginTop: 2 }}>
+                        {/* Show dropdown to select case */}
+                        {availableCases.length > 1 && (
+                          <FormControl fullWidth sx={{ marginBottom: 2 }}>
+                            <InputLabel>{nestedKey}</InputLabel>
+                            <Select
+                              value={selectedCase}
+                              label={nestedKey}
+                              onChange={(e) => {
+                                const newCase = e.target.value
+                                const oldCase = selectedCase
+                                const newValue = { ...nestedValue }
+
+                                // Remove old case data
+                                if (oldCase && newValue[nestedKey]) {
+                                  delete newValue[nestedKey][oldCase]
+                                }
+
+                                // Initialize new case with empty object
+                                if (!newValue[nestedKey]) {
+                                  newValue[nestedKey] = {}
+                                }
+                                newValue[nestedKey][newCase] = {}
+
+                                handleFieldChange(currentPath, newValue)
+                              }}
+                            >
+                              {availableCases.map((caseName) => (
+                                <MenuItem key={caseName} value={caseName}>
+                                  {caseName}
+                                </MenuItem>
+                              ))}
+                            </Select>
+                          </FormControl>
+                        )}
+                        {/* Render nested switch */}
+                        {renderField(
+                          selectedCase,
+                          caseSchema,
+                          caseValue,
+                          [...currentPath, nestedKey]
+                        )}
+                      </Box>
+                    )
+                  }
+
+                  // If case has nested switch (but not merged pattern), render it as a single field
+                  if (hasNestedSwitch) {
+                    return (
+                      <Box key={`${pathString}-${nestedKey}-case`} sx={{ marginTop: 2 }}>
+                        {renderField(
+                          selectedCase,
+                          caseSchema,
+                          caseValue,
+                          [...currentPath, nestedKey]
+                        )}
+                      </Box>
+                    )
+                  }
 
                   // For merged pattern, always render (to show dropdown), but only show fields if they exist
                   if (isMergedPattern || hasFields) {
@@ -888,7 +997,18 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
       const selectorEnum = fieldSchema?.selector
 
       // Get the selector field from parent if needed, or use the current value's key as selector
-      const selectedCase = Object.keys(nestedValue).length > 0 ? Object.keys(nestedValue)[0] : Object.keys(fieldSchema.fields)[0]
+      // Find first non-nil/error case as default if no data exists
+      const getDefaultCase = () => {
+        const allCases = Object.keys(fieldSchema.fields)
+        return allCases.find(caseName => {
+          const caseSchema = fieldSchema.fields[caseName]
+          return caseSchema.type !== 'nil' && caseSchema.type !== 'error'
+        }) || allCases[0]
+      }
+
+      const selectedCase = Object.keys(nestedValue).length > 0
+        ? Object.keys(nestedValue)[0]
+        : getDefaultCase()
       const selectedCaseData = nestedValue[selectedCase] ?? {}
 
       return (
@@ -950,6 +1070,145 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
       )
     }
 
+    // NESTED SWITCH: Check if this object has switch metadata (_switchSelector)
+    if (fieldSchema && typeof fieldSchema === 'object' && fieldSchema.fields &&
+        fieldSchema.fields._switchSelector && fieldSchema.fields._switchCases) {
+      const nestedValue = value ?? {}
+      const switchCases = fieldSchema.fields._switchCases
+      const selectedCase = fieldSchema.fields._selectedCase || Object.keys(switchCases)[0]
+
+      // Determine current selected case from data
+      const currentSelectedCase = Object.keys(switchCases).find(caseName =>
+        nestedValue[caseName] !== undefined
+      ) || selectedCase
+
+      const caseNames = Object.keys(switchCases).filter(name =>
+        switchCases[name].type !== 'nil' && switchCases[name].type !== 'error'
+      )
+
+      return (
+        <Box key={pathString} sx={{ marginY: 2, border: '1px solid #E0E0E0', padding: 2, borderRadius: 1 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 'bold', marginBottom: 2 }}>{key}</Typography>
+
+          {/* Case selector dropdown */}
+          <FormControl fullWidth sx={{ marginBottom: 2 }}>
+            <InputLabel>Select Case</InputLabel>
+            <Select
+              value={currentSelectedCase}
+              label="Select Case"
+              onChange={(e) => {
+                const newCase = e.target.value
+                const newCaseSchema = switchCases[newCase]
+
+                // Helper to recursively initialize a value from schema
+                const initializeFromSchema = (schema: any, fieldName?: string): any => {
+                  if (!schema) return {}
+
+                  if (schema.fieldType === 'array' || schema.type === 'array') {
+                    return []
+                  }
+
+                  if (schema.fieldType === 'integer' || schema.fieldType === 'float') {
+                    return schema.default ?? 0
+                  }
+
+                  if (schema.fieldType === 'boolean') {
+                    return schema.default ?? false
+                  }
+
+                  if (schema.fieldType === 'string' || schema.fieldType === 'ipv4' || schema.fieldType === 'ipv6') {
+                    // Special case: if field name contains 'url', default to 'radware.com'
+                    if (fieldName && fieldName.toLowerCase().includes('url')) {
+                      return schema.default ?? 'radware.com'
+                    }
+                    return schema.default ?? ''
+                  }
+
+                  // For objects, recursively initialize fields
+                  if (schema.fields && typeof schema.fields === 'object') {
+                    const obj: Record<string, any> = {}
+                    Object.keys(schema.fields)
+                      .filter(k => !metadataKeys.includes(k))
+                      .forEach(fieldKey => {
+                        obj[fieldKey] = initializeFromSchema(schema.fields[fieldKey], fieldKey)
+                      })
+                    return obj
+                  }
+
+                  return {}
+                }
+
+                // Initialize the new case with proper structure
+                const newValue: Record<string, any> = {}
+                if (newCaseSchema.fields && Object.keys(newCaseSchema.fields).length > 0) {
+                  const caseFieldKeys = Object.keys(newCaseSchema.fields).filter(k => !metadataKeys.includes(k))
+
+                  if (caseFieldKeys.length === 1 && caseFieldKeys[0] === newCase) {
+                    // Struct wrapper case - initialize the struct's contents
+                    newValue[newCase] = initializeFromSchema(newCaseSchema.fields[newCase])
+                  } else {
+                    // Regular case - initialize all fields
+                    newValue[newCase] = {}
+                    caseFieldKeys.forEach(fieldKey => {
+                      newValue[newCase][fieldKey] = initializeFromSchema(newCaseSchema.fields[fieldKey])
+                    })
+                  }
+                } else {
+                  newValue[newCase] = {}
+                }
+
+                handleFieldChange(currentPath, newValue)
+              }}
+            >
+              {caseNames.map((caseName) => (
+                <MenuItem key={caseName} value={caseName}>
+                  {caseName}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+
+          {/* Render fields for selected case */}
+          {(() => {
+            if (!currentSelectedCase || !switchCases[currentSelectedCase] || !switchCases[currentSelectedCase].fields) {
+              return null
+            }
+
+            const caseFields = Object.keys(switchCases[currentSelectedCase].fields)
+              .filter((fieldKey) => !metadataKeys.includes(fieldKey))
+
+            if (caseFields.length === 0) {
+              return null
+            }
+
+            return (
+              <Box sx={{ paddingLeft: 2 }}>
+                {caseFields.map((fieldKey) => {
+                  // SPECIAL CASE: If fieldKey matches the case name (Struct wrapper),
+                  // look at case data directly, not nested under field name
+                  const fieldValue = fieldKey === currentSelectedCase
+                    ? nestedValue[currentSelectedCase]
+                    : nestedValue[currentSelectedCase]?.[fieldKey]
+
+                  // Also adjust path: if fieldKey matches case name, don't add case name again
+                  const fieldPath = fieldKey === currentSelectedCase
+                    ? currentPath  // Already at the case level, don't add it again
+                    : [...currentPath, currentSelectedCase]
+
+                  return renderField(
+                    fieldKey,
+                    switchCases[currentSelectedCase].fields[fieldKey],
+                    fieldValue,
+                    fieldPath
+                  )
+                })}
+              </Box>
+            )
+          })()}
+        </Box>
+      )
+    }
+
     // Fallback: If value is an object and fieldSchema is an object with fields, render as object
     if (typeof value === 'object' && value !== null && !Array.isArray(value) &&
         fieldSchema && typeof fieldSchema === 'object' && fieldSchema.fields && fieldSchema.type !== 'clone') {
@@ -964,7 +1223,7 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({ messageData, schema, on
               {Object.keys(fieldSchema.fields)
                 .filter((nestedKey) => !metadataKeys.includes(nestedKey))
                 .map((nestedKey) =>
-                  renderField(nestedKey, fieldSchema.fields[nestedKey], nestedValue?.[nestedKey], currentPath)
+                  renderField(nestedKey, fieldSchema.fields[nestedKey], nestedValue?.[nestedKey], [...currentPath, key])
                 )}
             </Box>
           </AccordionDetails>

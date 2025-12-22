@@ -144,6 +144,10 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       return Math.random() > 0.5
     }
     if (fieldType === 'enum' && Array.isArray(fieldSchema?.options)) {
+      // Preserve current value if it exists and is valid, otherwise pick random
+      if (currentValue !== undefined && currentValue !== null && fieldSchema.options.includes(currentValue)) {
+        return currentValue
+      }
       return fieldSchema.options[Math.floor(Math.random() * fieldSchema.options.length)]
     }
     if (fieldType === 'ipv4') {
@@ -240,6 +244,7 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
           return result
         })
       }
+      // Array is empty - create 1-2 random items
       const arraySize = Math.floor(Math.random() * 2) + 1
       return Array.from({ length: arraySize }, (_, index) => {
         if (itemSchema?.fieldType && itemSchema.fieldType !== 'object' && itemSchema.fieldType !== 'clone' && itemSchema.fieldType !== 'switch') {
@@ -259,7 +264,132 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
       })
     }
 
+    // Switch (check both fieldType and type properties)
+    if ((fieldType === 'switch' || fieldSchema?.type === 'switch') && fieldSchema?.fields && typeof fieldSchema.fields === 'object') {
+      // Include all cases (including nil/error) for random selection
+      // Filter out metadata fields that start with underscore
+      const allCases = Object.keys(fieldSchema.fields).filter(key => !key.startsWith('_'))
+
+      if (allCases.length === 0) {
+        return currentValue || {}
+      }
+
+      // Check if user has already selected a case
+      let selectedCase: string | null = null
+      if (typeof currentValue === 'object' && currentValue !== null) {
+        selectedCase = allCases.find(caseName => currentValue[caseName] !== undefined) || null
+      }
+
+      // If no case selected, pick random case from ALL available cases
+      if (!selectedCase) {
+        selectedCase = allCases[Math.floor(Math.random() * allCases.length)]
+      }
+
+      // Randomize the selected case's content
+      const result: Record<string, any> = {}
+      // At this point, selectedCase is guaranteed to be a string from validCases
+      const selectedCaseKey: string = selectedCase
+      const caseSchema = fieldSchema.fields[selectedCaseKey]
+
+      // Check if the case has nested switch metadata
+      if (caseSchema.fields && caseSchema.fields._switchSelector && caseSchema.fields._switchCases) {
+        // Case contains a nested switch - call randomizeValue on the whole case which will handle the nested switch
+        result[selectedCaseKey] = randomizeValue(
+          caseSchema,
+          currentValue?.[selectedCaseKey],
+          selectedCaseKey
+        )
+      } else if (caseSchema.fields && Object.keys(caseSchema.fields).length > 0) {
+        result[selectedCaseKey] = {}
+        Object.keys(caseSchema.fields)
+          .filter(fieldKey => !fieldKey.startsWith('_'))  // Filter out metadata
+          .forEach(fieldKey => {
+            result[selectedCaseKey][fieldKey] = randomizeValue(
+              caseSchema.fields[fieldKey],
+              currentValue?.[selectedCaseKey]?.[fieldKey],
+              fieldKey
+            )
+          })
+      } else {
+        result[selectedCaseKey] = {}
+      }
+
+      return result
+    }
+
     if (fieldSchema?.fields && typeof fieldSchema.fields === 'object') {
+      // Check if this is a nested switch (has _switchSelector metadata)
+      if (fieldSchema.fields._switchSelector && fieldSchema.fields._switchCases) {
+        const switchCases = fieldSchema.fields._switchCases
+        // Include all cases (including nil/error) for random selection
+        const allCases = Object.keys(switchCases)
+
+        if (allCases.length === 0) {
+          return currentValue || {}
+        }
+
+        // Check if user has already selected a case
+        let selectedCase: string | null = null
+        if (typeof currentValue === 'object' && currentValue !== null) {
+          selectedCase = allCases.find(caseName => currentValue[caseName] !== undefined) || null
+        }
+
+        // If no case selected, pick random case from ALL available cases
+        if (!selectedCase) {
+          selectedCase = allCases[Math.floor(Math.random() * allCases.length)]
+        }
+
+        // TypeScript safety check (should never happen due to above logic)
+        if (!selectedCase) {
+          return currentValue || {}
+        }
+
+        // Store in const for TypeScript - now guaranteed to be non-null
+        const finalSelectedCase: string = selectedCase
+
+        // Randomize the selected case's content
+        const result: Record<string, any> = {}
+        const caseSchema = switchCases[finalSelectedCase]
+
+        // Check if the case itself contains a nested switch
+        if (caseSchema.fields && caseSchema.fields._switchSelector && caseSchema.fields._switchCases) {
+          // The case has a nested switch - randomize it as a nested switch
+          result[finalSelectedCase] = randomizeValue(
+            caseSchema,
+            currentValue?.[finalSelectedCase],
+            finalSelectedCase
+          )
+        } else if (caseSchema.fields && Object.keys(caseSchema.fields).length > 0) {
+          // Check if case has a Struct wrapper with same name
+          const caseFieldKeys = Object.keys(caseSchema.fields).filter(k =>
+            !['type', 'fieldType', 'default', 'min', 'max', 'required', '_switchSelector', '_switchCases', '_selectedCase'].includes(k)
+          )
+
+          if (caseFieldKeys.length === 1 && caseFieldKeys[0] === finalSelectedCase) {
+            // Struct wrapper - randomize struct contents
+            result[finalSelectedCase] = randomizeValue(
+              caseSchema.fields[finalSelectedCase],
+              currentValue?.[finalSelectedCase],
+              finalSelectedCase
+            )
+          } else {
+            // Regular case - randomize all fields
+            result[finalSelectedCase] = {}
+            caseFieldKeys.forEach(fieldKey => {
+              result[finalSelectedCase][fieldKey] = randomizeValue(
+                caseSchema.fields[fieldKey],
+                currentValue?.[finalSelectedCase]?.[fieldKey],
+                fieldKey
+              )
+            })
+          }
+        } else {
+          result[finalSelectedCase] = {}
+        }
+
+        return result
+      }
+
       const result: Record<string, any> = {}
 
       // Special handling for footprint structure: preserve relation field

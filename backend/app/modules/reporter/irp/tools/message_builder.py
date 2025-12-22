@@ -24,10 +24,22 @@ class MessageBuilder:
         message = self.schema.messages[message_id_str]
         binary_data = b''
 
+        print(f"\n{'='*60}")
+        print(f"[MESSAGE] Building message {message_id}")
+        print(f"{'='*60}")
+
         # Process each JSON field in order, but use existing deep processing logic
         for json_key, json_value in values.items():
+            # SPECIAL CASE: 'overlap' should always be processed as a whole unit
+            # Don't extract its children individually
+            if json_key == 'overlap':
+                xml_element = self._find_and_process_field(message.data, json_key, json_value)
+                if xml_element is not None:
+                    binary_data += xml_element
+                else:
+                    raise ValueError(f"Field '{json_key}' not found in message {message_id}")
             # Skip objects without definitive field values - process their children directly
-            if isinstance(json_value, dict) and not self._has_definitive_value(json_value):
+            elif isinstance(json_value, dict) and not self._has_definitive_value(json_value):
                 # This is a nested object, process its children instead
                 for child_key, child_value in json_value.items():
                     xml_element = self._find_and_process_field(message.data, child_key, child_value)
@@ -42,6 +54,15 @@ class MessageBuilder:
                     binary_data += xml_element
                 else:
                     raise ValueError(f"Field '{json_key}' not found in message {message_id}")
+
+        print(f"\n[MESSAGE] Final binary length: {len(binary_data)} bytes")
+        print(f"[MESSAGE] Binary hex dump:")
+        # Print hex in 16-byte rows
+        for i in range(0, len(binary_data), 16):
+            hex_part = ' '.join(f'{b:02x}' for b in binary_data[i:i+16])
+            ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in binary_data[i:i+16])
+            print(f"  {i:04x}: {hex_part:<48} {ascii_part}")
+        print(f"{'='*60}\n")
 
         return binary_data
 
@@ -75,6 +96,10 @@ class MessageBuilder:
         Find and process a field using existing deep traversal logic for templates, clones, etc.
         """
         for element in message_data:
+            # SPECIAL CASE: Match Overlap elements by field name "overlap"
+            if field_name == 'overlap' and type(element).__name__ == 'Overlap':
+                return self._process_xml_element(element, field_value)
+
             # Direct field match
             if hasattr(element, 'name') and element.name == field_name:
                 return self._process_xml_element(element, field_value)
@@ -466,38 +491,161 @@ class MessageBuilder:
 
         # Process switch elements recursively - iterate all children that exist in values
         elif type(xml_element).__name__ == 'Switch':
+            print(f"[SWITCH] Processing switch, selector: {getattr(xml_element, 'selector', 'NO SELECTOR')}, name: {getattr(xml_element, 'name', 'NO NAME')}")
+            print(f"[SWITCH] json_value type: {type(json_value)}, keys: {list(json_value.keys()) if isinstance(json_value, dict) else 'NOT A DICT'}")
+            print(f"[SWITCH] json_value content: {json_value}")
+
             binary_data = b''
+
+            # Check if this is a NAMED switch (a case of an outer switch)
+            is_named_switch = hasattr(xml_element, 'name') and xml_element.name
+            print(f"[SWITCH] is_named_switch: {is_named_switch}")
+
             if isinstance(json_value, dict) and hasattr(xml_element, 'cases'):
-                # First encode the selector enum value
-                if hasattr(xml_element, 'selector') and xml_element.selector:
-                    enum_name = xml_element.selector.split('.')[-1] if '.' in xml_element.selector else xml_element.selector
-                    # Find which case is selected by checking values dict
+                selected_case_name = None
+
+                # For nested switches, json_value structure is {"case_name": {case_data}}
+                # The single key IS the selected case name
+                if len(json_value) == 1:
+                    # Extract the case name from the single key
+                    potential_case_name = list(json_value.keys())[0]
+                    print(f"[SWITCH] Single-key dict detected, potential case: {potential_case_name}")
+
+                    # Verify this key matches a case in the switch
                     for case_element in xml_element.cases:
                         case_name = getattr(case_element, 'name', None)
-                        if case_name and case_name in json_value:
-                            # Encode the selector enum value
-                            selector_binary = self.type_handler.get(xml_element.selector)(case_name)
-                            binary_data += selector_binary
+                        if case_name == potential_case_name:
+                            selected_case_name = potential_case_name
+                            print(f"[SWITCH] Selected case: {selected_case_name}")
                             break
 
-                # Then recursively process all children that exist in json_value
-                for child in xml_element.cases:
-                    child_name = getattr(child, 'name', None)
-                    if child_name and child_name in json_value:
-                        # Skip Nil and Error cases - they encode nothing
-                        if type(child).__name__ not in ['Nil', 'Error']:
-                            binary_data += self._process_xml_element(child, json_value[child_name])
+                # Encode the selector if we have one
+                if selected_case_name and hasattr(xml_element, 'selector') and xml_element.selector:
+                    print(f"[SWITCH] Encoding selector for case: {selected_case_name}")
+                    try:
+                        selector = xml_element.selector
+                        selector_handler = self.type_handler.get(selector)
+
+                        # Log that we're calling the selector handler
+                        print(f"[SWITCH] Selector handler for '{selector}' will be called with '{selected_case_name}'")
+
+                        # Call the handler to get full encoding
+                        full_encoding = selector_handler(selected_case_name)
+
+                        # Log returned bytes from selector handler
+                        try:
+                            full_hex = full_encoding.hex()
+                        except Exception:
+                            full_hex = str(full_encoding)
+                        print(f"[SWITCH] Selector handler returned bytes: {full_hex} (len={len(full_encoding) if hasattr(full_encoding, '__len__') else 'N/A'})")
+
+                        # Log namespace enum values if available
+                        enum_info = None
+                        try:
+                            if '.' in selector:
+                                ns, lname = selector.rsplit('.', 1)
+                                types_ns = getattr(getattr(self.schema, 'types', {}), 'namespaces', None) or getattr(self.schema.types, 'namespaces', {}) if hasattr(self.schema, 'types') else None
+                                if isinstance(types_ns, dict) and ns in types_ns:
+                                    ns_obj = types_ns[ns]
+                                    # ns_obj might be dict-like
+                                    if isinstance(ns_obj, dict) and lname in ns_obj:
+                                        type_def = ns_obj[lname]
+                                        if isinstance(type_def, dict):
+                                            enum_info = type_def.get('values', None)
+                                        else:
+                                            enum_info = getattr(type_def, 'values', None)
+                            else:
+                                enums = getattr(getattr(self.schema, 'types', {}), 'enums', None) or (getattr(self.schema, 'types', 'enums') if False else None)
+                                # Fallback attempt: try attribute on schema types
+                                if enums and isinstance(enums, dict) and selector in enums:
+                                    type_def = enums[selector]
+                                    enum_info = type_def.get('values') if isinstance(type_def, dict) else getattr(type_def, 'values', None)
+                        except Exception as _e:
+                            enum_info = f"error retrieving enum info: {_e}"
+
+                        print(f"[SWITCH] Available enum values for '{selector}': {enum_info}")
+
+                        # Use the full enum encoding returned by the selector handler (do not extract/repack)
+                        selector_binary = full_encoding
+                        try:
+                            print(f"[SWITCH] Using full selector encoding: {selector_binary.hex()} (len={len(selector_binary)})")
+                        except Exception:
+                            print(f"[SWITCH] Using full selector encoding (non-bytes): {selector_binary}")
+
+                    except Exception as e:
+                        # Fallback: create implicit enum mapping based on case order
+                        print(f"[SWITCH] Error getting selector handler for '{getattr(xml_element, 'selector', None)}': {e}")
+                        case_names = [getattr(c, 'name', None) for c in xml_element.cases if getattr(c, 'name', None)]
+                        selector_handler = lambda val, names=case_names: struct.pack('B', names.index(val))
+                        self.type_handler.register(xml_element.selector, selector_handler)
+                        selector_binary = selector_handler(selected_case_name)
+                        print(f"[SWITCH] Created implicit enum, encoded '{selected_case_name}' as: {selector_binary.hex()}")
+
+                    # Append selector bytes
+                    binary_data += selector_binary
+
+                # Process the selected case content
+                if selected_case_name:
+                    print(f"[SWITCH] Processing case content: {selected_case_name}")
+                    for child in xml_element.cases:
+                        child_name = getattr(child, 'name', None)
+                        if child_name and child_name == selected_case_name:
+                            if type(child).__name__ not in ['Nil', 'Error']:
+                                print(f"[SWITCH] Processing case type: {type(child).__name__}")
+                                # Pass the case data (the value from the single-key dict)
+                                binary_data += self._process_xml_element(child, json_value[selected_case_name])
+                            break
             return binary_data
 
-        # Process overlap elements recursively - iterate all children
+        # Process overlap elements - ALL children encode from the SAME position
         elif type(xml_element).__name__ == 'Overlap':
-            binary_data = b''
             if isinstance(json_value, dict) and hasattr(xml_element, 'data'):
+                # In Java, overlap fields encode from the same buffer position
+                # Each child encodes independently, and they overlap in memory
+                # The final result is the longest encoding (or last child overwrites earlier ones)
+
+                encoded_children = []
+                selector_values = {}
+
                 for child in xml_element.data:
                     child_name = getattr(child, 'name', None)
+                    child_type = type(child).__name__
+
+                    # Process named children (DataField, etc.)
                     if child_name and child_name in json_value:
-                        binary_data += self._process_xml_element(child, json_value[child_name])
-            return binary_data
+                        child_value = json_value[child_name]
+
+                        # For overlap with selector/switch pattern:
+                        # DataField encodes the selector enum value
+                        if isinstance(child, ConvertXml.DataField) and isinstance(child_value, dict):
+                            if len(child_value) == 1:
+                                # Extract the selected case name as the enum value
+                                selected_case = list(child_value.keys())[0]
+                                child_binary = self._process_xml_element(child, selected_case)
+                                encoded_children.append(child_binary)
+                                # Store the dict for Switch to use
+                                selector_values[child.type] = child_value
+                            else:
+                                child_binary = self._process_xml_element(child, child_value)
+                                encoded_children.append(child_binary)
+                        else:
+                            child_binary = self._process_xml_element(child, child_value)
+                            encoded_children.append(child_binary)
+
+                    # Process Switch elements using the selector's dict value
+                    elif child_type == 'Switch' and hasattr(child, 'selector'):
+                        if child.selector in selector_values:
+                            # Switch encodes its cases from the same position as the selector
+                            child_binary = self._process_xml_element(child, selector_values[child.selector])
+                            encoded_children.append(child_binary)
+
+                # Return the longest encoded result (all children overlap from position 0)
+                # The longest one contains all the data
+                if encoded_children:
+                    return max(encoded_children, key=len)
+                else:
+                    return b''
+            return b''
 
         # Process other types as needed
         else:
@@ -508,6 +656,15 @@ class MessageBuilder:
         Process a single data field using the existing type handler logic.
         """
         try:
+            # SPECIAL CASE: For overlap selector/switch pattern
+            # If value is a dict with single key and field type is an enum,
+            # extract the key as the enum value (the key represents the selected case)
+            if isinstance(value, dict) and len(value) == 1:
+                # Check if this looks like an enum type (has dots or ends with common enum suffixes)
+                if '.' in data_field.type or 'status' in data_field.type.lower() or 'type' in data_field.type.lower():
+                    # Extract the single key as the enum value
+                    value = list(value.keys())[0]
+
             handler = self.type_handler.get(data_field.type)
             return handler(value)
         except Exception as e:
