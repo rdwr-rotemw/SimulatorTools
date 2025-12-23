@@ -518,21 +518,42 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({messageData, schema, onC
                     setFootprintTypeDialog(true)
                 } else {
                     let newItem: any = {}
-
                     const isPrimitiveItem = itemSchema?.fieldType && ['integer', 'float', 'string', 'boolean', 'ipv4', 'ipv6', 'enum'].includes(itemSchema.fieldType)
 
                     if (isPrimitiveItem) {
                         newItem = itemSchema?.default ?? 0
                     } else if (itemSchema && typeof itemSchema === 'object' && !Array.isArray(itemSchema)) {
-                        Object.keys(itemSchema).forEach((k) => {
-                            if (!METADATA_KEYS.includes(k)) {
+                        // Initialize fields recursively
+                        const initializeFields = (schema: any): any => {
+                            const result: any = {}
+                            const fieldsToInit = schema.fields || schema
+
+                            Object.keys(fieldsToInit).forEach((k) => {
+                                if (METADATA_KEYS.includes(k)) return
+
+                                const fieldDef = fieldsToInit[k]
+
                                 if (k.toLowerCase().includes('url')) {
-                                    newItem[k] = itemSchema[k]?.default ?? 'radware.com'
+                                    result[k] = fieldDef?.default ?? 'radware.com'
+                                } else if (fieldDef?.fieldType === 'object' && fieldDef?.fields) {
+                                    result[k] = initializeFields(fieldDef)
+                                } else if (fieldDef?.fieldType === 'array') {
+                                    result[k] = []
+                                } else if (fieldDef?.fieldType === 'integer' || fieldDef?.fieldType === 'float') {
+                                    result[k] = fieldDef?.default ?? 0
+                                } else if (fieldDef?.fieldType === 'boolean') {
+                                    result[k] = fieldDef?.default ?? false
+                                } else if (fieldDef?.fieldType === 'ipv4') {
+                                    result[k] = fieldDef?.default ?? '192.168.1.1'
                                 } else {
-                                    newItem[k] = itemSchema[k]?.default ?? ''
+                                    result[k] = fieldDef?.default ?? ''
                                 }
-                            }
-                        })
+                            })
+
+                            return result
+                        }
+
+                        newItem = initializeFields(itemSchema)
                     }
 
                     if (itemSchema && typeof itemSchema === 'object' && 'port' in itemSchema) {

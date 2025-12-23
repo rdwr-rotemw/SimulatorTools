@@ -192,6 +192,20 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
             }
             return fieldSchema.options[Math.floor(Math.random() * fieldSchema.options.length)]
         }
+        if (fieldType === 'bitmap' && Array.isArray(fieldSchema?.options)) {
+            // Generate random bitmap by randomly selecting flags
+            const maxBits = fieldSchema.options.length
+            let bitmapValue = 0
+
+            // Randomly set 1-3 bits
+            const numBitsToSet = Math.floor(Math.random() * 3) + 1
+            for (let i = 0; i < numBitsToSet; i++) {
+                const bitIndex = Math.floor(Math.random() * maxBits)
+                bitmapValue |= (1 << bitIndex)
+            }
+
+            return bitmapValue
+        }
         if (fieldType === 'ipv4') {
             return `${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}.${Math.floor(Math.random() * 256)}`
         }
@@ -324,14 +338,29 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
             }
 
             // Detect currently selected case from currentValue
+            // If this switch has selectorField, preserve the current selection
+            // (don't pick random - the selector controls which case to use)
             let selectedCase: string | null = null
-            if (typeof currentValue === 'object' && currentValue !== null) {
-                selectedCase = allCases.find(caseName => currentValue[caseName] !== undefined) || null
-            }
+            if (fieldSchema.selectorField) {
+                if (typeof currentValue === 'object' && currentValue !== null) {
+                    const existingCases = allCases.filter(caseName => currentValue[caseName] !== undefined)
+                    selectedCase = existingCases.length === 1 ? existingCases[0] : null
+                }
+                // If no valid case, don't pick random - return empty to match enum behavior
+                if (!selectedCase) {
+                    return {}
+                }
+            } else {
+                // Regular switch without selector - detect or pick random
+                if (typeof currentValue === 'object' && currentValue !== null) {
+                    const existingCases = allCases.filter(caseName => currentValue[caseName] !== undefined)
+                    selectedCase = existingCases.length === 1 ? existingCases[0] : null
+                }
 
-            // If no case detected, pick random one
-            if (!selectedCase) {
-                selectedCase = allCases[Math.floor(Math.random() * allCases.length)]
+                // If no case detected, pick random one
+                if (!selectedCase) {
+                    selectedCase = allCases[Math.floor(Math.random() * allCases.length)]
+                }
             }
 
             const selectedCaseKey: string = selectedCase
@@ -438,7 +467,17 @@ function generateRandomData(schema: Record<string, any>, currentData?: Record<st
                 if (isFootprint && key === 'relation') {
                     result[key] = nestedValue !== undefined ? nestedValue : 'or'
                 } else {
-                    result[key] = randomizeValue(fieldSchema.fields[key], nestedValue, key)
+                    const randomized = randomizeValue(fieldSchema.fields[key], nestedValue, key)
+
+                    if (key === 'protocols') {
+                        console.log('=== PROTOCOLS RANDOMIZATION ===', {
+                            'nestedValue': JSON.stringify(nestedValue),
+                            'randomized result': JSON.stringify(randomized),
+                            'is switch': fieldSchema.fields[key]?.fieldType === 'switch'
+                        })
+                    }
+
+                    result[key] = randomized
                 }
             })
 
