@@ -600,47 +600,35 @@ class MessageBuilder:
         # Process overlap elements - ALL children encode from the SAME position
         elif type(xml_element).__name__ == 'Overlap':
             if isinstance(json_value, dict) and hasattr(xml_element, 'data'):
-                # In Java, overlap fields encode from the same buffer position
-                # Each child encodes independently, and they overlap in memory
-                # The final result is the longest encoding (or last child overwrites earlier ones)
-
                 encoded_children = []
-                selector_values = {}
 
                 for child in xml_element.data:
                     child_name = getattr(child, 'name', None)
                     child_type = type(child).__name__
 
-                    # Process named children (DataField, etc.)
+                    # Handle named DataFields
                     if child_name and child_name in json_value:
                         child_value = json_value[child_name]
 
-                        # For overlap with selector/switch pattern:
-                        # DataField encodes the selector enum value
-                        if isinstance(child, ConvertXml.DataField) and isinstance(child_value, dict):
-                            if len(child_value) == 1:
-                                # Extract the selected case name as the enum value
-                                selected_case = list(child_value.keys())[0]
-                                child_binary = self._process_xml_element(child, selected_case)
-                                encoded_children.append(child_binary)
-                                # Store the dict for Switch to use
-                                selector_values[child.type] = child_value
-                            else:
-                                child_binary = self._process_xml_element(child, child_value)
-                                encoded_children.append(child_binary)
-                        else:
+                        if isinstance(child, ConvertXml.DataField):
                             child_binary = self._process_xml_element(child, child_value)
                             encoded_children.append(child_binary)
 
-                    # Process Switch elements using the selector's dict value
+                    # Handle Switch elements
                     elif child_type == 'Switch' and hasattr(child, 'selector'):
-                        if child.selector in selector_values:
-                            # Switch encodes its cases from the same position as the selector
-                            child_binary = self._process_xml_element(child, selector_values[child.selector])
+                        # Extract data key from selector (e.g., "httpflood.rules-status" -> "rules-status")
+                        selector_str = child.selector
+                        data_key = selector_str.split('.')[-1] if '.' in selector_str else selector_str
+
+                        # Get the switch data
+                        if data_key in json_value:
+                            switch_data = json_value[data_key]
+
+                            # switch_data should be like: {"changed": {"source": {...}}}
+                            # Pass it directly to the Switch encoder
+                            child_binary = self._process_xml_element(child, switch_data)
                             encoded_children.append(child_binary)
 
-                # Return the longest encoded result (all children overlap from position 0)
-                # The longest one contains all the data
                 if encoded_children:
                     return max(encoded_children, key=len)
                 else:
