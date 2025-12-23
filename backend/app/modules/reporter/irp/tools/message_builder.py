@@ -24,9 +24,6 @@ class MessageBuilder:
         message = self.schema.messages[message_id_str]
         binary_data = b''
 
-        print(f"\n{'='*60}")
-        print(f"[MESSAGE] Building message {message_id}")
-        print(f"{'='*60}")
 
         # Process each JSON field in order, but use existing deep processing logic
         for json_key, json_value in values.items():
@@ -55,14 +52,6 @@ class MessageBuilder:
                 else:
                     raise ValueError(f"Field '{json_key}' not found in message {message_id}")
 
-        print(f"\n[MESSAGE] Final binary length: {len(binary_data)} bytes")
-        print(f"[MESSAGE] Binary hex dump:")
-        # Print hex in 16-byte rows
-        for i in range(0, len(binary_data), 16):
-            hex_part = ' '.join(f'{b:02x}' for b in binary_data[i:i+16])
-            ascii_part = ''.join(chr(b) if 32 <= b < 127 else '.' for b in binary_data[i:i+16])
-            print(f"  {i:04x}: {hex_part:<48} {ascii_part}")
-        print(f"{'='*60}\n")
 
         return binary_data
 
@@ -491,15 +480,10 @@ class MessageBuilder:
 
         # Process switch elements recursively - iterate all children that exist in values
         elif type(xml_element).__name__ == 'Switch':
-            print(f"[SWITCH] Processing switch, selector: {getattr(xml_element, 'selector', 'NO SELECTOR')}, name: {getattr(xml_element, 'name', 'NO NAME')}")
-            print(f"[SWITCH] json_value type: {type(json_value)}, keys: {list(json_value.keys()) if isinstance(json_value, dict) else 'NOT A DICT'}")
-            print(f"[SWITCH] json_value content: {json_value}")
-
             binary_data = b''
 
             # Check if this is a NAMED switch (a case of an outer switch)
             is_named_switch = hasattr(xml_element, 'name') and xml_element.name
-            print(f"[SWITCH] is_named_switch: {is_named_switch}")
 
             if isinstance(json_value, dict) and hasattr(xml_element, 'cases'):
                 selected_case_name = None
@@ -509,35 +493,24 @@ class MessageBuilder:
                 if len(json_value) == 1:
                     # Extract the case name from the single key
                     potential_case_name = list(json_value.keys())[0]
-                    print(f"[SWITCH] Single-key dict detected, potential case: {potential_case_name}")
 
                     # Verify this key matches a case in the switch
                     for case_element in xml_element.cases:
                         case_name = getattr(case_element, 'name', None)
                         if case_name == potential_case_name:
                             selected_case_name = potential_case_name
-                            print(f"[SWITCH] Selected case: {selected_case_name}")
                             break
 
                 # Encode the selector if we have one
                 if selected_case_name and hasattr(xml_element, 'selector') and xml_element.selector:
-                    print(f"[SWITCH] Encoding selector for case: {selected_case_name}")
                     try:
                         selector = xml_element.selector
                         selector_handler = self.type_handler.get(selector)
 
-                        # Log that we're calling the selector handler
-                        print(f"[SWITCH] Selector handler for '{selector}' will be called with '{selected_case_name}'")
 
                         # Call the handler to get full encoding
                         full_encoding = selector_handler(selected_case_name)
 
-                        # Log returned bytes from selector handler
-                        try:
-                            full_hex = full_encoding.hex()
-                        except Exception:
-                            full_hex = str(full_encoding)
-                        print(f"[SWITCH] Selector handler returned bytes: {full_hex} (len={len(full_encoding) if hasattr(full_encoding, '__len__') else 'N/A'})")
 
                         # Log namespace enum values if available
                         enum_info = None
@@ -563,35 +536,26 @@ class MessageBuilder:
                         except Exception as _e:
                             enum_info = f"error retrieving enum info: {_e}"
 
-                        print(f"[SWITCH] Available enum values for '{selector}': {enum_info}")
 
                         # Use the full enum encoding returned by the selector handler (do not extract/repack)
                         selector_binary = full_encoding
-                        try:
-                            print(f"[SWITCH] Using full selector encoding: {selector_binary.hex()} (len={len(selector_binary)})")
-                        except Exception:
-                            print(f"[SWITCH] Using full selector encoding (non-bytes): {selector_binary}")
 
                     except Exception as e:
                         # Fallback: create implicit enum mapping based on case order
-                        print(f"[SWITCH] Error getting selector handler for '{getattr(xml_element, 'selector', None)}': {e}")
                         case_names = [getattr(c, 'name', None) for c in xml_element.cases if getattr(c, 'name', None)]
                         selector_handler = lambda val, names=case_names: struct.pack('B', names.index(val))
                         self.type_handler.register(xml_element.selector, selector_handler)
                         selector_binary = selector_handler(selected_case_name)
-                        print(f"[SWITCH] Created implicit enum, encoded '{selected_case_name}' as: {selector_binary.hex()}")
 
                     # Append selector bytes
                     binary_data += selector_binary
 
                 # Process the selected case content
                 if selected_case_name:
-                    print(f"[SWITCH] Processing case content: {selected_case_name}")
                     for child in xml_element.cases:
                         child_name = getattr(child, 'name', None)
                         if child_name and child_name == selected_case_name:
                             if type(child).__name__ not in ['Nil', 'Error']:
-                                print(f"[SWITCH] Processing case type: {type(child).__name__}")
                                 # Pass the case data (the value from the single-key dict)
                                 binary_data += self._process_xml_element(child, json_value[selected_case_name])
                             break

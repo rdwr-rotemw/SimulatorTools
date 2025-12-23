@@ -99,11 +99,6 @@ const METADATA_KEYS = ['type', 'fieldType', 'default', 'min', 'max', 'required',
 
 const IRPMessageForm: React.FC<IRPMessageFormProps> = ({messageData, schema, onChange, onValidationChange}) => {
     const handleFieldChange = (path: string[], value: any) => {
-        console.log('=== handleFieldChange START ===', {
-            path,
-            'path.join(".")': path.join('.'),
-            'value preview': typeof value === 'string' ? value.substring(0, 100) : JSON.stringify(value).substring(0, 100)
-        })
         // Deep clone to avoid mutating props
         const newData: Record<string, any> = JSON.parse(JSON.stringify(messageData || {}))
         let current: any = newData
@@ -150,9 +145,7 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({messageData, schema, onC
         }
 
         // Flatten any struct wrappers across the new data to match backend expectations
-        console.log('=== BEFORE flattenStructWrappers ===', JSON.stringify(newData.overlap?.['rules-status'], null, 2))
         flattenStructWrappers(newData)
-        console.log('=== AFTER flattenStructWrappers ===', JSON.stringify(newData.overlap?.['rules-status'], null, 2))
 
         onChange(newData)
     }
@@ -780,13 +773,6 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({messageData, schema, onC
         }
 
         if (isNestedSwitchWithMetadata(fieldSchema)) {
-            console.log('=== NESTED SWITCH RENDERING ===', {
-                key,
-                'fieldSchema._switchCases': fieldSchema._switchCases,
-                'value': value,
-                'path': path
-            })
-
             const nestedValue = value ?? {}
             const switchCases = fieldSchema._switchCases
             const selectedCase = fieldSchema._selectedCase || Object.keys(switchCases)[0]
@@ -795,12 +781,6 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({messageData, schema, onC
                 nestedValue[caseName] !== undefined
             ) || selectedCase
 
-            console.log('=== NESTED SWITCH STATE ===', {
-                currentSelectedCase,
-                nestedValue,
-                'switchCases keys': Object.keys(switchCases),
-                'current case schema': switchCases[currentSelectedCase]
-            })
 
             const caseNames = Object.keys(switchCases).filter(name =>
                 switchCases[name].type !== 'nil' && switchCases[name].type !== 'error'

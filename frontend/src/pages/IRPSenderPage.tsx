@@ -110,14 +110,6 @@ const getCaseSchema = (fieldDef: any, caseName: string): any => {
 // Schema-driven recursion: Uses schema to understand and randomize all nested types
 function generateRandomData(schema: Record<string, any>, currentData?: Record<string, any>): Record<string, any> {
     const randomizeValue = (fieldSchema: any, currentValue?: any, fieldKey?: string, iterationIndex?: number): any => {
-        if (fieldKey === 'changed' || fieldKey === 'rules-status') {
-            console.log('=== randomizeValue called ===', {
-                fieldKey,
-                'currentValue keys': typeof currentValue === 'object' && currentValue !== null ? Object.keys(currentValue) : 'not object',
-                'fieldSchema has _switchCases': Boolean(fieldSchema?._switchCases),
-                'fieldSchema has fields._switchCases': Boolean(fieldSchema?.fields?._switchCases)
-            })
-        }
 
         if (!fieldSchema) return currentValue ?? ''
 
@@ -712,7 +704,6 @@ export const IRPSenderPage: React.FC = () => {
 
     const sendMessagesOnceRef = React.useRef<() => Promise<boolean>>(async () => false)
 
-    console.log('IRPSenderPage rendered')
 
     // Redirect if missing context
     useEffect(() => {
@@ -796,7 +787,6 @@ export const IRPSenderPage: React.FC = () => {
 
     // Fetch schema info and available messages
     useEffect(() => {
-        console.log('Schema fetch effect running')
         if (currentCC && schemaId) {
             const fetchData = async () => {
                 try {
@@ -832,12 +822,9 @@ export const IRPSenderPage: React.FC = () => {
 
     // Message management
     const addMessage = async (messageType: string, messageName: string) => {
-        console.log('=== addMessage called ===', messageType, messageName, Date.now())
         try {
             setIsLoading(true)
-            console.log('About to call getMessageTemplate')
             const template = await irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageType)
-            console.log('getMessageTemplate returned:', template)
 
             const transformedData = transformToAttackId(template.template, template.schema)
             const transformedSchema = transformSchemaForAttackId(template.schema)
@@ -878,16 +865,10 @@ export const IRPSenderPage: React.FC = () => {
     }
 
     function updateMessage(index: number, data: Record<string, any>) {
-        console.log('=== updateMessage received data ===',
-            JSON.stringify(data.overlap?.['rules-status']?.changed, null, 2)
-        )
         setMessages((prev) => {
             const next = [...prev]
             next[index] = {...next[index], data}
 
-            console.log('=== updateMessage setting state ===',
-                JSON.stringify(next[index].data.overlap?.['rules-status']?.changed, null, 2)
-            )
 
             return next
         })
@@ -913,7 +894,6 @@ export const IRPSenderPage: React.FC = () => {
             setSaveDialogOpen(false)
             setTemplateName('')
         } catch (error) {
-            console.error('Failed to save template:', error)
             alert('Failed to save template')
         }
     }
@@ -927,7 +907,6 @@ export const IRPSenderPage: React.FC = () => {
             const result = await irpSchemaService.listTemplates(currentCC!)
             setSavedTemplates(result.templates)
         } catch (error) {
-            console.error('Failed to load templates:', error)
             alert('Failed to load templates')
         } finally {
             setLoadingTemplates(false)
@@ -967,7 +946,6 @@ export const IRPSenderPage: React.FC = () => {
             useFormStore.getState().clearIrpFormState()
             alert('Template loaded successfully')
         } catch (error) {
-            console.error('Failed to load template:', error)
             alert('Failed to load template')
         }
     }
@@ -983,7 +961,6 @@ export const IRPSenderPage: React.FC = () => {
             const result = await irpSchemaService.listTemplates(currentCC!)
             setSavedTemplates(result.templates)
         } catch (error) {
-            console.error('Failed to delete template:', error)
             alert('Failed to delete template')
         }
     }
@@ -1018,22 +995,12 @@ export const IRPSenderPage: React.FC = () => {
         }
 
         const msg = messages[messageIndex]
-        console.log('=== msg.data.overlap.rules-status.changed ===',
-            JSON.stringify(msg.data.overlap?.['rules-status']?.changed, null, 2)
-        )
-        console.log('=== MESSAGE DATA BEFORE TRANSFORMATION ===', JSON.stringify(msg.data, null, 2))
 
         try {
             setTestingMessage(true)
             setTestResult(null)
 
             const backendData = transformFromAttackId(msg.data, msg.originalSchema)
-            console.log('=== BACKEND DATA AFTER TRANSFORMATION ===', JSON.stringify(backendData, null, 2))
-            console.log('=== ORIGINAL SCHEMA ===', JSON.stringify(msg.originalSchema, null, 2).substring(0, 500))
-
-            console.log('=== FULL rules-status SCHEMA ===',
-                JSON.stringify(msg.originalSchema.overlap?.fields?.['rules-status'], null, 2)
-            )
 
             const payload = {
                 schema_id: schemaId,
@@ -1042,7 +1009,6 @@ export const IRPSenderPage: React.FC = () => {
                 template: backendData
             }
 
-            console.log('=== PAYLOAD BEING SENT TO BACKEND ===', JSON.stringify(payload, null, 2))
 
             const response = await fetch(`${process.env.REACT_APP_API_BASE_URL}/reporter/irp/test-message`, {
                 method: 'POST',
@@ -1068,7 +1034,6 @@ export const IRPSenderPage: React.FC = () => {
                 setSnackbar({open: true, message: 'Message test failed - see details', severity: 'error'})
             }
         } catch (error: any) {
-            console.error('Error testing message:', error)
             setSnackbar({open: true, message: error.message || 'Failed to test message', severity: 'error'})
         } finally {
             setTestingMessage(false)
@@ -1103,7 +1068,6 @@ export const IRPSenderPage: React.FC = () => {
             await irpSchemaService.sendMessages(selectedDestinationPort, selectedSimulator, payload)
             setSnackbar({open: true, message: `Successfully sent ${messages.length} message(s)`, severity: 'success'})
         } catch (error: any) {
-            console.error('Failed to send messages:', error)
             const errorMsg = error?.response?.data?.detail || error?.message || 'Failed to send messages'
             setSnackbar({open: true, message: errorMsg, severity: 'error'})
         } finally {
