@@ -821,6 +821,12 @@ class MessageBuilder:
         if not search_list:
             raise ValueError(f"Struct '{struct.name}' has no fields or data to process")
 
+        # SPECIAL CASE: If struct has only ONE element, process it directly with all values
+        # This handles wrapper structs like <struct name="ipv4"><template instanceof="..."/></struct>
+        if len(search_list) == 1:
+            single_element = search_list[0]
+            return binary_data + self._process_xml_element(single_element, values)
+
         # SPECIAL CASE: Check if struct contains a Clone that should consume all values at once
         # This handles cases like bdos.all-protections-data where all keys are enum values
         clone_element = None
