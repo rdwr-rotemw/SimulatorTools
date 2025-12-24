@@ -90,7 +90,8 @@ def _serialize_types(types_obj: Optional[Any]) -> Dict[str, Any]:
     bitmap = None
     if bitmap_obj:
         try:
-            bitmap = {"name": getattr(bitmap_obj, "name"), "type": getattr(bitmap_obj, "type", None),
+            bitmap = {"name": getattr(bitmap_obj, "name"),
+                      "type": getattr(bitmap_obj, "var_type", None),
                       "values": getattr(bitmap_obj, "values", None)}
         except Exception:
             bitmap = None

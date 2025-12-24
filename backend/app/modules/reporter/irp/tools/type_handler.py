@@ -1,11 +1,13 @@
 import struct
 import ipaddress
 
+
 class TypeHandler:
     """
     Handles conversion of schema types to binary using struct.pack or custom logic.
     Raises clear errors for unknown or unsupported types.
     """
+
     def __init__(self, schema_types):
         self.schema_types = schema_types
         self.handlers = {}
@@ -66,7 +68,9 @@ class TypeHandler:
         return handler
 
     def _handle_uint(self, size, signed=False):
-        fmt = {1: 'b' if signed else 'B', 2: 'h' if signed else 'H', 4: 'i' if signed else 'I', 8: 'q' if signed else 'Q'}[size]
+        fmt = \
+        {1: 'b' if signed else 'B', 2: 'h' if signed else 'H', 4: 'i' if signed else 'I', 8: 'q' if signed else 'Q'}[
+            size]
 
         def handler(value, field_name=None):
             try:
@@ -87,10 +91,14 @@ class TypeHandler:
                 return packed_data
             except ValueError as ve:
                 if "invalid literal for int()" in str(ve):
-                    raise ValueError(f"Failed to pack value '{value}' as {fmt}: Cannot convert to integer. Check the JSON file format.")
-                raise ValueError(f"Failed to pack value '{value}' as {fmt}: {ve}. Check the JSON file and schema definition.")
+                    raise ValueError(
+                        f"Failed to pack value '{value}' as {fmt}: Cannot convert to integer. Check the JSON file format.")
+                raise ValueError(
+                    f"Failed to pack value '{value}' as {fmt}: {ve}. Check the JSON file and schema definition.")
             except Exception as e:
-                raise ValueError(f"Failed to pack value '{value}' as {fmt}: {e}. Check the JSON file and schema definition.")
+                raise ValueError(
+                    f"Failed to pack value '{value}' as {fmt}: {e}. Check the JSON file and schema definition.")
+
         return handler
 
     def _handle_radware_attack_id(self, attack_id_str, fmt):
@@ -136,6 +144,7 @@ class TypeHandler:
                 return struct.pack(f'<{fmt}', bool_value)
             except Exception as e:
                 raise ValueError(f"Failed to pack boolean value '{value}': {e}")
+
         return handler
 
     def _handle_float(self, value):
@@ -179,6 +188,7 @@ class TypeHandler:
             if len(b) > size:
                 b = b[:size]
             return b.ljust(size, b'\x00')
+
         return handler
 
     def _handle_enum(self, enum):
@@ -218,9 +228,7 @@ class TypeHandler:
     def _handle_bitmap(self, bitmap):
         def handler(value):
             try:
-                # Bitmaps are typically uint-32 values representing flags
                 if isinstance(value, str):
-                    # Handle hex strings
                     if value.startswith('0x'):
                         int_value = int(value, 16)
                     else:
@@ -228,12 +236,23 @@ class TypeHandler:
                 else:
                     int_value = int(value)
 
-                # Use uint-32 by default for bitmaps
-                base_type = bitmap.var_type if hasattr(bitmap, 'var_type') else 'uint-32'
-                base_handler = self.get(base_type)
-                return base_handler(int_value)
+                # Use the bitmap's size attribute to determine how many bytes to encode
+                size = int(bitmap['type']) if 'type' in bitmap else 4
+
+                # Map size to struct format
+                if size == 1:
+                    return struct.pack('B', int_value)  # 1 byte
+                elif size == 2:
+                    return struct.pack('<H', int_value)  # 2 bytes, little-endian
+                elif size == 4:
+                    return struct.pack('<I', int_value)  # 4 bytes, little-endian
+                else:
+                    # Fallback for other sizes
+                    return int_value.to_bytes(size, byteorder='little')
+
             except Exception as e:
                 raise ValueError(f"Failed to pack bitmap value '{value}': {e}")
+
         return handler
 
     def _handle_ipv4(self, value):
