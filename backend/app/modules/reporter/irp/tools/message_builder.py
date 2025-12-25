@@ -84,6 +84,25 @@ class MessageBuilder:
         """
         Find and process a field using existing deep traversal logic for templates, clones, etc.
         """
+
+        # SPECIAL CASE: map UI 'attack-id' to 'report-id' template if present
+        if field_name == 'attack-id' and isinstance(message_data, (list, tuple)):
+            for element in message_data:
+                if isinstance(element, ConvertXml.Template) and getattr(element, 'instanceof', None) == 'report-id':
+                    # Parse attack-id into cnt/time (safe parsing)
+                    parts = str(field_value).split('-') if field_value is not None else []
+                    try:
+                        cnt = int(parts[0]) if len(parts) > 0 and parts[0] != '' else 0
+                    except Exception:
+                        cnt = 0
+                    try:
+                        time = int(parts[1]) if len(parts) > 1 and parts[1] != '' else 0
+                    except Exception:
+                        time = 0
+
+                    # Process the report-id template with time/cnt
+                    return self._process_xml_element(element, {'time': time, 'cnt': cnt})
+
         for element in message_data:
             # SPECIAL CASE: Match Overlap elements by field name "overlap"
             if field_name == 'overlap' and type(element).__name__ == 'Overlap':
@@ -343,7 +362,7 @@ class MessageBuilder:
                         else:
                             # Try to convert other field types recursively
                             converted = self._convert_model_to_convertxml(field)
-                            if converted and converted != field:
+                            if converted:
                                 converted_fields.append(converted)
                 else:
                     # It's a single object (ForLoop, WhileLoop, or model version), return it directly

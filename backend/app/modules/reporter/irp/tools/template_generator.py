@@ -1253,7 +1253,7 @@ class TemplateGenerator:
                 # For message 52 style footprint with no relation, process children normally
                 if children:
                     self._process_elements_with_metadata(children, template_dict[struct_name], schema_dict[struct_name]["fields"], interactive=interactive)
-                return True
+                return False
 
             # Original logic for footprints with relation field
             if interactive:

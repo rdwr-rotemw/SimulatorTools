@@ -523,12 +523,20 @@ function transformToAttackId(data: any, schema: any): any {
         schema?.time && schema?.cnt
 
     if (hasTimeAndCnt) {
-        result['attack-id'] = `${data.cnt}-${data.time}`
+        const time = data.time
+        const cnt = data.cnt
 
-        Object.keys(data).forEach(key => {
-            if (key !== 'time' && key !== 'cnt') {
-                const fieldSchema = schema?.[key] || schema?.fields?.[key]
-                result[key] = transformToAttackId(data[key], fieldSchema)
+        // Iterate schema keys to preserve XML/schema order
+        Object.keys(schema).forEach(schemaKey => {
+            if (schemaKey === 'time' || schemaKey === 'cnt') {
+                // Skip individual time/cnt fields; they are merged into attack-id
+                result['attack-id'] = `${cnt}-${time}`
+            } else if (schemaKey === 'attack-id') {
+                // If schema already defines attack-id, set it here
+                result['attack-id'] = `${cnt}-${time}`
+            } else if (schemaKey in data) {
+                // Recursively transform child fields using their schema
+                result[schemaKey] = transformToAttackId(data[schemaKey], schema[schemaKey])
             }
         })
     } else {
@@ -547,6 +555,26 @@ function transformFromAttackId(data: any, originalSchema: any): any {
     if (Array.isArray(data)) {
         return data.map((item) => {
             const itemSchema = originalSchema?.itemSchema || originalSchema
+
+            // If item is wrapped (single-key object), check inner data for attack-id
+            if (typeof item === 'object' && item !== null && Object.keys(item).length === 1) {
+                const wrapperKey = Object.keys(item)[0]
+                const innerData = item[wrapperKey]
+
+                // Check if innerData has attack-id
+                if (innerData && typeof innerData === 'object' && 'attack-id' in innerData) {
+                    // Find schema for wrapper - try multiple paths
+                    let innerSchema = itemSchema?.[wrapperKey] ||
+                                      itemSchema?.fields?.[wrapperKey] ||
+                                      itemSchema?.itemSchema?.[wrapperKey]
+                    if (innerSchema) {
+                        // Recursively transform with inner schema
+                        const transformed = transformFromAttackId(innerData, innerSchema)
+                        return {[wrapperKey]: transformed}
+                    }
+                }
+            }
+
             return transformFromAttackId(item, itemSchema)
         })
     }
@@ -558,19 +586,18 @@ function transformFromAttackId(data: any, originalSchema: any): any {
     if (hasAttackId && schemaHasTimeAndCnt) {
         const attackId = data['attack-id'] || ''
         const parts = attackId.toString().split('-')
+        const cnt = parseInt(parts[0]) || 0
+        const time = parseInt(parts[1]) || 0
 
-        if (parts.length === 2) {
-            result.cnt = parseInt(parts[0]) || 0
-            result.time = parseInt(parts[1]) || 0
-        } else {
-            result.cnt = 0
-            result.time = 0
-        }
-
-        Object.keys(data).forEach(key => {
-            if (key !== 'attack-id') {
+        // Iterate schema keys in order to preserve XML field order
+        Object.keys(originalSchema).forEach(schemaKey => {
+            if (schemaKey === 'time') {
+                result.time = time
+            } else if (schemaKey === 'cnt') {
+                result.cnt = cnt
+            } else if (schemaKey in data) {
                 // Resolve child schema. Prefer explicit child entry, then fields.
-                let fieldSchema = originalSchema?.[key] || originalSchema?.fields?.[key]
+                let fieldSchema = originalSchema?.[schemaKey] || originalSchema?.fields?.[schemaKey]
 
                 // If not found and parent schema is a switch (or uses _switch metadata),
                 // try to resolve the case schema (preserve wrapper keys like 'source').
@@ -583,14 +610,14 @@ function transformFromAttackId(data: any, originalSchema: any): any {
                     )
 
                     if (parentIsSwitch) {
-                        const caseSchema = getCaseSchema(originalSchema, key)
+                        const caseSchema = getCaseSchema(originalSchema, schemaKey)
                         if (caseSchema && typeof caseSchema === 'object') {
                             fieldSchema = caseSchema
                         }
                     }
                 }
 
-                result[key] = transformFromAttackId(data[key], fieldSchema)
+                result[schemaKey] = transformFromAttackId(data[schemaKey], fieldSchema)
             }
         })
     } else {
@@ -630,15 +657,19 @@ function transformSchemaForAttackId(schema: any): any {
     if (hasTimeAndCnt) {
         const result: any = {}
 
-        result['attack-id'] = {
-            type: 'string',
-            fieldType: 'string',
-            default: `${schema.cnt.default || 0}-${schema.time.default || 0}`,
-            required: true
-        }
-
+        // Iterate schema keys in order and place attack-id where time/cnt appear
         Object.keys(schema).forEach(key => {
-            if (key !== 'time' && key !== 'cnt') {
+            if (key === 'time' || key === 'cnt') {
+                // Replace with attack-id at first occurrence
+                if (!result['attack-id']) {
+                    result['attack-id'] = {
+                        type: 'string',
+                        fieldType: 'string',
+                        default: `${schema.cnt.default || 0}-${schema.time.default || 0}`,
+                        required: true
+                    }
+                }
+            } else {
                 result[key] = transformSchemaForAttackId(schema[key])
             }
         })
