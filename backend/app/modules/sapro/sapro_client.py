@@ -1,6 +1,5 @@
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List
+from typing import List, Dict
 from typing import Optional, Tuple
 
 # removed devices_templates import (DB-only templates now)
@@ -12,9 +11,7 @@ from backend.app.modules.sapro.src import (
 )
 from backend.app.modules.sapro.src.returnTypes.enums import DeviceStatus
 from backend.app.modules.sapro.src.returnTypes.models import SaproDevice
-from backend.app.modules.sapro.src.saproDeviceFunctions import GetDeviceListOfMap
 from backend.app.modules.sapro.src.saproException import SaproException
-from backend.app.modules.sapro.src.saproMapFunctions import getMapListFromServer
 from backend.app.utils.config import settings
 from backend.app.utils.logger import logger
 from backend.app.utils.sapro_ssh import get_sapro_ssh_client
@@ -93,22 +90,114 @@ class SaproCommunicationHandler:
         return bool(self._is_connected)
 
     def get_all_devices(self) -> List[SaproDevice]:
+        """Get all devices from all running maps using SSH commands.
+
+        New flow:
+        1. Get all maps and their status via wspstats
+        2. For each running map, execute devlist command to get devices
+        3. Query device type/version via SNMP (parallelized)
+
+        Returns:
+            List of SaproDevice objects with IP, map, status, type, version
+        """
+        import time
+
         start_time = time.time()
-        devices = []
-        all_maps = getMapListFromServer(self._sapro)
 
-        # Collect all devices first
+        # Step 1: Get all maps with status
+        try:
+            all_maps = self.get_all_maps()
+        except Exception as e:
+            logger.error(f"Failed to get map list: {e}")
+            return []
+
+        # Filter only running maps
+        running_maps = [m for m in all_maps if m['status'] == 'running']
+        logger.info(f"Found {len(running_maps)} running maps out of {len(all_maps)} total maps")
+
+        # Step 2: Get device list from each running map via SSH
+        ssh_client = get_sapro_ssh_client()
         device_tasks = []
-        for sim_map in all_maps:
-            map_name = sim_map.mapName.split("/")[-1].replace(".map", "")
-            devices_from_map = GetDeviceListOfMap(self._sapro, sim_map.mapPort)
 
-            for device in devices_from_map:
-                device_tasks.append((device.devName, map_name, device.devStatus))
+        for map_info in running_maps:
+            map_name = map_info['name']
+            cmd = f"/opt/sapro/bin/sapcnsl -m /opt/sapro/map/{map_name}.map -c devlist"
 
-        logger.info(f"Starting get_all_devices - total devices to query: {len(device_tasks)}")
-        # Query all devices in parallel (max 20 concurrent queries)
+            try:
+                logger.debug(f"Executing devlist for map {map_name}")
+                success, output = ssh_client.execute_command(cmd, check_stderr=False)
+
+                if not success:
+                    logger.error(f"Failed to get device list for map {map_name}: {output}")
+                    continue
+
+                # Parse devlist output
+                lines = output.split('\n')
+                in_table = False
+
+                for line in lines:
+                    # Skip header separators
+                    if line.strip().startswith('---'):
+                        in_table = True
+                        continue
+
+                    # Stop at footer separator
+                    if in_table and line.strip().startswith('---'):
+                        break
+
+                    # Skip non-table lines
+                    if not in_table or not line.strip():
+                        continue
+
+                    # Parse: "Device Name              Status"
+                    parts = line.split()
+                    if not parts:
+                        continue
+
+                    # First part is device name (e.g., "50.50.180.1//161")
+                    device_name = parts[0]
+
+                    if device_name == "Device":
+                        # Skip header line if present
+                        continue
+
+                    # Extract IP (strip //port suffix)
+                    if '//' in device_name:
+                        device_ip = device_name.split('//')[0]
+                    else:
+                        device_ip = device_name
+
+                    # Determine status from second column if present
+                    # Parse status character and map to numeric code
+                    # DeviceStatus mapping: 1=' ', 2='*', 3='R', 4='F', 5='D', 6='S'
+                    status_char = parts[1] if len(parts) > 1 else ''
+
+                    # Map SSH status character to numeric code
+                    if status_char == 'R':
+                        status_code = 3  # OK (running)
+                    elif status_char == '*':
+                        status_code = 2  # LOADING
+                    elif status_char == 'F':
+                        status_code = 4  # FAILED
+                    elif status_char == 'D':
+                        status_code = 5  # DISABLED
+                    elif status_char == 'S':
+                        status_code = 6  # STOPPING
+                    else:
+                        status_code = 1  # SHUTDOWN (empty/space)
+
+                    device_tasks.append((device_ip, map_name, status_code))
+
+            except Exception as e:
+                logger.error(f"Failed to process devlist for map {map_name}: {e}")
+                continue
+
+        logger.info(f"Found {len(device_tasks)} total devices from {len(running_maps)} running maps")
+
+        # Step 3: Query device type/version via SNMP (parallel)
+        devices: List[SaproDevice] = []
         snmp_start = time.time()
+
         with ThreadPoolExecutor(max_workers=20) as executor:
             future_to_device = {
                 executor.submit(self.snmp_get_device_info, dev_ip): (dev_ip, map_name, status)
@@ -123,8 +212,8 @@ class SaproCommunicationHandler:
                         ip_address=dev_ip,
                         map=map_name,
                         status=DeviceStatus.get_status(status),
-                        type=device_type,
-                        version=device_version
+                        type=device_type or "",
+                        version=device_version or ""
                     ))
                 except Exception as e:
                     logger.error(f"Failed to query device {dev_ip}: {e}")
@@ -184,6 +273,91 @@ class SaproCommunicationHandler:
             logger.error(f"SNMP query failed for {device_ip}: {type(e).__name__}: {e}")
             return None, None
 
+    def get_all_maps(self) -> List[Dict[str, str]]:
+        """Get list of all available maps from Sapro workspace with their status.
+
+        Executes SSH command: /opt/sapro/bin/sapcnsl -w /opt/sapro/wsp/default.wsp -c wspstats
+        Parses the table output to extract map names and running status.
+
+        Returns:
+            List of dicts with:
+            - name: Map name (without .map extension and /opt/sapro/map/ prefix)
+            - status: "running" if R in Status column, "" (empty) if stopped, "error" otherwise
+        """
+        cmd = "/opt/sapro/bin/sapcnsl -w /opt/sapro/wsp/default.wsp -c wspstats"
+
+        try:
+            ssh_client = get_sapro_ssh_client()
+            logger.debug(f"Executing wspstats command via SSH: {cmd}")
+
+            success, output = ssh_client.execute_command(cmd, check_stderr=False)
+
+            if not success:
+                raise Exception(f"SSH command failed: {output}")
+
+            # Parse the table output
+            result: List[Dict[str, str]] = []
+            lines = output.split('\n')
+
+            # Find where the table data starts (after "Status    Port #    Map Name" header)
+            in_table = False
+            for line in lines:
+                # Skip header separators (lines with only dashes)
+                if line.strip().startswith('---'):
+                    in_table = True
+                    continue
+
+                # Stop at footer separator
+                if in_table and line.strip().startswith('---'):
+                    break
+
+                # Skip non-table lines
+                if not in_table or not line.strip():
+                    continue
+
+                # Parse table row: "Status    Port #    Map Name"
+                # Status is first column (1 char: R or empty)
+                # Map name is last part after port number
+
+                parts = line.split()
+                if not parts:
+                    continue
+
+                # Determine status from first column
+                status_char = line[0] if len(line) > 0 else ' '
+
+                # Find map name (last element, should contain /opt/sapro/map/)
+                map_path = None
+                for part in reversed(parts):
+                    if '/opt/sapro/map/' in part:
+                        map_path = part
+                        break
+
+                if not map_path:
+                    continue
+
+                # Extract map name (remove path and extension)
+                map_name = map_path.split('/')[-1]
+                if map_name.endswith('.map'):
+                    map_name = map_name[:-4]
+
+                # Determine status
+                if status_char == 'R':
+                    status = "running"
+                elif status_char == ' ':
+                    status = ""  # stopped
+                else:
+                    status = "error"
+
+                result.append({'name': map_name, 'status': status})
+
+            logger.info(f"Retrieved {len(result)} maps from workspace")
+            return result
+
+        except Exception as e:
+            logger.error(f"Failed to get map list via wspstats: {e}", exc_info=True)
+            raise Exception(f"Failed to get map list: {e}")
+
     def get_map_by_type(self, device_type: str) -> Optional[str]:
         """Return the map name for a given device type.
 
@@ -238,21 +412,107 @@ class SaproCommunicationHandler:
         except Exception as e:
             return False, f"Failed to start map {map_name}: {str(e)}"
 
-    def find_device(self, device_ip: str) -> bool:
-        """Find a device in sapro by IP.
+    def start_map_and_wait(self, map_name: str) -> Tuple[bool, str]:
+        """Start a map and wait until it's running.
+
+        Executes async start command, then polls status every 2 seconds.
+        Timeout: 5 minutes (300 seconds).
 
         Args:
-            device_ip: IP string of the device to locate.
+            map_name: Map name (without .map extension)
 
         Returns:
-            (success, info_message) - on success info_message contains the device info repr.
+            (success, message)
         """
+        import time
+
+        map_path = f"/opt/sapro/map/{map_name}.map"
+        cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c start"
+
         try:
-            dev = saproDeviceFunctions.FindDevice(self._sapro, device_ip)
-            return dev
-        except SaproException as e:
-            msg = getattr(e, "toString", lambda: str(e))()
-            raise f"Find device failed for {device_ip}: {msg}"
+            ssh_client = get_sapro_ssh_client()
+            logger.info(f"Starting map {map_name}")
+
+            # Execute start command (async - returns immediately)
+            success, output = ssh_client.execute_command(cmd, check_stderr=False)
+
+            if not success:
+                return False, f"Failed to start map: {output}"
+
+            # Check for success message
+            if "Started sathrd process for map successfully" not in output:
+                return False, f"Unexpected start output: {output}"
+
+            # Poll status every 2 seconds for up to 5 minutes
+            timeout = 300  # 5 minutes
+            poll_interval = 2  # seconds
+            elapsed = 0
+
+            logger.info(f"Polling map {map_name} status until running...")
+
+            while elapsed < timeout:
+                time.sleep(poll_interval)
+                elapsed += poll_interval
+
+                # Get current map status
+                maps = self.get_all_maps()
+                map_status = next((m for m in maps if m['name'] == map_name), None)
+
+                if map_status and map_status['status'] == 'running':
+                    logger.info(f"Map {map_name} is now running (took {elapsed}s)")
+                    return True, f"Map {map_name} started successfully"
+
+                logger.debug(f"Map {map_name} status: {map_status['status'] if map_status else 'not found'}, elapsed: {elapsed}s")
+
+            # Timeout reached
+            return False, f"Timeout waiting for map {map_name} to start (5 minutes)"
+
+        except Exception as e:
+            logger.error(f"Failed to start map {map_name}: {e}", exc_info=True)
+            return False, f"Failed to start map: {e}"
+
+    def stop_map_and_wait(self, map_name: str) -> Tuple[bool, str]:
+        """Stop a map and wait until terminated.
+
+        Executes synchronous stop command that blocks until termination.
+        Timeout: 5 minutes.
+
+        Args:
+            map_name: Map name (without .map extension)
+
+        Returns:
+            (success, message)
+        """
+        map_path = f"/opt/sapro/map/{map_name}.map"
+        cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c stop"
+
+        try:
+            ssh_client = get_sapro_ssh_client()
+            logger.info(f"Stopping map {map_name}")
+
+            # Execute stop command with extended timeout (sync - blocks until done)
+            # Use 320 seconds (5 min + 20s buffer) to allow for 5-minute map termination
+            success, output = ssh_client.execute_command(cmd, check_stderr=False, timeout=320)
+
+            if not success:
+                return False, f"Failed to stop map: {output}"
+
+            # Check for termination message
+            if "PACKET_EVALUATED: Map terminated" in output:
+                logger.info(f"Map {map_name} stopped successfully")
+                return True, f"Map {map_name} stopped successfully"
+
+            # Check for other possible success indicators
+            if "terminated" in output.lower() or "stopped" in output.lower():
+                logger.info(f"Map {map_name} stopped (alternate message): {output}")
+                return True, f"Map {map_name} stopped successfully"
+
+            # Unexpected output
+            return False, f"Unexpected stop output: {output}"
+
+        except Exception as e:
+            logger.error(f"Failed to stop map {map_name}: {e}", exc_info=True)
+            return False, f"Failed to stop map: {e}"
 
     def create_device_file_on_server(self, remote_file_path: str, device_file_data: str) -> Tuple[bool, str]:
         """Write a device file to the sapro server filesystem.
@@ -353,7 +613,8 @@ class SaproCommunicationHandler:
                 if "already running" not in start_msg:
                     return False, start_msg
 
-            found = self.find_device(device_ip)
+            # Inline FindDevice call to avoid static-analysis unresolved-attribute warning
+            found = saproDeviceFunctions.FindDevice(self._sapro, device_ip)
             if found:
                 # start the device
                 devices_list = [device_ip]

@@ -27,6 +27,13 @@ export const SimulatorsPage: React.FC = () => {
   const [startLoading, setStartLoading] = useState<string | null>(null);
   const [stopLoading, setStopLoading] = useState<string | null>(null);
 
+  // Map management state
+  const [mapDialogOpen, setMapDialogOpen] = useState(false);
+  const [maps, setMaps] = useState<Array<{ name: string; status: string }>>([]);
+  const [mapsLoading, setMapsLoading] = useState(false);
+  const [mapStartLoading, setMapStartLoading] = useState<string | null>(null);
+  const [mapStopLoading, setMapStopLoading] = useState<string | null>(null);
+
   const {
     simulators,
     isLoading,
@@ -60,6 +67,20 @@ export const SimulatorsPage: React.FC = () => {
 
     return () => { cancelled = true; };
   }, []);
+
+  // Fetch maps for Map Management dialog
+  const fetchMaps = async () => {
+    setMapsLoading(true);
+    try {
+      const resp = await apiClient.get('/maps');
+      setMaps(resp.data || []);
+    } catch (err: any) {
+      console.error('Failed to load maps:', err);
+      setSnackbar({ open: true, message: 'Failed to load maps', severity: 'error' });
+    } finally {
+      setMapsLoading(false);
+    }
+  };
 
   const handleCreate = () => {
     setSelectedSimulator(null);
@@ -127,6 +148,44 @@ export const SimulatorsPage: React.FC = () => {
       });
     } finally {
       setStopLoading(null);
+    }
+  };
+
+  const handleMapStart = async (mapName: string) => {
+    setMapStartLoading(mapName);
+    try {
+      // Extended timeout for map start (5 minutes + buffer)
+      await apiClient.post(`/maps/${mapName}/start`, {}, { timeout: 330000 }); // 5.5 minutes
+      setSnackbar({ open: true, message: `Map ${mapName} started successfully`, severity: 'success' });
+      await fetchMaps();
+    } catch (err: any) {
+      console.error('Failed to start map:', err);
+      setSnackbar({
+        open: true,
+        message: err?.response?.data?.detail || 'Failed to start map',
+        severity: 'error'
+      });
+    } finally {
+      setMapStartLoading(null);
+    }
+  };
+
+  const handleMapStop = async (mapName: string) => {
+    setMapStopLoading(mapName);
+    try {
+      // Extended timeout for map stop (5 minutes + buffer)
+      await apiClient.post(`/maps/${mapName}/stop`, {}, { timeout: 330000 }); // 5.5 minutes
+      setSnackbar({ open: true, message: `Map ${mapName} stopped successfully`, severity: 'success' });
+      await fetchMaps();
+    } catch (err: any) {
+      console.error('Failed to stop map:', err);
+      setSnackbar({
+        open: true,
+        message: err?.response?.data?.detail || 'Failed to stop map',
+        severity: 'error'
+      });
+    } finally {
+      setMapStopLoading(null);
     }
   };
 
@@ -202,12 +261,20 @@ export const SimulatorsPage: React.FC = () => {
     return 0;
   });
 
+  const handleMapDialogOpen = () => {
+    setMapDialogOpen(true);
+    fetchMaps();
+  };
+
   return (
     <Layout>
       <Box sx={{ padding: 4 }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
           <Typography variant="h4">Simulator Management</Typography>
-          <Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate}>Create Simulator</Button>
+          <Box sx={{ display: 'flex', gap: 2 }}>
+            <Button variant="outlined" onClick={handleMapDialogOpen}>Map Management</Button>
+            <Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate}>Create Simulator</Button>
+          </Box>
         </Box>
 
         <TextField
@@ -264,6 +331,85 @@ export const SimulatorsPage: React.FC = () => {
           <DialogActions>
             <Button onClick={handleDeleteCancel}>Cancel</Button>
             <Button onClick={handleDeleteConfirm} color="error" variant="contained">Delete</Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Map Management Dialog */}
+        <Dialog open={mapDialogOpen} onClose={() => setMapDialogOpen(false)} maxWidth="md" fullWidth>
+          <DialogTitle>Map Management</DialogTitle>
+          <DialogContent>
+            <Alert severity="info" sx={{ marginTop: 2, marginBottom: 2 }}>
+              <Typography variant="body2" sx={{ fontWeight: 600, marginBottom: 0.5 }}>
+                Map Operations Information
+              </Typography>
+              <Typography variant="body2">
+                Starting and stopping maps may take several minutes to complete.
+                Please be patient while the operation is in progress.
+                Default timeout is 5 minutes.
+              </Typography>
+            </Alert>
+            <Box sx={{ minHeight: 400 }}>
+              {mapsLoading ? (
+                <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 400 }}>
+                  <Typography>Loading maps...</Typography>
+                </Box>
+              ) : (
+                <Box sx={{ marginTop: 2 }}>
+                  {maps.length === 0 ? (
+                    <Typography>No maps found</Typography>
+                  ) : (
+                    <Box>
+                      {maps.map((map) => (
+                        <Box
+                          key={map.name}
+                          sx={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            padding: 2,
+                            marginBottom: 1,
+                            border: '1px solid #e0e0e0',
+                            borderRadius: 1,
+                            backgroundColor: map.status === 'running' ? '#e8f5e9' : map.status === 'error' ? '#ffebee' : '#f5f5f5'
+                          }}
+                        >
+                          <Box>
+                            <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>{map.name}</Typography>
+                            <Typography variant="body2" color="textSecondary">
+                              Status: {map.status === 'running' ? 'Running' : map.status === 'error' ? 'Error' : 'Stopped'}
+                            </Typography>
+                          </Box>
+                          <Box sx={{ display: 'flex', gap: 1 }}>
+                            {map.status === 'running' ? (
+                              <Button
+                                variant="outlined"
+                                color="error"
+                                onClick={() => handleMapStop(map.name)}
+                                disabled={mapStopLoading === map.name}
+                              >
+                                {mapStopLoading === map.name ? 'Stopping...' : 'Stop'}
+                              </Button>
+                            ) : (
+                              <Button
+                                variant="contained"
+                                color="success"
+                                onClick={() => handleMapStart(map.name)}
+                                disabled={mapStartLoading === map.name}
+                              >
+                                {mapStartLoading === map.name ? 'Starting...' : 'Start'}
+                              </Button>
+                            )}
+                          </Box>
+                        </Box>
+                      ))}
+                    </Box>
+                  )}
+                </Box>
+              )}
+            </Box>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setMapDialogOpen(false)}>Close</Button>
           </DialogActions>
         </Dialog>
 

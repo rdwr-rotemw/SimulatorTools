@@ -296,6 +296,99 @@ def delete_simulator(
     return SuccessResponse(message="Simulator deleted successfully", data={"ip_address": simulator_ip})
 
 
+@router.get("/maps", response_model=List[Dict[str, str]])
+def list_maps(
+     _current_user=Depends(require_sapro_access),
+     sapro_handler=Depends(get_sapro_handler)
+ ) -> List[Dict[str, str]]:
+    """Get list of all available maps from Sapro workspace with their status.
+
+    Returns:
+        List of dicts with:
+        - name: Map name (without .map extension)
+        - status: "running" (R), "stopped" (empty), or "error" (other)
+    """
+    try:
+        maps = sapro_handler.get_all_maps()
+        return maps
+    except Exception as exc:
+        logger.exception("Failed to get map list from Sapro: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get map list: {exc}"
+        )
+
+
+@router.post("/maps/{map_name}/start", response_model=SuccessResponse)
+def start_map(
+    map_name: str,
+    _current_user=Depends(require_sapro_access),
+    sapro_handler=Depends(get_sapro_handler)
+) -> SuccessResponse:
+    """Start a map and wait until it's running.
+
+    Executes start command and polls status every 2 seconds until running.
+    Timeout: 5 minutes.
+
+    Args:
+        map_name: Map name (without .map extension)
+
+    Returns:
+        Success response when map is running
+    """
+    try:
+        success, message = sapro_handler.start_map_and_wait(map_name)
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=message
+            )
+        return SuccessResponse(message=message, data={"map": map_name, "status": "running"})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to start map %s: %s", map_name, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start map: {exc}"
+        )
+
+
+@router.post("/maps/{map_name}/stop", response_model=SuccessResponse)
+def stop_map(
+    map_name: str,
+    _current_user=Depends(require_sapro_access),
+    sapro_handler=Depends(get_sapro_handler)
+) -> SuccessResponse:
+    """Stop a map and wait until terminated.
+
+    Executes stop command (synchronous, waits for termination).
+    Timeout: 5 minutes.
+
+    Args:
+        map_name: Map name (without .map extension)
+
+    Returns:
+        Success response when map is stopped
+    """
+    try:
+        success, message = sapro_handler.stop_map_and_wait(map_name)
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=message
+            )
+        return SuccessResponse(message=message, data={"map": map_name, "status": "stopped"})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to stop map %s: %s", map_name, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to stop map: {exc}"
+        )
+
+
 @router.post("/simulators/{simulator_ip}/start", response_model=SuccessResponse)
 def start_simulator(
         simulator_ip: str,
