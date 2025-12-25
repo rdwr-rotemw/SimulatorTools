@@ -991,7 +991,7 @@ class MessageBuilder:
                 break
 
         if and_template_field:
-            if relation_value == 1 and 'and' in values:
+            if relation_value == "and" or relation_value == 1 and 'and' in values:
                 # Relation=1 means "and" template has data
                 template_data = values['and']
                 if isinstance(template_data, dict) and 'footprint-values' in template_data:
