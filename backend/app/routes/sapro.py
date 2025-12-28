@@ -389,6 +389,10 @@ def stop_map(
         )
 
 
+# Note: create_map and delete_map endpoints have been removed. Map file management
+# should be performed by the administrator or other tooling outside of these APIs.
+
+
 @router.post("/simulators/{simulator_ip}/start", response_model=SuccessResponse)
 def start_simulator(
         simulator_ip: str,

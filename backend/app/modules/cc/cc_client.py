@@ -101,36 +101,57 @@ class CCHandler:
             (True, 'OK') on success or (False, error_message) on failure.
         """
         try:
-            # Common CyberController form-based auth endpoint (adjust if needed)
             login_url = f"{self.base_url}/mgmt/system/user/login"
             payload = {"username": self.username, "password": self.password}
             resp = self._session.post(login_url, json=payload, verify=self._verify_ssl, timeout=30)
 
-            # Some CC versions set JSESSIONID cookie on any response that sets it; try to extract it
-            jsession = None
-            # cookies may contain 'JSESSIONID' or 'JSESSIONIDCC' etc. Take the first JSESSION-like cookie
-            for name, cookie in self._session.cookies.items():
-                if name.upper().startswith("JSESSION"):
-                    jsession = cookie
-                    break
+            # Handle non-200 responses
+            if resp.status_code != 200:
+                logger.error(f"Login failed to {self.cc_ip}: HTTP {resp.status_code}")
+                return False, f"Login failed: HTTP {resp.status_code}"
+
+            # Parse JSON response
+            try:
+                response_data = resp.json()
+            except Exception as exc:
+                logger.error(f"Failed to parse login response from {self.cc_ip}: {exc}")
+                return False, f"Failed to parse login response: {exc!s}"
+
+            # Check response status
+            status = response_data.get("status")
+
+            if status == "error":
+                # Extract error message from response
+                error_message = response_data.get("message", "Unknown error")
+                logger.error(f"Login failed to {self.cc_ip}: {error_message}")
+                return False, error_message
+
+            if status != "ok":
+                logger.error(f"Login to {self.cc_ip} returned unexpected status: {status}")
+                return False, f"Unexpected login status: {status}"
+
+            # Extract jsessionid from JSON response body
+            jsession = response_data.get("jsessionid")
 
             if not jsession:
-                # fallback: check response headers for set-cookie
-                sc = resp.headers.get("Set-Cookie", "")
-                if "JSESSION" in sc:
-                    jsession = sc
+                logger.error(f"Login to {self.cc_ip} did not return jsessionid in response")
+                return False, "Login response did not contain jsessionid"
 
-            if not jsession:
-                # As a last resort, treat 200/302 as success but warn
-                if resp.status_code not in (200, 302):
-                    logger.error(f"Login failed to {self.cc_ip}: HTTP {resp.status_code}")
-                    return False, f"Login failed: HTTP {resp.status_code}"
-                logger.error(f"Login to {self.cc_ip} did not return JSESSIONID cookie")
-                return False, "Login response did not contain JSESSIONID cookie"
+            # Store credentials and set cookie
+            self._creds = CCCredentials(
+                jsession_id=str(jsession),
+                cc_ip=self.cc_ip,
+                authenticated_at=datetime.now(timezone.utc)
+            )
 
-            self._creds = CCCredentials(jsession_id=str(jsession), cc_ip=self.cc_ip,
-                                        authenticated_at=datetime.now(timezone.utc))
+            # Also set the cookie in the session for subsequent requests
+            try:
+                self._session.cookies.set("JSESSIONID", str(jsession))
+            except Exception as exc:
+                logger.debug("Non-fatal error setting session cookie: %s", exc)
+
             return True, "OK"
+
         except requests.RequestException as exc:
             logger.exception("Request error during login to %s: %s", self.cc_ip, exc)
             return False, f"Request exception during login: {exc!s}"
@@ -917,7 +938,7 @@ class CCHandler:
 def get_cc_handler(cc_ip: str, username: str, password: str) -> CCHandler:
     """Return a singleton CCHandler for the given (cc_ip, username, password).
 
-    The handler will be auto-authenticated (login called) on first creation.
+    The handler is NOT auto-authenticated. Caller must explicitly call login().
     Subsequent calls with the same credentials will return the cached instance.
     """
     key = (cc_ip, username, password)
@@ -926,13 +947,7 @@ def get_cc_handler(cc_ip: str, username: str, password: str) -> CCHandler:
             return _HANDLERS[key]
 
         handler = CCHandler(cc_ip=cc_ip, username=username, password=password)
-        # Auto-authenticate but do not raise on failure; caller can check is_authenticated().
-        try:
-            handler.login()
-        except requests.RequestException:
-            # swallow - login returns (bool, str) and internal exceptions are handled
-            pass
-
+        # Do NOT auto-authenticate - let the caller handle login explicitly
         _HANDLERS[key] = handler
         return handler
 

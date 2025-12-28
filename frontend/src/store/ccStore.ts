@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import { ccService, ManagementPort } from '../api/services/cc.service';
-import { CCState, CCAddDeviceRequest, ManagementPort as ManagementPortType } from '../types/cc.types';
+import { ccService } from '../api/services/cc.service';
+import { CCState, CCAddDeviceRequest } from '../types/cc.types';
 import useFormStore from './useFormStore';
 
 export const useCCStore = create<CCState>((set, get) => ({
@@ -23,7 +23,8 @@ export const useCCStore = create<CCState>((set, get) => ({
       await get().fetchManagementPorts(cc_ip);
       return true;
     } catch (error: any) {
-      const message = error?.response?.data?.message || error?.message || 'Login failed';
+      // Prefer detailed backend validation/message (detail), then message, then generic text
+      const message = error?.response?.data?.detail || error?.response?.data?.message || error?.message || 'Login failed';
       set({ error: message, isLoading: false });
       // Return false to indicate login did not succeed. The store records the error message.
       return false;

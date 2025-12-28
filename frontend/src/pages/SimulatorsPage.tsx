@@ -266,6 +266,13 @@ export const SimulatorsPage: React.FC = () => {
     fetchMaps();
   };
 
+  // New: close handler for Map Management dialog which also refreshes simulators
+  const handleMapDialogClose = () => {
+    setMapDialogOpen(false);
+    // Refresh simulator list when closing map management
+    fetchSimulators();
+  };
+
   return (
     <Layout>
       <Box sx={{ padding: 4 }}>
@@ -335,7 +342,7 @@ export const SimulatorsPage: React.FC = () => {
         </Dialog>
 
         {/* Map Management Dialog */}
-        <Dialog open={mapDialogOpen} onClose={() => setMapDialogOpen(false)} maxWidth="md" fullWidth>
+        <Dialog open={mapDialogOpen} onClose={handleMapDialogClose} maxWidth="md" fullWidth>
           <DialogTitle>Map Management</DialogTitle>
           <DialogContent>
             <Alert severity="info" sx={{ marginTop: 2, marginBottom: 2 }}>
@@ -409,7 +416,7 @@ export const SimulatorsPage: React.FC = () => {
             </Box>
           </DialogContent>
           <DialogActions>
-            <Button onClick={() => setMapDialogOpen(false)}>Close</Button>
+            <Button onClick={handleMapDialogClose}>Close</Button>
           </DialogActions>
         </Dialog>
 

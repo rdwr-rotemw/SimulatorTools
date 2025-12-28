@@ -481,7 +481,8 @@ class SaproCommunicationHandler:
             map_name: Map name (without .map extension)
 
         Returns:
-            (success, message)
+
+        (success, message)
         """
         map_path = f"/opt/sapro/map/{map_name}.map"
         cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c stop"
@@ -513,6 +514,9 @@ class SaproCommunicationHandler:
         except Exception as e:
             logger.error(f"Failed to stop map {map_name}: {e}", exc_info=True)
             return False, f"Failed to stop map: {e}"
+
+    # create_map and delete_map methods were removed. Map creation/deletion is not provided
+    # by this handler anymore. Use higher-level APIs or tools to manage map files if needed.
 
     def create_device_file_on_server(self, remote_file_path: str, device_file_data: str) -> Tuple[bool, str]:
         """Write a device file to the sapro server filesystem.

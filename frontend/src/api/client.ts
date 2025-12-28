@@ -17,6 +17,11 @@ const apiClient: AxiosInstance = axios.create({
   },
 });
 
+// Ensure retry is disabled (no axios-retry usage expected in this project). Some retry wrappers/libraries look
+// for `retries` or `retry` on the axios instance defaults — set them to 0 explicitly to be safe.
+(apiClient.defaults as any).retries = 0;
+(apiClient.defaults as any).retry = 0;
+
 // Request interceptor: attach Authorization header when token exists
 apiClient.interceptors.request.use(
   (config) => {
@@ -33,7 +38,7 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response interceptor: handle 401 Unauthorized globally
+// Response interceptor: handle 401 Unauthorized globally and surface backend error messages
 apiClient.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
@@ -46,6 +51,27 @@ apiClient.interceptors.response.use(
         window.location.href = '/login';
       }
     }
+
+    // Ensure backend error message gets surfaced so callers and UI can show the exact message from the server.
+    try {
+      const respData: any = (error as any).response?.data;
+      if (respData) {
+        let backendMessage: string | undefined;
+        if (typeof respData === 'string') backendMessage = respData;
+        else if (respData.detail) backendMessage = respData.detail;
+        else if (respData.message) backendMessage = respData.message;
+        else if (respData.error) backendMessage = respData.error;
+        else backendMessage = JSON.stringify(respData);
+        if (backendMessage) {
+          // mutate the error.message so the UI that displays `error.message` will show backend text.
+          (error as any).message = backendMessage;
+        }
+      }
+    } catch (e) {
+      // swallow any problems extracting the backend message — don't block the original error flow
+    }
+
+    // Always pass the original AxiosError through so callers still have access to response/status/etc.
     return Promise.reject(error);
   }
 );
