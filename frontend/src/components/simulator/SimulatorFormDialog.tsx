@@ -68,8 +68,10 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
   const currentIpAddress = watch('ip_address' as any);
   const currentMap = watch('map' as any);
 
-  // Check if all required fields are filled (for create mode)
-  const isFormValid = currentIpAddress && currentMap && isValidTemplateSelected;
+  // Check if all required fields are filled (for create mode and edit mode)
+  const isFormValid = isEditMode
+    ? currentMap && isValidTemplateSelected  // Edit mode: map and template required
+    : currentIpAddress && currentMap && isValidTemplateSelected;  // Create mode: ip, map, template required
 
   // Reset form when dialog opens/closes
   useEffect(() => {
@@ -140,11 +142,17 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
     setIsLoading(true);
     try {
       // Ensure we send only the expected shape
-      const payload: any = {
-        ip_address: (data as any).ip_address,
-        map: (data as any).map,
-        template_id: (data as any).template_id,
-      };
+      const payload: any = {};
+      if (isEditMode) {
+        // Edit mode: only map and template_id are editable
+        if ((data as any).map !== undefined) payload.map = (data as any).map;
+        if ((data as any).template_id !== undefined) payload.template_id = (data as any).template_id;
+      } else {
+        // Create mode: required fields
+        payload.ip_address = (data as any).ip_address;
+        payload.map = (data as any).map;
+        payload.template_id = (data as any).template_id;
+      }
       await onSubmit(payload as SimulatorCreate | SimulatorUpdate);
       reset();
       onClose();
@@ -398,6 +406,7 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
               </Box>
             </Box>
 
+
           </Box>
         </form>
       </DialogContent>
@@ -407,7 +416,7 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
           type="submit"
           form="simulator-form"
           variant="contained"
-          disabled={isLoading || (!isEditMode && !isFormValid)}
+          disabled={isLoading || !isFormValid}
         >
           {isLoading ? <CircularProgress size={20} /> : (isEditMode ? 'Save' : 'Create')}
         </Button>

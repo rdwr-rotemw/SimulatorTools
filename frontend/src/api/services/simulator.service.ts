@@ -24,10 +24,9 @@ export const simulatorService = {
   },
 
   updateSimulator: async (ip: string, data: SimulatorUpdate): Promise<Simulator> => {
-    const payload: any = {
-      map: data.map,
-    };
-    if ((data as any).template_id) payload.template = (data as any).template_id;
+    const payload: any = {};
+    if (data.map !== undefined) payload.map = data.map;
+    if (data.template_id !== undefined) payload.template_id = data.template_id;
 
     const response = await apiClient.put<Simulator>(`/simulators/${ip}`, payload);
     return response.data;

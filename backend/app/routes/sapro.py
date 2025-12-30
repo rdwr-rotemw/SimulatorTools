@@ -39,6 +39,86 @@ from backend.app.utils.logger import logger
 router = APIRouter(prefix="/api", tags=["sapro"])
 
 
+# ----------------------------- Helper Functions -----------------------------
+def _replace_ip_in_template(template_dict: Dict[str, Any], ip_address: str) -> Dict[str, Any]:
+    """Replace '<ip>' placeholders in template dict with actual IP address.
+
+    Args:
+        template_dict: Template dictionary with potential <ip> placeholders
+        ip_address: IP address to replace placeholders with
+
+    Returns:
+        Copy of template with <ip> replaced
+    """
+    import copy
+    result = copy.deepcopy(template_dict)
+
+    def replace_recursive(obj):
+        if isinstance(obj, dict):
+            for key, val in obj.items():
+                if isinstance(val, str) and val == '<ip>':
+                    obj[key] = ip_address
+                elif isinstance(val, (dict, list)):
+                    replace_recursive(val)
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                if isinstance(item, str) and item == '<ip>':
+                    obj[i] = ip_address
+                elif isinstance(item, (dict, list)):
+                    replace_recursive(item)
+
+    replace_recursive(result)
+    return result
+
+
+def _load_template_and_convert_to_xml(
+    mongo_db,
+    template_id: str,
+    ip_address: str
+) -> tuple[Dict[str, Any], str]:
+    """Load template from MongoDB and convert to XML.
+
+    Args:
+        mongo_db: MongoDB database instance
+        template_id: Template ObjectId as string
+        ip_address: IP address to inject into template
+
+    Returns:
+        Tuple of (template_doc, xml_content)
+
+    Raises:
+        HTTPException: If template not found or conversion fails
+    """
+    # Load template from MongoDB
+    try:
+        tpl_oid = ObjectId(template_id)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid template_id")
+
+    templates_coll = mongo_db["device_templates"]
+    tpl_doc = templates_coll.find_one({"_id": tpl_oid})
+    if not tpl_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+
+    template_field = tpl_doc.get("template")
+    if template_field is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Template is missing 'template' field")
+
+    # Convert template to XML
+    try:
+        if isinstance(template_field, str):
+            # Raw XML string - replace literal '<ip>' occurrences
+            xml_content = template_field.replace('<ip>', ip_address)
+        else:
+            # JSON dict - replace <ip> placeholders then convert to XML
+            template_with_ip = _replace_ip_in_template(template_field, ip_address)
+            xml_content = json_to_xml(template_with_ip)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to convert template to XML: {exc}")
+
+    return tpl_doc, xml_content
+
+
 # ----------------------------- Simulator Endpoints -----------------------------
 @router.post("/simulators", response_model=SaproSimulatorResponse, status_code=status.HTTP_201_CREATED)
 def create_simulator(
@@ -63,55 +143,8 @@ def create_simulator(
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Simulator with this IP already exists")
 
-    # 2) Load template from MongoDB
-    try:
-        tpl_oid = ObjectId(payload.template_id)
-    except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid template_id")
-
-    templates_coll = mongo_db["device_templates"]
-    tpl_doc = templates_coll.find_one({"_id": tpl_oid})
-    if not tpl_doc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
-
-    template_field = tpl_doc.get("template")
-    if template_field is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Template is missing 'template' field")
-
-    # Helper: replace '<ip>' placeholders inside nested template dict/list
-    def replace_ip_in_template(template_dict: Dict[str, Any], ip_address: str) -> Dict[str, Any]:
-        import copy
-        result = copy.deepcopy(template_dict)
-
-        def replace_recursive(obj):
-            if isinstance(obj, dict):
-                for key, val in obj.items():
-                    if isinstance(val, str) and val == '<ip>':
-                        obj[key] = ip_address
-                    elif isinstance(val, (dict, list)):
-                        replace_recursive(val)
-            elif isinstance(obj, list):
-                for i, item in enumerate(obj):
-                    if isinstance(item, str) and item == '<ip>':
-                        obj[i] = ip_address
-                    elif isinstance(item, (dict, list)):
-                        replace_recursive(item)
-
-        replace_recursive(result)
-        return result
-
-    # 3) Prepare XML content: support stored JSON dict or raw XML string
-    try:
-        if isinstance(template_field, str):
-            # If template is stored as raw XML string, replace literal '<ip>' occurrences in the string
-            # to preserve original behavior where templates contained the <ip> placeholder.
-            xml_content = template_field.replace('<ip>', payload.ip_address)
-        else:
-            # Replace <ip> placeholder with actual IP in the JSON structure, then convert to XML
-            template_with_ip = replace_ip_in_template(template_field, payload.ip_address)
-            xml_content = json_to_xml(template_with_ip)
-    except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to convert template to XML: {exc}")
+    # 2-3) Load template and convert to XML
+    tpl_doc, xml_content = _load_template_and_convert_to_xml(mongo_db, payload.template_id, payload.ip_address)
 
     # 4) Call Sapro to create device using the XML content
     success, message = sapro_handler.create_device(payload.ip_address, xml_content, payload.map)
@@ -228,38 +261,87 @@ def update_simulator(
         payload: SaproSimulatorUpdate,
         db: Session = Depends(get_db),
         _current_user=Depends(require_sapro_access),
+        sapro_handler=Depends(get_sapro_handler),
+        mongo_db=Depends(get_mongo_db),
 ) -> SaproSimulatorResponse:
-    """Update metadata for a Sapro-managed simulator.
+    """Update a Sapro-managed simulator by delete → edit file → add device.
 
-    Only provided fields are updated; Sapro side operations are not
-    performed here (they could be added later if needed).
+    Flow:
+    1. Verify simulator exists in DB
+    2. Validate required fields (template_id and map)
+    3. Delete device from map via SSH (deldev command)
+    4. Overwrite device file with new template content
+    5. Add device back to map via SSH (adddev command)
+    6. Update DB with new metadata
+
+    Only map and template_id are updatable. IP cannot change.
     """
-
+    # 1) Verify simulator exists
     sim = db.get(Simulator, simulator_ip)
     if not sim:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Simulator not found")
 
-    # Apply provided updates (only non-None values)
-    if payload.type is not None:
-        sim.type = payload.type
-    if payload.version is not None:
-        sim.version = payload.version
-    if payload.map is not None:
-        sim.map = payload.map
-    if payload.status is not None:  # backward-compat: keep handling if provided in payload type
-        sim.status = payload.status
+    # 2) Validate required fields
+    template_id = payload.template_id
+    if not template_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="template_id is required for update")
+
+    # Use provided map or keep existing
+    map_name = payload.map if payload.map else sim.map
+    if not map_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Map is required")
+
+    # 3) Delete device from map using SSH deldev command
+    logger.info(f"Deleting device {simulator_ip} from map {map_name}")
+    success, message = sapro_handler.delete_device(map_name, simulator_ip)
+    if not success:
+        logger.warning(f"Delete device warning (continuing anyway): {message}")
+        # Don't fail - device might not be in map, we'll add it back
+
+    # 4) Load template and convert to XML, then overwrite device file
+    logger.info(f"Updating device file for {simulator_ip} with template {template_id}")
+    tpl_doc, xml_content = _load_template_and_convert_to_xml(mongo_db, template_id, simulator_ip)
+
+    device_file_path = f"{sapro_handler.map_directory}{map_name}/{simulator_ip}.map"
+    success, message = sapro_handler.create_device_file_on_server(device_file_path, xml_content)
+    if not success:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update device file: {message}")
+
+    # 5) Add device to map using SSH adddev command (matching Java implementation)
+    logger.info(f"Adding device {simulator_ip} back to map {map_name}")
+    from backend.app.utils.sapro_ssh import get_sapro_ssh_client
+
+    map_path = f"/opt/sapro/map/{map_name}.map"
+    cmd = f"/opt/sapro/bin/sapcnsl -p {sapro_handler.sapro_port} -m {map_path} -c adddev -f {device_file_path}"
+
+    try:
+        ssh_client = get_sapro_ssh_client()
+        success, output = ssh_client.execute_command(cmd, check_stderr=False)
+
+        if not success:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to add device to map: {output}")
+
+        logger.info(f"Device {simulator_ip} added to map successfully: {output}")
+    except Exception as exc:
+        logger.error(f"Failed to execute adddev command: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to add device to map: {exc}")
+
+    # 6) Update DB with new metadata
+    sim.type = tpl_doc.get("name") or sim.type
+    sim.version = tpl_doc.get("description") or sim.version
+    sim.map = map_name
+    sim.status = "running"  # Assume running after successful add
 
     try:
         db.add(sim)
         db.commit()
         db.refresh(sim)
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Simulator conflict on update")
     except SQLAlchemyError as exc:
         db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        logger.error(f"Failed to update DB for {simulator_ip}: {exc}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Device updated on Sapro but failed to update DB: {str(exc)}")
 
+    logger.info(f"Simulator {simulator_ip} updated successfully")
     return SaproSimulatorResponse.model_validate(sim)
 
 

@@ -25,6 +25,8 @@ class SaproSimulatorUpdate(BaseModel):
     type: Optional[str] = Field(None, description="Updated simulator device type")
     version: Optional[str] = Field(None, description="Updated simulator device version")
     map: Optional[str] = Field(None, description="Updated map/profile name")
+    status: Optional[str] = Field(None, description="Updated simulator status")
+    template_id: Optional[str] = Field(None, description="MongoDB _id of the device template to use for update")
 
     model_config = {"from_attributes": True}
 

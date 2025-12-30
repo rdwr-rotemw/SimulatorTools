@@ -193,19 +193,32 @@ export const SimulatorsPage: React.FC = () => {
     try {
       if (selectedSimulator) {
         await updateSimulator(selectedSimulator.ip_address, data as SimulatorUpdate);
-        setSnackbar({ open: true, message: 'Simulator updated', severity: 'success' });
+        setSnackbar({ open: true, message: 'Simulator updated successfully', severity: 'success' });
       } else {
         await createSimulator(data as SimulatorCreate);
-        setSnackbar({ open: true, message: 'Simulator created', severity: 'success' });
+        setSnackbar({ open: true, message: 'Simulator created successfully', severity: 'success' });
       }
 
       // Refresh simulator list from backend to reflect Sapro state
       await fetchSimulators();
-    } catch (err: any) {
-      setSnackbar({ open: true, message: err?.message || 'Operation failed', severity: 'error' });
-    } finally {
+
+      // Close form on success
       setFormOpen(false);
       setSelectedSimulator(null);
+    } catch (err: any) {
+      // Extract error message from backend response
+      const errorMessage = err?.response?.data?.detail || err?.message || 'Operation failed';
+
+      console.error('Simulator operation failed:', err);
+      setSnackbar({
+        open: true,
+        message: errorMessage,
+        severity: 'error'
+      });
+
+      // DO NOT close form on error - let user retry or cancel
+      // setFormOpen(false);  // ← Remove this
+      // setSelectedSimulator(null);  // ← Remove this
     }
   };
 

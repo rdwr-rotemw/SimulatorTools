@@ -38,6 +38,8 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => ({
     } catch (err: any) {
       const message = err?.response?.data?.detail || 'Failed to create simulator';
       set({ error: message, isLoading: false });
+      // Re-throw error so page can catch it
+      throw err;
     }
   },
 
@@ -52,6 +54,8 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => ({
     } catch (err: any) {
       const message = err?.response?.data?.detail || 'Failed to update simulator';
       set({ error: message, isLoading: false });
+      // Re-throw error so page can catch it
+      throw err;
     }
   },
 
