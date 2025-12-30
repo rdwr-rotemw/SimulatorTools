@@ -73,6 +73,33 @@ interface LoadedTemplate {
   created_at: string
 }
 
+// Add PCAP Analyzer interfaces
+interface IRPPcapAnalysisMessage {
+  message_id: string
+  message_name: string
+  count: number
+  packet_numbers: number[]
+  schema_versions: number[]
+}
+
+interface IRPPcapAnalysisError {
+  packet_number: number
+  error: string
+}
+
+interface IRPPcapAnalysisSchemaInfo {
+  schema_available: boolean
+  schema_version: string | null
+}
+
+interface IRPPcapAnalysisResponse {
+  total_packets: number
+  irp_packets: number
+  messages: IRPPcapAnalysisMessage[]
+  errors: IRPPcapAnalysisError[]
+  schema_info: IRPPcapAnalysisSchemaInfo
+}
+
 // Aliases to satisfy consolidated exports used elsewhere
 type SchemaInfo = IRPSchema
 type SchemaListItem = IRPSchema
@@ -135,6 +162,27 @@ class IRPSchemaService {
     const response = await apiClient.delete(`/cc/${currentCC}/irp/templates/${templateId}`)
     return response.data
   }
+
+  // Add PCAP analyzer method
+  async analyzePcap(file: File, schemaId?: string): Promise<IRPPcapAnalysisResponse> {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (schemaId) {
+      formData.append('schema_id', schemaId)
+    }
+
+    const response = await apiClient.post<IRPPcapAnalysisResponse>(
+      '/reporter/irp/analyze-pcap',
+      formData,
+      {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      }
+    )
+
+    return response.data
+  }
 }
 
 export const irpSchemaService = new IRPSchemaService()
@@ -153,4 +201,8 @@ export type {
   SchemaInfo,
   SchemaListItem,
   MessageListItem,
+  IRPPcapAnalysisMessage,
+  IRPPcapAnalysisError,
+  IRPPcapAnalysisSchemaInfo,
+  IRPPcapAnalysisResponse,
 }

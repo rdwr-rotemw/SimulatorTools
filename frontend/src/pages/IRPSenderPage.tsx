@@ -36,6 +36,9 @@ import StopIcon from '@mui/icons-material/Stop'
 import ScienceIcon from '@mui/icons-material/Science'
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore'
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess'
+import UploadFileIcon from '@mui/icons-material/UploadFile'
+import { IRPPcapAnalysisResponse } from '../api/services/irpSchema.service'
+import Checkbox from '@mui/material/Checkbox'
 
 import Layout from '../components/common/Layout'
 import useCCStore from '../store/ccStore'
@@ -745,7 +748,7 @@ export const IRPSenderPage: React.FC = () => {
     const [snackbar, setSnackbar] = useState<{
         open: boolean;
         message: string;
-        severity: 'success' | 'error' | 'info'
+        severity: 'success' | 'error' | 'info' | 'warning'
     }>({open: false, message: '', severity: 'success'})
 
     // Template management state
@@ -774,6 +777,12 @@ export const IRPSenderPage: React.FC = () => {
 
     const sendMessagesOnceRef = React.useRef<() => Promise<boolean>>(async () => false)
 
+    // PCAP Import state
+    const [pcapDialogOpen, setPcapDialogOpen] = useState(false)
+    const [pcapFile, setPcapFile] = useState<File | null>(null)
+    const [pcapResults, setPcapResults] = useState<IRPPcapAnalysisResponse | null>(null)
+    const [analyzingPcap, setAnalyzingPcap] = useState(false)
+    const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([])
 
     // Redirect if missing context
     useEffect(() => {
@@ -1032,6 +1041,160 @@ export const IRPSenderPage: React.FC = () => {
             setSavedTemplates(result.templates)
         } catch (error) {
             alert('Failed to delete template')
+        }
+    }
+
+    // PCAP Import handlers
+    const handleOpenPcapDialog = () => {
+        setPcapDialogOpen(true)
+        setPcapFile(null)
+        setPcapResults(null)
+        setSelectedMessageIds([])
+    }
+
+    const handlePcapFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0]
+        if (file) {
+            setPcapFile(file)
+            setPcapResults(null)
+            setSelectedMessageIds([])
+            // Auto-analyze when file is selected
+            analyzePcapFile(file)
+        }
+    }
+
+    const analyzePcapFile = async (file: File) => {
+        try {
+            setAnalyzingPcap(true)
+            const results = await irpSchemaService.analyzePcap(file, schemaId!)
+            setPcapResults(results)
+
+            // Check if no messages found
+            if (results.messages.length === 0) {
+                setSnackbar({
+                    open: true,
+                    message: 'Warning: No IRP messages found in PCAP',
+                    severity: 'warning'
+                })
+            } else {
+                // Check for unknown messages
+                const unknownMessages = results.messages.filter(msg =>
+                    msg.message_name.includes('Unknown') || msg.message_name.includes('No schema loaded')
+                )
+                if (unknownMessages.length > 0) {
+                    setSnackbar({
+                        open: true,
+                        message: `Warning: ${unknownMessages.length} unknown message(s) found (not in current schema)`,
+                        severity: 'warning'
+                    })
+                }
+
+                setSnackbar({
+                    open: true,
+                    message: `Found ${results.irp_packets} IRP packets with ${results.messages.length} unique message types`,
+                    severity: 'success'
+                })
+            }
+        } catch (error: any) {
+            setSnackbar({
+                open: true,
+                message: error?.response?.data?.detail || 'Failed to analyze PCAP',
+                severity: 'error'
+            })
+        } finally {
+            setAnalyzingPcap(false)
+        }
+    }
+
+    const handleToggleMessage = (messageId: string) => {
+        setSelectedMessageIds(prev =>
+            prev.includes(messageId)
+                ? prev.filter(id => id !== messageId)
+                : [...prev, messageId]
+        )
+    }
+
+    const handleSelectAll = () => {
+        if (!pcapResults) return
+
+        // Only select messages that are NOT unknown
+        const knownMessages = pcapResults.messages.filter(msg =>
+            !msg.message_name.includes('Unknown') && !msg.message_name.includes('No schema loaded')
+        )
+
+        if (selectedMessageIds.length === knownMessages.length) {
+            // Deselect all
+            setSelectedMessageIds([])
+        } else {
+            // Select all known messages
+            setSelectedMessageIds(knownMessages.map(msg => msg.message_id))
+        }
+    }
+
+    const handleLoadSelectedMessages = async () => {
+        if (selectedMessageIds.length === 0) {
+            setSnackbar({open: true, message: 'Please select at least one message', severity: 'error'})
+            return
+        }
+
+        try {
+            setIsLoading(true)
+
+            // Clear current messages
+            setMessages([])
+            setExpandedMessages([])
+
+            const loadedMessages: any[] = []
+            const failedMessages: string[] = []
+
+            // Add selected messages one by one
+            for (const messageId of selectedMessageIds) {
+                const message = pcapResults?.messages.find(msg => msg.message_id === messageId)
+                if (message) {
+                    try {
+                        const template = await irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageId)
+
+                        const transformedData = transformToAttackId(template.template, template.schema)
+                        const transformedSchema = transformSchemaForAttackId(template.schema)
+
+                        loadedMessages.push({
+                            messageType: messageId,
+                            messageName: message.message_name,
+                            data: transformedData,
+                            schema: transformedSchema,
+                            originalSchema: template.schema,
+                        })
+                    } catch (error) {
+                        // Message not found in current schema
+                        failedMessages.push(`${message.message_name} (ID: ${messageId})`)
+                    }
+                }
+            }
+
+            setMessages(loadedMessages)
+
+            // Expand all added messages
+            setExpandedMessages(loadedMessages.map((_, index) => index))
+
+            setPcapDialogOpen(false)
+
+            if (failedMessages.length > 0) {
+                setSnackbar({
+                    open: true,
+                    message: `Loaded ${loadedMessages.length} message(s). ${failedMessages.length} message(s) not found in current schema: ${failedMessages.join(', ')}`,
+                    severity: 'warning'
+                })
+            } else {
+                setSnackbar({
+                    open: true,
+                    message: `Loaded ${loadedMessages.length} message(s) from PCAP`,
+                    severity: 'success'
+                })
+            }
+        } catch (error: any) {
+            setSnackbar({open: true, message: 'Failed to load messages', severity: 'error'})
+        } finally {
+            setIsLoading(false)
         }
     }
 
@@ -1423,6 +1586,14 @@ export const IRPSenderPage: React.FC = () => {
                     >
                         Load Template
                     </Button>
+                    <Button
+                        variant="contained"
+                        color="secondary"
+                        startIcon={<UploadFileIcon />}
+                        onClick={handleOpenPcapDialog}
+                    >
+                        Import from PCAP
+                    </Button>
                     <Box sx={{flex: 1}}/>
                     <Button
                         variant="contained"
@@ -1689,6 +1860,147 @@ export const IRPSenderPage: React.FC = () => {
                 </DialogContent>
                 <DialogActions>
                     <Button onClick={() => setTestDialogOpen(false)}>Close</Button>
+                </DialogActions>
+            </Dialog>
+
+            {/* PCAP Import Dialog */}
+            <Dialog
+                open={pcapDialogOpen}
+                onClose={() => setPcapDialogOpen(false)}
+                maxWidth="md"
+                fullWidth
+            >
+                <DialogTitle>Import Messages from PCAP</DialogTitle>
+                <DialogContent>
+                    <Box sx={{ marginTop: 2 }}>
+                        {/* File Upload */}
+                        <input
+                            accept=".pcap,.pcapng"
+                            style={{ display: 'none' }}
+                            id="pcap-file-input"
+                            type="file"
+                            onChange={handlePcapFileChange}
+                        />
+                        <label htmlFor="pcap-file-input">
+                            <Button
+                                variant="outlined"
+                                component="span"
+                                startIcon={<UploadFileIcon />}
+                                fullWidth
+                                disabled={analyzingPcap}
+                            >
+                                {pcapFile ? pcapFile.name : 'Select PCAP File'}
+                            </Button>
+                        </label>
+
+                        {/* Loading */}
+                        {analyzingPcap && (
+                            <Box sx={{ display: 'flex', justifyContent: 'center', padding: 3 }}>
+                                <CircularProgress />
+                                <Typography sx={{ marginLeft: 2 }}>Analyzing PCAP...</Typography>
+                            </Box>
+                        )}
+
+                        {/* Results */}
+                        {pcapResults && pcapResults.messages.length > 0 && (
+                            <Box sx={{ marginTop: 3 }}>
+                                {/* Summary */}
+                                <Alert severity="info" sx={{ marginBottom: 2 }}>
+                                    Found {pcapResults.irp_packets} IRP packets with {pcapResults.messages.length} unique message types
+                                </Alert>
+
+                                {/* Select All Checkbox */}
+                                <Box sx={{ display: 'flex', alignItems: 'center', marginBottom: 1, paddingLeft: 1 }}>
+                                    <Checkbox
+                                        checked={
+                                            pcapResults.messages.filter(msg =>
+                                                !msg.message_name.includes('Unknown') &&
+                                                !msg.message_name.includes('No schema loaded')
+                                            ).length > 0 &&
+                                            selectedMessageIds.length === pcapResults.messages.filter(msg =>
+                                                !msg.message_name.includes('Unknown') &&
+                                                !msg.message_name.includes('No schema loaded')
+                                            ).length
+                                        }
+                                        indeterminate={
+                                            selectedMessageIds.length > 0 &&
+                                            selectedMessageIds.length < pcapResults.messages.filter(msg =>
+                                                !msg.message_name.includes('Unknown') &&
+                                                !msg.message_name.includes('No schema loaded')
+                                            ).length
+                                        }
+                                        onChange={handleSelectAll}
+                                    />
+                                    <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                                        Select All / Deselect All
+                                    </Typography>
+                                </Box>
+
+                                {/* Message List with Checkboxes */}
+                                <List>
+                                    {pcapResults.messages.map((msg) => {
+                                        // Only disable truly unknown messages (not in schema), not "No schema loaded"
+                                        const isUnknown = msg.message_name.includes('Unknown') &&
+                                                          !msg.message_name.includes('No schema loaded')
+
+                                        return (
+                                            <ListItem key={msg.message_id} disablePadding>
+                                                <ListItemButton
+                                                    onClick={() => !isUnknown && handleToggleMessage(msg.message_id)}
+                                                    disabled={isUnknown}
+                                                >
+                                                    <Checkbox
+                                                        edge="start"
+                                                        checked={selectedMessageIds.includes(msg.message_id)}
+                                                        disabled={isUnknown}
+                                                        tabIndex={-1}
+                                                        disableRipple
+                                                    />
+                                                    <ListItemText
+                                                        primary={
+                                                            <Typography
+                                                                sx={{
+                                                                    color: isUnknown ? 'text.disabled' : 'text.primary',
+                                                                    fontStyle: isUnknown ? 'italic' : 'normal'
+                                                                }}
+                                                            >
+                                                                {msg.message_name}
+                                                            </Typography>
+                                                        }
+                                                        secondary={
+                                                            <Typography variant="body2" color="text.secondary">
+                                                                ID: {msg.message_id} | Count: {msg.count} |{' '}
+                                                                Packets: {msg.packet_numbers.slice(0, 5).join(', ')}
+                                                                {msg.packet_numbers.length > 5 && '...'}
+                                                            </Typography>
+                                                        }
+                                                    />
+                                                </ListItemButton>
+                                            </ListItem>
+                                        )
+                                    })}
+                                </List>
+                            </Box>
+                        )}
+
+                        {/* No messages found */}
+                        {pcapResults && pcapResults.messages.length === 0 && (
+                            <Alert severity="warning" sx={{ marginTop: 3 }}>
+                                No IRP messages found in PCAP file
+                            </Alert>
+                        )}
+                    </Box>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setPcapDialogOpen(false)}>Cancel</Button>
+                    <Button
+                        variant="contained"
+                        color="primary"
+                        onClick={handleLoadSelectedMessages}
+                        disabled={selectedMessageIds.length === 0 || isLoading}
+                    >
+                        {isLoading ? 'Loading...' : `Load Messages (${selectedMessageIds.length})`}
+                    </Button>
                 </DialogActions>
             </Dialog>
         </Layout>

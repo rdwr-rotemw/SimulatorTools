@@ -12,10 +12,11 @@ These endpoints integrate directly with reporter implementation modules.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Union
+from typing import Any, Dict, Union, Optional
 from datetime import datetime, timezone
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
@@ -28,6 +29,7 @@ from backend.app.schemas.reporter import (
     ReporterSNMPPayload,
     ReporterPollingPayload,
     ReporterResponse,
+    IRPPcapAnalysisResponse,
 )
 from backend.app.utils.auth import require_cc_access, get_current_user
 from backend.app.utils.database import get_mongo_db
@@ -451,7 +453,6 @@ async def test_irp_message(
         from backend.app.modules.reporter.irp.core.message_testing_coordinator import MessageTestingCoordinator
         from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo
         import tempfile
-        from pathlib import Path
         from bson import ObjectId
         import base64
 
@@ -660,6 +661,70 @@ async def import_snmp_from_pcap(
         # Unexpected error
         logger.exception("Error processing PCAP: %s", str(e))
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@router.post("/reporter/irp/analyze-pcap", response_model=IRPPcapAnalysisResponse)
+async def analyze_irp_pcap(
+    file: UploadFile = File(...),
+    schema_id: Optional[str] = Form(None),
+    mongo_db=Depends(get_mongo_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """Analyze PCAP file to extract IRP message IDs and names.
+
+    Args:
+        file: PCAP file upload
+        schema_id: Optional schema ID to use for name resolution
+
+    Returns:
+        Analysis results with message statistics
+    """
+    # Validate file extension
+    if not file.filename.endswith('.pcap') and not file.filename.endswith('.pcapng'):
+        raise HTTPException(400, "File must be .pcap or .pcapng")
+
+    try:
+        import tempfile
+
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pcap') as temp_file:
+            content = await file.read()
+            temp_file.write(content)
+            temp_path = Path(temp_file.name)
+
+        try:
+            # Try to load schema - prefer provided schema_id, fallback to most recent
+            schema = None
+            try:
+                if schema_id:
+                    # Use provided schema_id
+                    schema = load_schema_from_mongo(mongo_db, schema_id)
+                else:
+                    # Fallback to most recent schema
+                    schema_doc = mongo_db.irp_schemas.find_one(
+                        sort=[("downloaded_at", -1)]
+                    )
+                    if schema_doc:
+                        schema = load_schema_from_mongo(mongo_db, schema_doc['_id'])
+            except Exception as e:
+                logger.warning(f"Could not load schema for PCAP analysis: {e}")
+                # Continue without schema - will show message IDs only
+
+            # Analyze PCAP
+            from backend.app.modules.reporter.irp.tools.irp_pcap_analyzer import analyze_irp_pcap_file
+            results = analyze_irp_pcap_file(temp_path, schema)
+
+            return results
+
+        finally:
+            # Clean up temp file
+            temp_path.unlink(missing_ok=True)
+
+    except ValueError as e:
+        raise HTTPException(400, f"Invalid PCAP format: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error analyzing IRP PCAP: {str(e)}")
+        raise HTTPException(500, f"Error analyzing PCAP: {str(e)}")
 
 
 __all__ = ["router"]

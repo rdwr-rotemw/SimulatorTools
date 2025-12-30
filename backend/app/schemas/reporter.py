@@ -6,7 +6,7 @@ Defaults for optional fields are handled in the reporter/attack_traps modules.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -68,10 +68,40 @@ class ReporterResponse(BaseModel):
     messages: Dict[str, Tuple[bool, str]] | None = None
 
 
+class IRPPcapAnalysisMessage(BaseModel):
+    message_id: str
+    message_name: str
+    count: int
+    packet_numbers: List[int]
+    schema_versions: List[int] = []
+
+
+class IRPPcapAnalysisError(BaseModel):
+    packet_number: int
+    error: str
+
+
+class IRPPcapAnalysisSchemaInfo(BaseModel):
+    schema_available: bool
+    schema_version: Optional[str] = None
+
+
+class IRPPcapAnalysisResponse(BaseModel):
+    total_packets: int
+    irp_packets: int
+    messages: List[IRPPcapAnalysisMessage]
+    errors: List[IRPPcapAnalysisError] = []
+    schema_info: IRPPcapAnalysisSchemaInfo
+
+
 __all__ = [
     "TrapConfig",
     "ReporterSNMPPayload",
     "ReporterIRPPayload",
     "ReporterPollingPayload",
     "ReporterResponse",
+    "IRPPcapAnalysisMessage",
+    "IRPPcapAnalysisError",
+    "IRPPcapAnalysisSchemaInfo",
+    "IRPPcapAnalysisResponse",
 ]
