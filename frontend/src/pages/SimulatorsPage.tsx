@@ -99,17 +99,23 @@ export const SimulatorsPage: React.FC = () => {
 
   const handleDeleteConfirm = async () => {
     if (!simulatorToDelete) return;
-    try {
-      await deleteSimulator(simulatorToDelete);
-      setSnackbar({ open: true, message: 'Simulator deleted', severity: 'success' });
 
+    // Close dialog IMMEDIATELY to prevent flickering
+    setDeleteDialogOpen(false);
+    const ipToDelete = simulatorToDelete;
+    setSimulatorToDelete(null);
+
+    try {
+      await deleteSimulator(ipToDelete);
+      setSnackbar({ open: true, message: 'Simulator deleted', severity: 'success' });
       // Refresh simulator list after deletion
       await fetchSimulators();
     } catch (err: any) {
-      setSnackbar({ open: true, message: err?.message || 'Failed to delete simulator', severity: 'error' });
-    } finally {
-      setDeleteDialogOpen(false);
-      setSimulatorToDelete(null);
+      setSnackbar({
+        open: true,
+        message: err?.response?.data?.detail || err?.message || 'Failed to delete simulator',
+        severity: 'error'
+      });
     }
   };
 
