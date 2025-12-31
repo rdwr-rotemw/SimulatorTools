@@ -22,10 +22,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import paramiko
 import requests
 import urllib3
-from scp import SCPClient, SCPException
+
+from backend.app.utils.cc_ssh import get_cc_ssh_client
 
 # Suppress only the single InsecureRequestWarning raised when verify=False
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -625,30 +625,25 @@ class CCHandler:
             return False, f"Exception in add_device_range: {exc!s}"
 
     def get_ids_data_formats(self, username: str, password: str) -> Tuple[bool, Union[str, List[str]]]:
-        """Connect via SSH as root to enumerate IdsDataFormat XML files.
+        """Connect via SSH to enumerate IdsDataFormat XML files.
 
         Returns (True, [list_of_files]) or (False, error_message).
         """
-        ssh = None
         try:
-            # Connect via SSH using provided root credentials
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(hostname=self.cc_ip, port=22, username=username, password=password, timeout=10)
+            ssh_client = get_cc_ssh_client(cc_ip=self.cc_ip, username=username, password=password)
 
-            found_files = []
+            cmd = "ls /var/lib/docker/radware-storage/dc_config/kvision-configuration-service/config/conf | grep Ids | grep -v prop"
+            success, output = ssh_client.execute_command(cmd, check_stderr=False)
 
-            stdin, stdout, stderr = ssh.exec_command(
-                "ls /var/lib/docker/radware-storage/dc_config/kvision-configuration-service/config/conf | grep Ids |grep -v prop")
-            out = stdout.read().decode("utf-8", errors="ignore").strip()
-            if out:
-                found_files = [line.strip() for line in out.split('\n') if line.strip()]
-        except paramiko.SSHException as exc:
-            return False, f"SSH error: {exc!s}"
-        finally:
-            if ssh:
-                ssh.close()
-        return True, found_files
+            if not success:
+                return False, f"Failed to list IdsDataFormat files: {output}"
+
+            found_files = [line.strip() for line in output.split('\n') if line.strip()]
+            return True, found_files
+
+        except Exception as exc:
+            logger.error(f"Failed to get IdsDataFormat files: {exc}", exc_info=True)
+            return False, f"Error listing files: {exc!s}"
 
     def _version_to_data_format(self, version: str) -> str:
         """Convert sim version string to IdsDataFormat format.
@@ -789,54 +784,29 @@ class CCHandler:
 
         Returns (True, local_path) or (False, error_message)
         """
-        ssh = None
         local_dir = "/tmp/data_formats"
         os.makedirs(local_dir, exist_ok=True)
 
         # Helper to attempt download of a specific version
         def _attempt_download(version: str) -> Tuple[bool, str, Optional[Exception]]:
-            nonlocal ssh
             try:
                 format_version = self._version_to_data_format(version or '')
                 filename = f"IdsDataFormat{format_version}.xml"
                 remote_path = f"/var/lib/docker/radware-storage/dc_config/kvision-configuration-service/config/conf/{filename}"
                 local_path = f"{local_dir}/{filename}"
 
-                # SSH connect and SCP download
-                ssh = paramiko.SSHClient()
-                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                ssh.connect(hostname=self.cc_ip, port=22, username=username, password=password, timeout=10)
+                # Use centralized SSH client for SCP download
+                ssh_client = get_cc_ssh_client(cc_ip=self.cc_ip, username=username, password=password)
+                success, message = ssh_client.download_file(remote_path, local_path)
 
-                with SCPClient(ssh.get_transport()) as scp_client:
-                    scp_client.get(remote_path, local_path)
-
-                try:
-                    ssh.close()
-                    ssh = None
-                except Exception as exc:
-                    logger.debug("Error closing SSH after download: %s", exc)
+                if not success:
+                    # File not found or download failed - return for fallback logic
+                    return False, "", Exception(message)
 
                 return True, local_path, None
-
-            except (SCPException, FileNotFoundError, IOError) as exc:
-                # File not found - this is where we want to fallback
-                try:
-                    if ssh:
-                        ssh.close()
-                        ssh = None
-                except Exception as exc2:
-                    logger.debug("Error closing SSH in exception handler: %s", exc2)
-                return False, "", exc
-
-            except (paramiko.SSHException, paramiko.AuthenticationException) as exc:
-                # Auth/connection error - don't fallback, propagate immediately
-                try:
-                    if ssh:
-                        ssh.close()
-                        ssh = None
-                except Exception as exc2:
-                    logger.debug("Error closing SSH in exception handler: %s", exc2)
-                logger.exception("SSH/Auth error for IdsDataFormat: %s", exc)
+            except Exception as exc:
+                # Unexpected error - propagate
+                logger.exception("Error downloading IdsDataFormat: %s", exc)
                 raise
 
         try:
@@ -897,11 +867,6 @@ class CCHandler:
         except Exception as exc:
             # Unexpected error
             logger.exception("Unexpected error in download_ids_data_format: %s", exc)
-            try:
-                if ssh:
-                    ssh.close()
-            except Exception as exc2:
-                logger.debug("Error closing SSH in final exception handler: %s", exc2)
             return False, f"Unexpected download error: {exc!s}"
 
     def get_management_ports(self) -> Tuple[bool, Union[str, List[Dict[str, str]]]]:

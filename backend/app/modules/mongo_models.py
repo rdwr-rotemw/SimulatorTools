@@ -110,6 +110,30 @@ class DeviceTemplateUpdate(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+class DeviceDriver(BaseModel):
+    """Device Driver metadata stored in MongoDB"""
+    filename: str  # DefensePro-10.6.0.0-DD-1.00-17.jar
+    device_type: str  # DefensePro, Alteon
+    device_version: str  # 10.6.0.0
+    dd_version: str  # 1.00-17
+    file_path: str  # /app/resources/device_drivers/DefensePro-10.6.0.0-DD-1.00-17.jar
+    file_size: int  # bytes
+    upload_date: datetime
+    uploaded_by: Optional[str] = None
+    status: str = "available"  # available, deployed, failed
+    last_deployed: Optional[datetime] = None
+
+
+class DeviceDriverUpload(BaseModel):
+    """Request for uploading device driver (file handled separately in multipart)"""
+    pass
+
+
+class DeviceDriverDeploy(BaseModel):
+    """Request for deploying device drivers to CC"""
+    driver_filenames: list[str]  # List of JAR filenames to deploy
+
+
 __all__ = [
     "SNMPTrapTemplate",
     "IRPMessageTemplate",
@@ -117,4 +141,7 @@ __all__ = [
     "DeviceTemplate",
     "DeviceTemplateCreate",
     "DeviceTemplateUpdate",
+    "DeviceDriver",
+    "DeviceDriverUpload",
+    "DeviceDriverDeploy",
 ]

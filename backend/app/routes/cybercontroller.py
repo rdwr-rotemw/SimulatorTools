@@ -33,6 +33,17 @@ from backend.app.modules.mongo_models import IRPMessageTemplate
 from backend.app.utils.auth import require_cc_access
 from backend.app.utils.database import get_db
 
+from fastapi import UploadFile, File
+from backend.app.utils.device_driver import (
+    list_existing_drivers,
+    match_driver_filename,
+    parse_driver_filename,
+    save_uploaded_driver,
+    deploy_multiple_drivers,
+)
+from backend.app.modules.mongo_models import DeviceDriverDeploy
+from datetime import datetime, timezone
+
 logger = logging.getLogger("sim-tools.cybercontroller")
 
 router = APIRouter(prefix="/api", tags=["cybercontroller"])
@@ -1037,6 +1048,307 @@ async def delete_irp_schema(
             detail=f"Error deleting schema: {exc!s}"
         )
 
+
+@router.get("/cc/{cc_ip}/device-drivers")
+async def list_device_drivers(
+    cc_ip: str,
+    _current_user=Depends(require_cc_access),
+) -> Dict[str, Any]:
+    """List all available device drivers (existing + uploaded).
+
+    Returns:
+        Dict with:
+        - drivers: List of driver metadata (filename, device_type, device_version, dd_version)
+        - total: Total count
+
+    Example response:
+        {
+            "drivers": [
+                {
+                    "filename": "DefensePro-10.6.0.0-DD-1.00-17.jar",
+                    "device_type": "DefensePro",
+                    "device_version": "10.6.0.0",
+                    "dd_version": "1.00-17"
+                }
+            ],
+            "total": 15
+        }
+    """
+    try:
+        filenames = list_existing_drivers()
+
+        drivers = []
+        for filename in filenames:
+            parsed = parse_driver_filename(filename)
+            if parsed:
+                drivers.append({
+                    "filename": filename,
+                    "device_type": parsed["device_type"],
+                    "device_version": parsed["device_version"],
+                    "dd_version": parsed["dd_version"],
+                })
+
+        logger.info(f"Listed {len(drivers)} device drivers")
+
+        return {
+            "drivers": drivers,
+            "total": len(drivers)
+        }
+
+    except Exception as exc:
+        logger.error(f"Failed to list device drivers: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list device drivers: {str(exc)}"
+        )
+
+
+@router.post("/cc/{cc_ip}/device-drivers/upload")
+async def upload_device_driver(
+    cc_ip: str,
+    file: UploadFile = File(...),
+    _current_user=Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
+) -> Dict[str, Any]:
+    """Upload a new device driver JAR file.
+
+    Args:
+        cc_ip: CyberController IP (for route consistency)
+        file: JAR file to upload
+
+    Returns:
+        Dict with:
+        - message: Success message
+        - filename: Uploaded filename
+        - metadata: Driver metadata
+
+    Errors:
+        - 400: Invalid filename format
+        - 409: Driver already exists
+        - 500: Upload failed
+    """
+    try:
+        # Validate file extension
+        if not file.filename or not file.filename.endswith('.jar'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File must be a .jar file"
+            )
+
+        # Save file and get metadata
+        success, message, metadata = await save_uploaded_driver(
+            file=file,
+            uploaded_by=_current_user.username if _current_user else None
+        )
+
+        if not success:
+            if "already exists" in message.lower():
+                # Driver exists - that's OK! Return success so user can still install it
+                # Find the existing driver metadata
+                existing_filename = message.split(": ")[1] if ": " in message else file.filename
+
+                return {
+                    "message": "Driver already available. You can install it below.",
+                    "filename": existing_filename,
+                    "metadata": None  # Don't need metadata for existing driver
+                }
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=message
+                )
+
+        # Store metadata in MongoDB
+        if metadata:
+            try:
+                collection = mongo_db["device_drivers"]
+                result = collection.insert_one(metadata)
+                logger.info(f"Stored driver metadata in MongoDB: {metadata['filename']}")
+
+                # Convert ObjectId to string for JSON serialization
+                metadata["_id"] = str(result.inserted_id)
+            except Exception as mongo_exc:
+                logger.warning(f"Failed to store metadata in MongoDB (non-fatal): {mongo_exc}")
+
+        # Convert datetime to ISO string for JSON serialization
+        if metadata and "upload_date" in metadata:
+            metadata["upload_date"] = metadata["upload_date"].isoformat()
+
+        return {
+            "message": message,
+            "filename": metadata["filename"] if metadata else file.filename,
+            "metadata": metadata
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Failed to upload device driver: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Upload failed: {str(exc)}"
+        )
+
+
+@router.post("/cc/{cc_ip}/device-drivers/deploy")
+async def deploy_device_drivers(
+    cc_ip: str,
+    payload: DeviceDriverDeploy,
+    _current_user=Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
+) -> Dict[str, Any]:
+    """Deploy selected device drivers to CyberController.
+
+    Workflow:
+    1. Validate all driver filenames exist
+    2. Deploy each driver sequentially (continue on failure)
+    3. Update MongoDB deployment status
+    4. Return summary with succeeded/failed counts
+
+    Args:
+        cc_ip: CyberController IP address
+        payload: List of driver filenames to deploy
+
+    Returns:
+        Dict with:
+        - total: Total drivers attempted
+        - succeeded: Number of successful deployments
+        - failed: Number of failed deployments
+        - results: Per-driver results with filename, success, message
+
+    Example request:
+        {
+            "driver_filenames": [
+                "DefensePro-10.6.0.0-DD-1.00-17.jar",
+                "DefensePro-8.30.0.0-DD-1.00-7.jar"
+            ]
+        }
+
+    Example response:
+        {
+            "total": 2,
+            "succeeded": 2,
+            "failed": 0,
+            "results": [
+                {
+                    "filename": "DefensePro-10.6.0.0-DD-1.00-17.jar",
+                    "success": true,
+                    "message": "M_01472: Upload of device driver succeeded."
+                },
+                {
+                    "filename": "DefensePro-8.30.0.0-DD-1.00-7.jar",
+                    "success": true,
+                    "message": "Already exists: M_00777: The device driver ... already exists"
+                }
+            ]
+        }
+    """
+    try:
+        driver_filenames = payload.driver_filenames
+
+        if not driver_filenames:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No drivers specified for deployment"
+            )
+
+        # Validate all drivers exist before starting deployment
+        existing_drivers = list_existing_drivers()
+        missing_drivers = [f for f in driver_filenames if f not in existing_drivers]
+
+        if missing_drivers:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Driver files not found: {', '.join(missing_drivers)}"
+            )
+
+        logger.info(f"Starting deployment of {len(driver_filenames)} drivers to CC {cc_ip}")
+
+        # Deploy drivers sequentially
+        summary = deploy_multiple_drivers(cc_ip, driver_filenames)
+
+        # Update MongoDB deployment status for successful deployments
+        try:
+            collection = mongo_db["device_drivers"]
+            now = datetime.now(timezone.utc)
+
+            for result in summary["results"]:
+                if result["success"]:
+                    collection.update_one(
+                        {"filename": result["filename"]},
+                        {
+                            "$set": {
+                                "status": "deployed",
+                                "last_deployed": now
+                            }
+                        },
+                        upsert=True
+                    )
+        except Exception as mongo_exc:
+            logger.warning(f"Failed to update MongoDB deployment status (non-fatal): {mongo_exc}")
+
+        # Log summary
+        logger.info(
+            f"Deployment to CC {cc_ip} complete: "
+            f"{summary['succeeded']}/{summary['total']} succeeded, "
+            f"{summary['failed']}/{summary['total']} failed"
+        )
+
+        return summary
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Failed to deploy device drivers: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Deployment failed: {str(exc)}"
+        )
+
+
+@router.get("/cc/{cc_ip}/device-drivers/match")
+async def match_device_drivers(
+    cc_ip: str,
+    device_type: str,
+    device_version: str,
+    _current_user=Depends(require_cc_access),
+) -> Dict[str, Any]:
+    """Find matching device driver for given type and version.
+
+    Utility endpoint to help match simulators to available drivers.
+    Args:
+        cc_ip: CyberController IP
+        device_type: Device type (e.g., "DefensePro")
+        device_version: Device version (e.g., "10.6.0.0")
+
+    Returns:
+        Dict with:
+        - matched: bool
+        - filename: Matching JAR filename if found, null otherwise
+
+    Example:
+        GET /api/cc/172.17.154.218/device-drivers/match?device_type=DefensePro&device_version=10.6.0.0
+
+        Response:
+        {
+            "matched": true,
+            "filename": "DefensePro-10.6.0.0-DD-1.00-17.jar"
+        }
+    """
+    try:
+        filename = match_driver_filename(device_type, device_version)
+
+        return {
+            "matched": filename is not None,
+            "filename": filename
+        }
+
+    except Exception as exc:
+        logger.error(f"Failed to match device driver: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Match failed: {str(exc)}"
+        )
 
 
 __all__ = ["router"]

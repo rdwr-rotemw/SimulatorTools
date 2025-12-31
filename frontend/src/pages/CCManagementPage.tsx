@@ -23,6 +23,9 @@ import { CCAddDeviceDialog } from '../components/cc/CCAddDeviceDialog';
 import useCCStore from '../store/ccStore';
 import { CCAddDeviceRequest } from '../types/cc.types';
 
+import { CCDeviceDriverDialog } from '../components/cc/CCDeviceDriverDialog';
+import CloudUploadIcon from '@mui/icons-material/CloudUpload';
+
 const CCManagementPage: React.FC = () => {
   const navigate = useNavigate();
 
@@ -37,6 +40,7 @@ const CCManagementPage: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [sortBy, setSortBy] = useState<'management_ip' | 'name' | 'device_type' | 'status'>('management_ip');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+  const [deviceDriverDialogOpen, setDeviceDriverDialogOpen] = useState(false);
 
   const currentCC = useCCStore((state) => state.currentCC);
   const devices = useCCStore((state) => state.devices);
@@ -56,9 +60,13 @@ const CCManagementPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-refresh devices list every 10 seconds while connected to a CC
+  // Auto-refresh devices list every 30 seconds while connected to a CC
+  // Pause auto-refresh when device driver dialog is open
   useEffect(() => {
     if (!currentCC) return;
+
+    // Don't auto-refresh when dialogs are open
+    if (deviceDriverDialogOpen || addDialogOpen) return;
 
     const interval = setInterval(() => {
       try {
@@ -71,9 +79,11 @@ const CCManagementPage: React.FC = () => {
     }, 30000); // 30 seconds
 
     return () => clearInterval(interval);
-  }, [currentCC, fetchDevices]);
+  }, [currentCC, fetchDevices, deviceDriverDialogOpen, addDialogOpen]);
 
   const handleAddDevice = () => setAddDialogOpen(true);
+
+  const handleDeviceDriverClick = () => setDeviceDriverDialogOpen(true);
 
   const handleAddDeviceSubmit = async (data: CCAddDeviceRequest) => {
     if (!currentCC) return;
@@ -183,6 +193,14 @@ const CCManagementPage: React.FC = () => {
               Logout from CC
             </Button>
 
+            <Button
+              startIcon={<CloudUploadIcon />}
+              variant="outlined"
+              onClick={handleDeviceDriverClick}
+            >
+              Upload Device Drivers
+            </Button>
+
             <Button startIcon={<AddIcon />} variant="contained" onClick={handleAddDevice}>
               Add Device
             </Button>
@@ -247,6 +265,13 @@ const CCManagementPage: React.FC = () => {
           </Alert>
         </Snackbar>
       </Box>
+
+      <CCDeviceDriverDialog
+        open={deviceDriverDialogOpen}
+        onClose={() => setDeviceDriverDialogOpen(false)}
+        ccIp={currentCC || ''}
+        devices={devices}
+      />
     </Layout>
   );
 };
