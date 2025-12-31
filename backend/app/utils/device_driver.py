@@ -20,12 +20,12 @@ from backend.app.utils.logger import logger
 from backend.app.utils.cc_ssh import get_cc_ssh_client
 
 # Determine base path (works in both dev and Docker)
-# In Docker: /app/resources/
+# In Docker: /app/backend/app/resources/
 # In Dev: <project_root>/backend/resources/
-if os.path.exists("/app/resources"):
+if os.path.exists("/app/backend/app/resources"):
     # Docker environment
-    DEVICE_DRIVER_STORAGE_PATH = "/app/resources/device_drivers"
-    DEVICE_DRIVER_SCRIPT_PATH = "/app/resources/scripts/upload_DD.sh"
+    DEVICE_DRIVER_STORAGE_PATH = "/app/backend/app/resources/device_drivers"
+    DEVICE_DRIVER_SCRIPT_PATH = "/app/backend/app/resources/scripts/upload_DD.sh"
 else:
     # Development environment - find project root
     current_file = Path(__file__)  # backend/app/utils/device_driver.py
