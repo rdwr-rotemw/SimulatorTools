@@ -294,6 +294,29 @@ export const SNMPTrapForm: React.FC<SNMPTrapFormProps> = ({ trap, onChange, erro
             helperText="Format: 0-0-0"
           />
         </Grid>
+
+        {/* Row 10 - Pause */}
+        <Grid size={12}>
+          <TextField
+            label="Pause After Trap (seconds)"
+            type="number"
+            fullWidth
+            value={trap.pause ?? ''}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === '') {
+                handleFieldChange('pause', undefined);
+              } else {
+                const num = parseInt(val, 10);
+                const clamped = Math.max(0, Math.min(60, num));
+                handleFieldChange('pause', clamped);
+              }
+            }}
+            error={trap.pause !== undefined && (trap.pause < 0 || trap.pause > 60)}
+            helperText={trap.pause !== undefined && (trap.pause < 0 || trap.pause > 60) ? 'Pause must be between 0 and 60 seconds' : 'Optional pause in seconds after sending this trap'}
+            inputProps={{ min: 0, max: 60, step: 1 }}
+          />
+        </Grid>
       </Grid>
     </Box>
   );

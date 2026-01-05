@@ -19,6 +19,7 @@ export interface SNMPTrap {
   risk?: AttackRisk;
   action?: AttackAction;
   direction?: AttackDirection;
+  pause?: number; // Optional pause in seconds (max 60)
 }
 
 export interface SNMPPayload {
@@ -42,4 +43,3 @@ export interface SNMPFormErrors {
   packetBandwidth?: string;
   samples?: string;
 }
-

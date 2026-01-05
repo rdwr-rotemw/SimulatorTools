@@ -44,7 +44,9 @@ class SNMPTemplateService {
 
   async sendTraps(destinationPortIp: string, simulatorIp: string, traps: SNMPTrap[]): Promise<void> {
     const url = `/cc/${destinationPortIp}/simulators/${simulatorIp}/reporter/snmp`;
-    await apiClient.post(url, { traps });
+    await apiClient.post(url, { traps }, {
+      timeout: 600000, // 10 minutes - allows for pause delays and multiple traps
+    });
   }
 }
 

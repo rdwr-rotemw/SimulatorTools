@@ -67,6 +67,10 @@ export const SNMPPage: React.FC = () => {
   const [errors, setErrors] = useState<{ [key: number]: SNMPFormErrors }>({});
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({ open: false, message: '', severity: 'success' });
 
+  // Sending progress state
+  const [isSending, setIsSending] = useState(false);
+  const [sendStartTime, setSendStartTime] = useState<number | null>(null);
+
   // Loop functionality state
   const [loopDialogOpen, setLoopDialogOpen] = useState(false);
   const [loopDelay, setLoopDelay] = useState<number>(15); // seconds - default 15s
@@ -393,13 +397,24 @@ export const SNMPPage: React.FC = () => {
       return;
     }
 
+    // Before sending
+    const totalPause = traps.reduce((sum, trap) => sum + (trap.pause || 0), 0);
+    setIsSending(true);
+    setSendStartTime(Date.now());
+
     try {
       setSnackbar({ open: true, message: 'Sending traps...', severity: 'info' });
       await snmpTemplateService.sendTraps(selectedDestinationPort, selectedSimulator, traps);
-      setSnackbar({ open: true, message: `Successfully sent ${traps.length} trap(s)`, severity: 'success' });
+      // After sending
+      const elapsed = Math.round((Date.now() - sendStartTime!) / 1000);
+      setSnackbar({ open: true, message: `Successfully sent ${traps.length} trap(s) in ${elapsed} seconds`, severity: 'success' });
     } catch (error: any) {
       const errorMsg = error.response?.data?.detail || error.message || 'Failed to send traps';
       setSnackbar({ open: true, message: errorMsg, severity: 'error' });
+    } finally {
+      // Finally block
+      setIsSending(false);
+      setSendStartTime(null);
     }
   };
 
@@ -676,9 +691,9 @@ export const SNMPPage: React.FC = () => {
             color="primary"
             startIcon={<SendIcon />}
             onClick={handleSend}
-            disabled={!selectedSimulator || !selectedDestinationPort || isLooping}
+            disabled={!selectedSimulator || !selectedDestinationPort || isLooping || isSending}
           >
-            Send Traps ({traps.length})
+            {isSending ? 'Sending...' : `Send Traps (${traps.length})`}
           </Button>
 
           {!isLooping ? (
@@ -687,7 +702,7 @@ export const SNMPPage: React.FC = () => {
               color="secondary"
               startIcon={<LoopIcon />}
               onClick={handleOpenLoopDialog}
-              disabled={!selectedSimulator || !selectedDestinationPort}
+              disabled={!selectedSimulator || !selectedDestinationPort || isSending}
             >
               Send Loop
             </Button>
@@ -783,6 +798,25 @@ export const SNMPPage: React.FC = () => {
         <DialogActions>
           <Button onClick={() => setLoadDialogOpen(false)}>Cancel</Button>
         </DialogActions>
+      </Dialog>
+
+      {/* Sending Progress Dialog */}
+      <Dialog
+        open={isSending}
+        maxWidth="sm"
+        fullWidth
+        disableEscapeKeyDown
+      >
+        <DialogContent>
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+            <CircularProgress size={60} />
+            <Typography variant="h6">Sending {traps.length} Trap{traps.length > 1 ? 's' : ''}...</Typography>
+            <Typography variant="body2" color="textSecondary">This may take several minutes with pause delays. Please wait...</Typography>
+            {sendStartTime && (
+              <Typography variant="caption">Elapsed: {Math.round((Date.now() - sendStartTime) / 1000)}s</Typography>
+            )}
+          </Box>
+        </DialogContent>
       </Dialog>
 
       <Snackbar

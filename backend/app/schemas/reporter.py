@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TrapConfig(BaseModel):
@@ -39,6 +39,7 @@ class TrapConfig(BaseModel):
     risk: str | None = None
     action: str | None = None
     direction: str | None = None
+    pause: int | None = Field(None, ge=0, le=60, description="Pause in seconds after sending trap (max 60)")
 
 
 class ReporterSNMPPayload(BaseModel):
