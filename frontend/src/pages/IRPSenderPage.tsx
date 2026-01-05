@@ -740,6 +740,7 @@ export const IRPSenderPage: React.FC = () => {
         data: Record<string, any>;
         schema: Record<string, any>;
         originalSchema: Record<string, any>;
+        pause?: number;
     }>>([])
     const [expandedMessages, setExpandedMessages] = useState<number[]>([])
     const [availableMessages, setAvailableMessages] = useState<SchemaMessage[]>([])
@@ -750,6 +751,11 @@ export const IRPSenderPage: React.FC = () => {
         message: string;
         severity: 'success' | 'error' | 'info' | 'warning'
     }>({open: false, message: '', severity: 'success'})
+
+    // Sending progress state
+    const [isSending, setIsSending] = useState(false);
+    const [currentMessage, setCurrentMessage] = useState(0);
+    const [totalMessages, setTotalMessages] = useState(0);
 
     // Template management state
     const [saveDialogOpen, setSaveDialogOpen] = useState(false)
@@ -1280,13 +1286,17 @@ export const IRPSenderPage: React.FC = () => {
             return
         }
 
-        try {
-            setIsLoading(true)
+        // Before sending
+        setIsSending(true);
+        setCurrentMessage(0);
+        setTotalMessages(messages.length);
 
+        try {
             const formattedMessages = messages.map((msg) => {
                 const backendData = transformFromAttackId(msg.data, msg.originalSchema)
                 return {
                     message: msg.messageName,
+                    pause: msg.pause,
                     ...backendData,
                 }
             })
@@ -1298,13 +1308,32 @@ export const IRPSenderPage: React.FC = () => {
                 },
             }
 
-            await irpSchemaService.sendMessages(selectedDestinationPort, selectedSimulator, payload)
-            setSnackbar({open: true, message: `Successfully sent ${messages.length} message(s)`, severity: 'success'})
+            await irpSchemaService.sendMessagesWithProgress(
+                selectedDestinationPort,
+                selectedSimulator,
+                payload,
+                (current, total, messageName, status) => {
+                    setCurrentMessage(current);
+                    setTotalMessages(total);
+                },
+                (successCount, failedCount, totalCount) => {
+                    if (failedCount === 0) {
+                        setSnackbar({open: true, message: `Successfully sent all ${successCount} message(s)`, severity: 'success'})
+                    } else {
+                        setSnackbar({open: true, message: `Partially successful: ${successCount} succeeded, ${failedCount} failed`, severity: 'warning'})
+                    }
+                },
+                (error) => {
+                    setSnackbar({open: true, message: error, severity: 'error'})
+                }
+            )
         } catch (error: any) {
-            const errorMsg = error?.response?.data?.detail || error?.message || 'Failed to send messages'
-            setSnackbar({open: true, message: errorMsg, severity: 'error'})
+            // Error already handled in onError callback
         } finally {
-            setIsLoading(false)
+            // Finally block
+            setIsSending(false);
+            setCurrentMessage(0);
+            setTotalMessages(0);
         }
     }
 
@@ -1530,6 +1559,20 @@ export const IRPSenderPage: React.FC = () => {
                                         </IconButton>
                                     </Box>
                                 </Box>
+                                <TextField
+                                    label="Pause After Message (seconds)"
+                                    type="number"
+                                    size="small"
+                                    value={msg.pause ?? ''}
+                                    onChange={(e) => {
+                                        const newMessages = [...messages];
+                                        newMessages[index].pause = e.target.value ? parseInt(e.target.value) : undefined;
+                                        setMessages(newMessages);
+                                    }}
+                                    inputProps={{ min: 0, max: 60, step: 1 }}
+                                    helperText="Optional: Wait before sending next message (max 60s)"
+                                    sx={{ marginBottom: 2 }}
+                                />
                                 <Collapse in={expandedMessages.includes(index)}>
                                     <IRPMessageForm
                                         messageData={msg.data}
@@ -1599,10 +1642,10 @@ export const IRPSenderPage: React.FC = () => {
                         variant="contained"
                         color="primary"
                         startIcon={<SendIcon/>}
-                        disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isLoading || isLooping || hasValidationErrors}
+                        disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isSending || isLooping || hasValidationErrors}
                         onClick={handleSendMessages}
                     >
-                        {isLoading ? 'Sending...' : `Send Messages (${messages.length})`}
+                        {isSending ? 'Sending...' : `Send Messages (${messages.length})`}
                     </Button>
 
                     {!isLooping ? (
@@ -1611,7 +1654,7 @@ export const IRPSenderPage: React.FC = () => {
                             color="secondary"
                             startIcon={<LoopIcon/>}
                             onClick={handleOpenLoopDialog}
-                            disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isLoading || hasValidationErrors}
+                            disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isSending || hasValidationErrors}
                         >
                             Send Loop
                         </Button>
@@ -1744,6 +1787,30 @@ export const IRPSenderPage: React.FC = () => {
                 <DialogActions>
                     <Button onClick={() => setAddMessageDialogOpen(false)}>Cancel</Button>
                 </DialogActions>
+            </Dialog>
+
+            {/* Sending Progress Dialog */}
+            <Dialog
+              open={isSending}
+              maxWidth="sm"
+              fullWidth
+              disableEscapeKeyDown
+            >
+              <DialogContent>
+                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+                  <CircularProgress size={60} />
+                  <Typography variant="h6">Sending Messages...</Typography>
+                  {currentMessage > 0 && (
+                    <Typography variant="h5" fontWeight="bold" color="primary">
+                      {currentMessage}/{totalMessages}
+                    </Typography>
+                  )}
+                  <Typography variant="body2" color="textSecondary">
+                    This may take several minutes with pause delays.
+                    Please wait...
+                  </Typography>
+                </Box>
+              </DialogContent>
             </Dialog>
 
             <Snackbar
@@ -2006,3 +2073,5 @@ export const IRPSenderPage: React.FC = () => {
         </Layout>
     )
 }
+
+

@@ -1,4 +1,5 @@
 import logging
+import time
 from time import sleep
 from typing import Dict, Any, Optional, Union
 from typing import Tuple
@@ -245,7 +246,7 @@ def _deserialize_object(data: Any) -> Any:
     return data
 
 
-# New helper: convert serialized dicts back into ConvertXml nested elements when needed
+# New helper: convert serialized dicts back to the proper ConvertXml class instance.
 def _dict_to_convertxml_element(data_dict):
     """Convert a deserialized dict back to the proper ConvertXml class instance."""
     if not isinstance(data_dict, dict):
@@ -576,3 +577,51 @@ def send_irp_messages(schema_obj, message_data, from_ip: str, to_ip: str) -> Uni
         return results
     except Exception as exc:
         return False, f"send_irp_message error: {exc!s}"
+
+
+def send_irp_messages_with_progress(schema_obj, message_data, from_ip: str, to_ip: str):
+    """Send IRP messages with progress reporting.
+
+    Yields progress dictionaries for each message and completion.
+
+    Supports optional 'pause' field in each message to wait between messages.
+
+    Yields:
+        {"type": "progress", "current": index, "total": total_messages, "message_name": name, "status": "success" or "failed"}
+        {"type": "complete", "success_count": X, "failed_count": Y, "total_count": Z}
+    """
+    success_count = 0
+    failed_count = 0
+    total_messages = len(message_data['messages'])
+
+    for index, message in enumerate(message_data['messages'], start=1):
+        # Extract message name
+        name = message.get('message') or message.get('messageName', 'Unknown')
+
+        # Extract pause value
+        pause_seconds = message.get('pause')
+
+        # Remove 'message' and 'pause' keys from message dict before sending (create copy)
+        cleaned_message = {k: v for k, v in message.items() if k not in ('message', 'pause')}
+
+        # Call send_irp_message with cleaned message dict
+        ok, msg = send_irp_message(schema_obj, name, cleaned_message, from_ip, to_ip)
+
+        # Track success/failed counts
+        if ok:
+            success_count += 1
+            status = "success"
+        else:
+            failed_count += 1
+            status = "failed"
+
+        # Yield progress
+        yield {"type": "progress", "current": index, "total": total_messages, "message_name": name, "status": status}
+
+        # Handle pause after sending message (if not the last message)
+        if pause_seconds is not None and pause_seconds > 0 and index < total_messages:
+            logger.info(f"Pausing for {pause_seconds} seconds before next message ({index}/{total_messages})")
+            time.sleep(pause_seconds)
+
+    total_count = success_count + failed_count
+    yield {"type": "complete", "success_count": success_count, "failed_count": failed_count, "total_count": total_count}

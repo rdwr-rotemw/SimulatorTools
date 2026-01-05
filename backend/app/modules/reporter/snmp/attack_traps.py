@@ -285,3 +285,47 @@ def set_trap_string_to_send(cc_ip, trap):
             f'{src_ip},{src_port},{dst_ip},{dst_port},{physical_port},{policy},{status},'
             f'{packet_count},{packet_bandwidth},{samples},{risk},{action},{direction}')
 
+
+def send_attack_traps_with_progress(cc_ip, device_ip, payload):
+    """Send attack traps to CyberController with progress reporting.
+
+    Yields progress dictionaries for each trap and completion.
+
+    Supports optional 'pause' field in each trap to wait between traps.
+
+    Yields:
+        {"type": "progress", "current": index, "total": total_traps, "trap_name": attack_name, "status": "success" or "failed"}
+        {"type": "complete", "success_count": X, "failed_count": Y, "total_count": Z}
+    """
+    import time
+
+    success_count = 0
+    failed_count = 0
+    total_traps = len(payload['traps'])
+
+    for index, trap in enumerate(payload['traps'], start=1):
+        command_to_send = (f'/opt/sapro/bin/sapcnsl -m DefensePros.map -c tcl -d {device_ip} '
+                           f'-f /opt/sapro/util/send_attack.tcl -a '
+                           f'\"{set_trap_string_to_send(cc_ip, trap)}\"')
+        success, output = execute_sapro_command(command_to_send)
+        attack_name = trap['attackName']
+
+        if success and "Trap(s) Sent" in output:
+            logger.info(f"Successfully sent trap {index}/{total_traps} of attack: {attack_name} from: {device_ip} to: {cc_ip}")
+            success_count += 1
+            status = "success"
+        else:
+            logger.error(f"Failed to send trap {index}/{total_traps} of attack: {attack_name} from: {device_ip} to: {cc_ip}: {output}")
+            failed_count += 1
+            status = "failed"
+
+        yield {"type": "progress", "current": index, "total": total_traps, "trap_name": attack_name, "status": status}
+
+        # Handle pause after sending trap (if not the last trap)
+        pause_seconds = trap.get('pause')
+        if pause_seconds is not None and pause_seconds > 0 and index < total_traps:
+            logger.info(f"Pausing for {pause_seconds} seconds before next trap ({index}/{total_traps})")
+            time.sleep(pause_seconds)
+
+    total_count = success_count + failed_count
+    yield {"type": "complete", "success_count": success_count, "failed_count": failed_count, "total_count": total_count}

@@ -17,9 +17,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
+import json
 
 from backend.app.models.user import User
 from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo, send_irp_messages
@@ -234,6 +236,52 @@ async def send_irp_messages_endpoint(
     except Exception as exc:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Failed to send IRP messages: {exc!s}")
+
+
+@router.post(
+    "/cc/{cc_ip}/simulators/{simulator_ip}/reporter/irp/stream"
+)
+async def send_irp_messages_stream_endpoint(
+    cc_ip: str,
+    simulator_ip: str,
+    payload: IRPSendPayload,
+    _current_user: User = Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
+):
+    """Send IRP messages with real-time progress via Server-Sent Events."""
+    try:
+        schema_obj = load_schema_from_mongo(mongo_db, payload.mongo_id)
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except KeyError as ke:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ke))
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to load schema: {exc!s}")
+
+    try:
+        message_data = payload.message_data
+
+        async def event_generator():
+            try:
+                from backend.app.modules.reporter.irp.irp_module import send_irp_messages_with_progress
+                for progress in send_irp_messages_with_progress(schema_obj, message_data, simulator_ip, cc_ip):
+                    yield f"data: {json.dumps(progress)}\n\n"
+            except Exception as exc:
+                logger.exception(f"Error during IRP message streaming: {exc}")
+                error_event = {"type": "error", "message": str(exc)}
+                yield f"data: {json.dumps(error_event)}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Failed to initialize IRP streaming: {exc!s}")
 
 
 @router.post(
@@ -665,10 +713,10 @@ async def import_snmp_from_pcap(
 
 @router.post("/reporter/irp/analyze-pcap", response_model=IRPPcapAnalysisResponse)
 async def analyze_irp_pcap(
-    file: UploadFile = File(...),
-    schema_id: Optional[str] = Form(None),
-    mongo_db=Depends(get_mongo_db),
-    current_user: dict = Depends(get_current_user)
+        file: UploadFile = File(...),
+        schema_id: Optional[str] = Form(None),
+        mongo_db=Depends(get_mongo_db),
+        current_user: dict = Depends(get_current_user)
 ):
     """Analyze PCAP file to extract IRP message IDs and names.
 
@@ -727,4 +775,68 @@ async def analyze_irp_pcap(
         raise HTTPException(500, f"Error analyzing PCAP: {str(e)}")
 
 
-__all__ = ["router"]
+@router.post(
+    "/cc/{cc_ip}/simulators/{simulator_ip}/reporter/snmp/stream",
+    status_code=status.HTTP_200_OK,
+)
+async def send_snmp_trap_stream_endpoint(
+        cc_ip: str,
+        simulator_ip: str,
+        payload: ReporterSNMPPayload,
+        _current_user: User = Depends(require_cc_access),
+):
+    """Send SNMP traps with real-time progress via Server-Sent Events."""
+    try:
+        # Convert Pydantic model to dict
+        # exclude_none=True ensures only provided fields are included,
+        # allowing defaults in attack_traps.py to work correctly
+        trap_data = payload.model_dump(exclude_none=True)
+
+        # Validate trap_data structure
+        if not trap_data or 'traps' not in trap_data:
+            logger.error("Invalid trap_data: missing 'traps' key")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid trap data: 'traps' key is required"
+            )
+
+        if not isinstance(trap_data['traps'], list) or not trap_data['traps']:
+            logger.error("Invalid trap_data: 'traps' must be a non-empty list")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid trap data: 'traps' must be a non-empty list"
+            )
+
+        async def event_generator():
+            try:
+                from backend.app.modules.reporter.snmp.attack_traps import send_attack_traps_with_progress
+                for progress in send_attack_traps_with_progress(cc_ip, simulator_ip, trap_data):
+                    yield f"data: {json.dumps(progress)}\n\n"
+            except Exception as exc:
+                logger.exception(f"Error during SNMP trap streaming: {exc}")
+                error_event = {"type": "error", "message": str(exc)}
+                yield f"data: {json.dumps(error_event)}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        )
+
+    except HTTPException:
+        raise
+    except KeyError as exc:
+        logger.error(f"Invalid trap configuration: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid trap configuration: missing key {exc!s}"
+        )
+    except Exception as exc:
+        logger.exception(f"Failed to initialize SNMP trap streaming: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initialize SNMP trap streaming: {exc!s}"
+        )
+
+
+
