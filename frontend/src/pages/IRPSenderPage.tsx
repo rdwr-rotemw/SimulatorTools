@@ -1559,20 +1559,6 @@ export const IRPSenderPage: React.FC = () => {
                                         </IconButton>
                                     </Box>
                                 </Box>
-                                <TextField
-                                    label="Pause After Message (seconds)"
-                                    type="number"
-                                    size="small"
-                                    value={msg.pause ?? ''}
-                                    onChange={(e) => {
-                                        const newMessages = [...messages];
-                                        newMessages[index].pause = e.target.value ? parseInt(e.target.value) : undefined;
-                                        setMessages(newMessages);
-                                    }}
-                                    inputProps={{ min: 0, max: 60, step: 1 }}
-                                    helperText="Optional: Wait before sending next message (max 60s)"
-                                    sx={{ marginBottom: 2 }}
-                                />
                                 <Collapse in={expandedMessages.includes(index)}>
                                     <IRPMessageForm
                                         messageData={msg.data}
@@ -1585,6 +1571,21 @@ export const IRPSenderPage: React.FC = () => {
                                                 return newMap
                                             })
                                         }}
+                                    />
+                                    <TextField
+                                        label="Pause After Message (seconds)"
+                                        type="number"
+                                        size="small"
+                                        fullWidth
+                                        value={msg.pause ?? ''}
+                                        onChange={(e) => {
+                                            const newMessages = [...messages];
+                                            newMessages[index].pause = e.target.value ? parseInt(e.target.value) : undefined;
+                                            setMessages(newMessages);
+                                        }}
+                                        inputProps={{ min: 0, max: 60, step: 1 }}
+                                        helperText="Optional: Wait before sending next message (max 60s)"
+                                        sx={{ marginTop: 2 }}
                                     />
                                 </Collapse>
                             </Paper>
