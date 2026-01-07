@@ -43,4 +43,7 @@ export interface AuthState {
 
   // Restores auth state from persisted storage
   checkAuth: () => void;
+
+  // Initializes activity tracking for the authenticated user
+  initializeActivityTracking: () => void;
 }

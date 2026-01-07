@@ -14,12 +14,21 @@ import { ReportingPage } from './pages/ReportingPage';
 import { SNMPPage } from './pages/SNMPPage';
 import { IRPManagerPage } from './pages/IRPManagerPage';
 import { IRPSenderPage } from './pages/IRPSenderPage';
+import activityTracker from './utils/activityTracker';
+
 
 function App() {
   const checkAuth = useAuthStore(state => state.checkAuth);
 
   useEffect(() => {
+    // Restore authentication state from localStorage on app mount
+    // checkAuth() will also initialize activity tracking if a valid session exists
     checkAuth();
+
+    return () => {
+      // Cleanup: stop tracking when app unmounts (e.g., tab/browser close)
+      activityTracker.stopTracking();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
