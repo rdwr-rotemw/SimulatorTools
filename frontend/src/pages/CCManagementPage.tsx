@@ -14,7 +14,6 @@ import {
   TextField,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
-import LogoutIcon from '@mui/icons-material/Logout';
 import SearchIcon from '@mui/icons-material/Search';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import Layout from '../components/common/Layout';
@@ -48,8 +47,6 @@ const CCManagementPage: React.FC = () => {
   const fetchDevices = useCCStore((state) => state.fetchDevices);
   const addDevice = useCCStore((state) => state.addDevice);
   const deleteDevice = useCCStore((state) => state.deleteDevice);
-  const logout = useCCStore((state) => state.logout);
-  const clearState = useCCStore((state) => state.clearState);
 
   useEffect(() => {
     if (!currentCC) {
@@ -127,18 +124,6 @@ const CCManagementPage: React.FC = () => {
     setSnackbar((s) => ({ ...s, open: false }));
   };
 
-  const handleLogout = async () => {
-    if (!currentCC) return;
-    try {
-      await logout(currentCC);
-      clearState();
-      navigate('/cc/login');
-    } catch (err: any) {
-      const msg = err?.response?.data?.detail || err?.message || 'Logout failed';
-      setSnackbar({ open: true, message: msg, severity: 'error' });
-    }
-  };
-
   const handleSort = (column: 'management_ip' | 'name' | 'device_type' | 'status') => {
     if (sortBy === column) {
       setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
@@ -189,9 +174,6 @@ const CCManagementPage: React.FC = () => {
               Refresh
             </Button>
 
-            <Button startIcon={<LogoutIcon />} variant="outlined" onClick={handleLogout}>
-              Logout from CC
-            </Button>
 
             <Button
               startIcon={<CloudUploadIcon />}

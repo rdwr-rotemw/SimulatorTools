@@ -3,6 +3,7 @@ import authService from '../api/services/auth.service';
 import { AuthState } from '../types/auth';
 import useFormStore from './useFormStore';
 import activityTracker from '../utils/activityTracker';
+import useCCStore from './ccStore';
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
@@ -32,8 +33,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
-  logout: () => {
-    // Stop activity tracking and clear activity data
+  logout: async () => {
+    try {
+      // First, logout from CC if there's an active CC session
+      const ccStore = useCCStore.getState();
+      if (ccStore.currentCC) {
+        try {
+          await ccStore.logout(ccStore.currentCC);
+          ccStore.clearState();
+        } catch (error) {
+          // Log but don't block system logout if CC logout fails
+          console.error('Failed to logout from CC:', error);
+        }
+      }
+    } catch (error) {
+      console.error('CC logout error:', error);
+    }
+
+    // Then proceed with normal system logout
     activityTracker.stopTracking();
     activityTracker.clearActivity();
     authService.clearToken();
@@ -74,10 +91,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   initializeActivityTracking: () => {
     const { isAuthenticated, logout } = get();
     if (isAuthenticated) {
-      activityTracker.startTracking(() => {
+      activityTracker.startTracking(async () => {
         // User inactive for 15 minutes
         alert('Session expired due to inactivity');
-        logout();
+        await logout();
       });
     }
   },

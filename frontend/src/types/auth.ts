@@ -36,7 +36,7 @@ export interface AuthState {
   login: (username: string, password: string) => Promise<boolean>;
 
   // Clears auth state and removes token
-  logout: () => void;
+  logout: () => Promise<void>;
 
   // Clears the current error message
   clearError: () => void;
