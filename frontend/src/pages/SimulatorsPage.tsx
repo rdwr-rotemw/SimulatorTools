@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Box, Typography, Button, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Snackbar, Alert, TextField } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import SearchIcon from '@mui/icons-material/Search';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import Layout from '../components/common/Layout';
 import { SimulatorTable } from '../components/simulator/SimulatorTable';
 import SimulatorFormDialog from '../components/simulator/SimulatorFormDialog';
@@ -26,6 +27,7 @@ export const SimulatorsPage: React.FC = () => {
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [startLoading, setStartLoading] = useState<string | null>(null);
   const [stopLoading, setStopLoading] = useState<string | null>(null);
+  const [refreshLoading, setRefreshLoading] = useState(false);
 
   // Map management state
   const [mapDialogOpen, setMapDialogOpen] = useState(false);
@@ -292,12 +294,37 @@ export const SimulatorsPage: React.FC = () => {
     fetchSimulators();
   };
 
+  const handleRefresh = async () => {
+    setRefreshLoading(true);
+    try {
+      await fetchSimulators();
+      setSnackbar({ open: true, message: 'Simulators refreshed', severity: 'success' });
+    } catch (err: any) {
+      console.error('Failed to refresh simulators:', err);
+      setSnackbar({
+        open: true,
+        message: 'Failed to refresh simulators',
+        severity: 'error'
+      });
+    } finally {
+      setRefreshLoading(false);
+    }
+  };
+
   return (
     <Layout>
       <Box sx={{ padding: 4 }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
           <Typography variant="h4">Simulator Management</Typography>
           <Box sx={{ display: 'flex', gap: 2 }}>
+            <Button
+              variant="outlined"
+              startIcon={<RefreshIcon />}
+              onClick={handleRefresh}
+              disabled={refreshLoading || isLoading}
+            >
+              {refreshLoading ? 'Refreshing...' : 'Refresh'}
+            </Button>
             <Button variant="outlined" onClick={handleMapDialogOpen}>Map Management</Button>
             <Button variant="contained" startIcon={<AddIcon />} onClick={handleCreate}>Create Simulator</Button>
           </Box>
