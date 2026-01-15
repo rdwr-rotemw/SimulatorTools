@@ -14,6 +14,7 @@ from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.dialects.postgresql import insert
 from datetime import datetime, timezone
 
 from bson import ObjectId
@@ -223,15 +224,25 @@ def list_simulators(
         logger.exception("Failed to query Sapro for devices: %s", exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to query Sapro: {exc}")
 
-    # Upsert devices returned by Sapro into DB
+    # Upsert devices returned by Sapro into DB using PostgreSQL INSERT ON CONFLICT
     for device in devices:
-        db.merge(Simulator(
+        stmt = insert(Simulator).values(
             ip_address=device.ip_address,
             type=device.type or "",  # Default to empty string if SNMP query failed
             version=device.version or "",  # Default to empty string if SNMP query failed
             map=device.map,
-            status=device.status
-        ))
+            status=device.status,
+            created_at=datetime.now(timezone.utc)
+        ).on_conflict_do_update(
+            index_elements=['ip_address'],
+            set_={
+                'type': device.type or "",
+                'version': device.version or "",
+                'map': device.map,
+                'status': device.status
+            }
+        )
+        db.execute(stmt)
     db.commit()
 
     # Build set of Sapro IPs and remove any DB records not present in Sapro
