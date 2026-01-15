@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
@@ -25,15 +25,15 @@ from sqlalchemy.orm import Session
 
 from backend.app.models.cc_session import CCSession
 from backend.app.models.user import User
-from backend.app.modules.cc.cc_client import get_cc_handler, CCDevice, CCHandler, CCCredentials
+from backend.app.modules.cc.cc_client import get_cc_handler, CCHandler, CCCredentials
+from backend.app.modules.mongo_models import DeviceDriverDeploy
+from backend.app.modules.reporter.irp.irp_module import convert_xml
 from backend.app.modules.sapro.sapro_client import get_sapro_handler
 from backend.app.modules.sapro.src.returnTypes.models import SaproDevice
-from backend.app.modules.reporter.irp.irp_module import convert_xml
-from backend.app.utils.database import get_mongo_db
-from backend.app.modules.mongo_models import IRPMessageTemplate
 from backend.app.utils.auth import require_cc_access
+from backend.app.utils.cc_ssh import get_cc_ssh_client
 from backend.app.utils.database import get_db
-
+from backend.app.utils.database import get_mongo_db
 from backend.app.utils.device_driver import (
     list_existing_drivers,
     match_driver_filename,
@@ -41,9 +41,6 @@ from backend.app.utils.device_driver import (
     save_uploaded_driver,
     deploy_multiple_drivers,
 )
-from backend.app.modules.mongo_models import DeviceDriverDeploy
-from datetime import datetime, timezone
-from backend.app.utils.cc_ssh import get_cc_ssh_client
 
 logger = logging.getLogger("sim-tools.cybercontroller")
 
@@ -180,7 +177,8 @@ async def cc_login(
 
         # Get the JSESSIONID from the handler's credentials
         if not handler._creds or not handler._creds.jsession_id:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Login succeeded but no JSESSIONID found")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail="Login succeeded but no JSESSIONID found")
 
         jsession_id = handler._creds.jsession_id
 
@@ -272,7 +270,7 @@ async def get_cc_simulators(
             )
 
         # Query Sapro for available simulators and filter DP devices accordingly
-        sapro_sims =  list[SaproDevice]
+        sapro_sims = list[SaproDevice]
         try:
             sapro_handler = get_sapro_handler()
             sapro_sims = sapro_handler.get_all_devices()
@@ -282,7 +280,8 @@ async def get_cc_simulators(
         sapro_ips = {getattr(s, 'ip_address', None) for s in sapro_sims if
                      getattr(s, 'ip_address', None) is not None}
         # Create IP to version mapping from Sapro devices
-        sapro_versions = {getattr(s, 'ip_address', None): getattr(s, 'version', None) for s in sapro_sims if getattr(s, 'ip_address', None) is not None}
+        sapro_versions = {getattr(s, 'ip_address', None): getattr(s, 'version', None) for s in sapro_sims if
+                          getattr(s, 'ip_address', None) is not None}
         filtered_devices = [d for d in result if d.management_ip in sapro_ips]
 
         # Convert to response model
@@ -727,7 +726,7 @@ async def download_ids_data_format(
         check_cmd = f"test -f {backup_path} && echo 'exists' || echo 'not_exists'"
         success, output = ssh_client.execute_command(check_cmd, check_stderr=False)
 
-        backup_exists = 'exists' in output
+        backup_exists = output.strip() == 'exists'
 
         # Handle revert to original
         if backup_exists and payload.revert_to_original:
@@ -753,13 +752,15 @@ async def download_ids_data_format(
         # Download the file (current or restored)
         ok, res = handler.download_ids_data_format(payload.sim_version, payload.username, payload.password)
         if not ok:
-            return {"success": False, "message": res, "local_path": "", "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
+            return {"success": False, "message": res, "local_path": "", "mongo_id": "", "note": "",
+                    "backup_exists": backup_exists, "is_custom": False}
 
         local_path = res
 
         # Ensure file exists before attempting conversion
         if not os.path.exists(local_path):
-            return {"success": False, "message": f"Downloaded file not found: {local_path}", "local_path": local_path, "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
+            return {"success": False, "message": f"Downloaded file not found: {local_path}", "local_path": local_path,
+                    "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
 
         # Read file bytes and compute SHA256 checksum
         try:
@@ -767,7 +768,8 @@ async def download_ids_data_format(
                 file_bytes = f.read()
         except Exception as exc:
             logger.exception("Failed to read downloaded file %s: %s", local_path, exc)
-            return {"success": False, "message": f"Failed to read downloaded file: {exc!s}", "local_path": local_path, "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
+            return {"success": False, "message": f"Failed to read downloaded file: {exc!s}", "local_path": local_path,
+                    "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
 
         sha256_hash = hashlib.sha256(file_bytes).hexdigest()
 
@@ -784,7 +786,8 @@ async def download_ids_data_format(
 
         if existing:
             mongo_id = str(existing.get("_id"))
-            logger.info("Reusing cached XML blob for version %s (checksum %s...)", payload.sim_version, sha256_hash[:16])
+            logger.info("Reusing cached XML blob for version %s (checksum %s...)", payload.sim_version,
+                        sha256_hash[:16])
             return {
                 "success": True,
                 "message": "Reused cached XML blob",
@@ -799,10 +802,13 @@ async def download_ids_data_format(
         try:
             converted = convert_xml(local_path)
         except FileNotFoundError:
-            return {"success": False, "message": "Downloaded file disappeared before conversion", "local_path": local_path, "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
+            return {"success": False, "message": "Downloaded file disappeared before conversion",
+                    "local_path": local_path, "mongo_id": "", "note": "", "backup_exists": backup_exists,
+                    "is_custom": False}
         except Exception as exc:
             logger.exception("Conversion failed for %s: %s", local_path, exc)
-            return {"success": False, "message": f"Conversion error: {exc!s}", "local_path": local_path, "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
+            return {"success": False, "message": f"Conversion error: {exc!s}", "local_path": local_path, "mongo_id": "",
+                    "note": "", "backup_exists": backup_exists, "is_custom": False}
 
         try:
             template_name = os.path.basename(local_path)
@@ -826,7 +832,8 @@ async def download_ids_data_format(
             result = mongo_db.irp_data_formats.insert_one(insert_doc)
             mongo_id = str(result.inserted_id)
 
-            logger.info("Downloaded and stored new XML schema %s (id=%s, checksum=%s...)", payload.sim_version, mongo_id, sha256_hash[:16])
+            logger.info("Downloaded and stored new XML schema %s (id=%s, checksum=%s...)", payload.sim_version,
+                        mongo_id, sha256_hash[:16])
             return {
                 "success": True,
                 "message": "Downloaded and saved",
@@ -838,7 +845,8 @@ async def download_ids_data_format(
             }
         except Exception as exc:
             logger.exception("Failed to insert converted schema into MongoDB: %s", exc)
-            return {"success": False, "message": f"Mongo insert error: {exc!s}", "local_path": local_path, "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
+            return {"success": False, "message": f"Mongo insert error: {exc!s}", "local_path": local_path,
+                    "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
 
     except HTTPException:
         raise
@@ -971,7 +979,7 @@ async def upload_custom_ids_data_format(
             success, output = ssh_client.execute_command(check_cmd, check_stderr=False)
 
             backup_created = False
-            if 'not_exists' in output:
+            if output.strip() == 'not_exists':
                 # Create backup
                 logger.info("Creating backup: %s -> %s", remote_path, backup_path)
                 backup_cmd = f"cp {remote_path} {backup_path}"
@@ -1161,9 +1169,9 @@ async def get_management_ports(
     status_code=status.HTTP_200_OK,
 )
 async def list_schema_messages(
-    cc_ip: str,
-    schema_id: str,
-    _current_user: User = Depends(require_cc_access),
+        cc_ip: str,
+        schema_id: str,
+        _current_user: User = Depends(require_cc_access),
 ):
     """List all available messages for a given IRP schema.
 
@@ -1271,8 +1279,8 @@ async def list_schema_messages(
     response_model=IRPSchemaListResponse,
 )
 async def list_irp_schemas(
-    cc_ip: str,
-    current_user: User = Depends(require_cc_access),
+        cc_ip: str,
+        current_user: User = Depends(require_cc_access),
 ) -> IRPSchemaListResponse:
     """List all IRP schemas stored in MongoDB.
 
@@ -1317,9 +1325,9 @@ async def list_irp_schemas(
     status_code=status.HTTP_200_OK,
 )
 async def delete_irp_schema(
-    cc_ip: str,
-    schema_id: str,
-    current_user: User = Depends(require_cc_access),
+        cc_ip: str,
+        schema_id: str,
+        current_user: User = Depends(require_cc_access),
 ):
     """Delete an IRP schema from MongoDB.
 
@@ -1354,8 +1362,8 @@ async def delete_irp_schema(
 
 @router.get("/cc/{cc_ip}/device-drivers")
 async def list_device_drivers(
-    cc_ip: str,
-    _current_user=Depends(require_cc_access),
+        cc_ip: str,
+        _current_user=Depends(require_cc_access),
 ) -> Dict[str, Any]:
     """List all available device drivers (existing + uploaded).
 
@@ -1408,10 +1416,10 @@ async def list_device_drivers(
 
 @router.post("/cc/{cc_ip}/device-drivers/upload")
 async def upload_device_driver(
-    cc_ip: str,
-    file: UploadFile = File(...),
-    _current_user=Depends(require_cc_access),
-    mongo_db=Depends(get_mongo_db),
+        cc_ip: str,
+        file: UploadFile = File(...),
+        _current_user=Depends(require_cc_access),
+        mongo_db=Depends(get_mongo_db),
 ) -> Dict[str, Any]:
     """Upload a new device driver JAR file.
 
@@ -1495,10 +1503,10 @@ async def upload_device_driver(
 
 @router.post("/cc/{cc_ip}/device-drivers/deploy")
 async def deploy_device_drivers(
-    cc_ip: str,
-    payload: DeviceDriverDeploy,
-    _current_user=Depends(require_cc_access),
-    mongo_db=Depends(get_mongo_db),
+        cc_ip: str,
+        payload: DeviceDriverDeploy,
+        _current_user=Depends(require_cc_access),
+        mongo_db=Depends(get_mongo_db),
 ) -> Dict[str, Any]:
     """Deploy selected device drivers to CyberController.
 
@@ -1611,10 +1619,10 @@ async def deploy_device_drivers(
 
 @router.get("/cc/{cc_ip}/device-drivers/match")
 async def match_device_drivers(
-    cc_ip: str,
-    device_type: str,
-    device_version: str,
-    _current_user=Depends(require_cc_access),
+        cc_ip: str,
+        device_type: str,
+        device_version: str,
+        _current_user=Depends(require_cc_access),
 ) -> Dict[str, Any]:
     """Find matching device driver for given type and version.
 
