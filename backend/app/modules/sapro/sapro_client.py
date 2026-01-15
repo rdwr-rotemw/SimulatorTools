@@ -557,44 +557,84 @@ class SaproCommunicationHandler:
             return False, f"Failed to add device to map {map_name}: {str(e)}"
 
     def start_devices_from_map(self, map_name: str, devices_names: list) -> Tuple[bool, str]:
-        """Start one or more devices listed in a map.
+        """Start one or more devices listed in a map using SSH commands.
 
         Args:
-            map_name: Map path or name.
-            devices_names: Iterable of device names/IPs to start.
+            map_name: Map path or name
+            devices_names: List of device names/IPs to start
 
         Returns:
             (success, combined_messages)
         """
         try:
+            ssh_client = get_sapro_ssh_client()
             messages = []
-            for device in devices_names:
-                msg = saproDeviceFunctions.SendStartCmdToDevice(self._sapro, map_name + ".map", device)
-                messages.append(str(msg))
-            return True, "\n".join(messages)
-        except SaproException as e:
-            msg = getattr(e, "toString", lambda: str(e))()
-            return False, f"Failed to start device(s) from map {map_name}: {msg}"
+
+            for device_ip in devices_names:
+                # Normalize map name (ensure .map extension)
+                if not map_name.endswith('.map'):
+                    map_full = f"{map_name}.map"
+                else:
+                    map_full = map_name
+
+                # Build SSH command
+                cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_full} -c startdev -d {device_ip}"
+
+                logger.debug(f"Executing start device command via SSH: {cmd}")
+                success, output = ssh_client.execute_command(cmd, check_stderr=False)
+
+                if not success:
+                    messages.append(f"Failed to start {device_ip}: {output}")
+                else:
+                    messages.append(f"Started {device_ip}: {output}" if output else f"Started {device_ip}")
+
+            # Return success if all devices started successfully
+            all_success = all("Failed" not in msg for msg in messages)
+            return all_success, "\n".join(messages)
+
         except Exception as e:
-            return False, f"Failed to start device(s) from map {map_name}: {str(e)}"
+            logger.error(f"Failed to start device(s) from map {map_name}: {e}", exc_info=True)
+            return False, f"Failed to start device(s): {e}"
 
     def stop_devices_from_map(self, map_name: str, devices_names: list) -> Tuple[bool, str]:
-        """Stop one or more devices listed in a map.
+        """Stop one or more devices listed in a map using SSH commands.
+
+        Args:
+            map_name: Map path or name
+            devices_names: List of device names/IPs to stop
 
         Returns:
-            (success, message)
+            (success, combined_messages)
         """
         try:
+            ssh_client = get_sapro_ssh_client()
             messages = []
-            for device in devices_names:
-                msg = saproDeviceFunctions.SendStopCmdToDevice(self._sapro, map_name + ".map", device)
-                messages.append(str(msg))
-            return True, "\n".join(messages)
-        except SaproException as e:
-            msg = getattr(e, "toString", lambda: str(e))()
-            return False, f"Failed to stop device(s) from map {map_name}: {msg}"
+
+            for device_ip in devices_names:
+                # Normalize map name (ensure .map extension)
+                if not map_name.endswith('.map'):
+                    map_full = f"{map_name}.map"
+                else:
+                    map_full = map_name
+
+                # Build SSH command
+                cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_full} -c stopdev -d {device_ip}"
+
+                logger.debug(f"Executing stop device command via SSH: {cmd}")
+                success, output = ssh_client.execute_command(cmd, check_stderr=False)
+
+                if not success:
+                    messages.append(f"Failed to stop {device_ip}: {output}")
+                else:
+                    messages.append(f"Stopped {device_ip}: {output}" if output else f"Stopped {device_ip}")
+
+            # Return success if all devices stopped successfully
+            all_success = all("Failed" not in msg for msg in messages)
+            return all_success, "\n".join(messages)
+
         except Exception as e:
-            return False, f"Failed to stop device(s) from map {map_name}: {str(e)}"
+            logger.error(f"Failed to stop device(s) from map {map_name}: {e}", exc_info=True)
+            return False, f"Failed to stop device(s): {e}"
 
     def create_device(self, device_ip: str, raw_xml_content: str, map_name: str) -> Tuple[bool, str]:
         """Create (or start existing) simulator device on the sapro server.

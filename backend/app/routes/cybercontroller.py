@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -33,7 +34,6 @@ from backend.app.modules.mongo_models import IRPMessageTemplate
 from backend.app.utils.auth import require_cc_access
 from backend.app.utils.database import get_db
 
-from fastapi import UploadFile, File
 from backend.app.utils.device_driver import (
     list_existing_drivers,
     match_driver_filename,
@@ -43,6 +43,7 @@ from backend.app.utils.device_driver import (
 )
 from backend.app.modules.mongo_models import DeviceDriverDeploy
 from datetime import datetime, timezone
+from backend.app.utils.cc_ssh import get_cc_ssh_client
 
 logger = logging.getLogger("sim-tools.cybercontroller")
 
@@ -654,8 +655,18 @@ class IdsDownloadPayload(BaseModel):
     will be converted to the corresponding IdsDataFormat filename (for example
     "10.3.0" -> "IdsDataFormat100300.xml") and that file will be downloaded
     via SCP to /tmp/data_formats/ on the backend host.
+
+    revert_to_original: If True and backup exists, restore original and download it.
     """
     sim_version: str
+    username: str
+    password: str
+    revert_to_original: bool = False  # NEW FIELD
+
+
+class IdsUploadPayload(BaseModel):
+    """Payload for uploading custom IdsDataFormat XML."""
+    simulator_ip: str  # Used to extract version
     username: str
     password: str
 
@@ -672,17 +683,11 @@ async def download_ids_data_format(
 ):
     """Download IdsDataFormat file for a given simulator version.
 
-    This endpoint accepts a simulator version string (for example "10.6.0.0" or
-    "8.2.1"). The version is converted to the corresponding IdsDataFormat
-    filename (e.g. "IdsDataFormat100300.xml"), then the endpoint connects to
-    the CC host via SSH using provided root credentials and downloads the file
-    via SCP to /tmp/data_formats/ on the backend host.
-
-    The endpoint implements checksum-based caching: if a schema with the same
-    version and SHA256 checksum already exists in MongoDB, conversion is skipped
-    and the existing stored schema is reused.
-
-    Returns a JSON object with keys: success (bool), message (str), local_path (str), mongo_id (str), note (str).
+    This endpoint now detects if a custom XML has been uploaded (by checking for .original backup).
+    If backup exists:
+    - Returns backup_exists: true in response
+    - If revert_to_original=false: downloads current (custom) XML
+    - If revert_to_original=true: restores original XML and downloads it
     """
     import hashlib
     import base64
@@ -706,15 +711,55 @@ async def download_ids_data_format(
         except Exception:
             pass
 
+        # Get SSH client
+        ssh_client = get_cc_ssh_client(cc_ip=cc_ip, username=payload.username, password=payload.password)
+
+        # Determine filenames
+        format_version = handler._version_to_data_format(payload.sim_version)
+        filename = f"IdsDataFormat{format_version}.xml"
+        backup_filename = f"IdsDataFormat{format_version}.xml.original"
+
+        remote_dir = "/var/lib/docker/radware-storage/dc_config/kvision-configuration-service/config/conf"
+        remote_path = f"{remote_dir}/{filename}"
+        backup_path = f"{remote_dir}/{backup_filename}"
+
+        # Check if backup exists
+        check_cmd = f"test -f {backup_path} && echo 'exists' || echo 'not_exists'"
+        success, output = ssh_client.execute_command(check_cmd, check_stderr=False)
+
+        backup_exists = 'exists' in output
+
+        # Handle revert to original
+        if backup_exists and payload.revert_to_original:
+            logger.info("Reverting to original XML for version %s", payload.sim_version)
+
+            # Restore original: copy .original back to main file
+            restore_cmd = f"cp {backup_path} {remote_path}"
+            success, restore_output = ssh_client.execute_command(restore_cmd, check_stderr=True)
+
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to restore original XML: {restore_output}"
+                )
+
+            # Delete backup
+            delete_cmd = f"rm {backup_path}"
+            ssh_client.execute_command(delete_cmd, check_stderr=False)
+
+            logger.info("Original XML restored for version %s", payload.sim_version)
+            backup_exists = False  # No longer exists after restore
+
+        # Download the file (current or restored)
         ok, res = handler.download_ids_data_format(payload.sim_version, payload.username, payload.password)
         if not ok:
-            return {"success": False, "message": res, "local_path": "", "mongo_id": "", "note": ""}
+            return {"success": False, "message": res, "local_path": "", "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
 
         local_path = res
 
         # Ensure file exists before attempting conversion
         if not os.path.exists(local_path):
-            return {"success": False, "message": f"Downloaded file not found: {local_path}", "local_path": local_path, "mongo_id": "", "note": ""}
+            return {"success": False, "message": f"Downloaded file not found: {local_path}", "local_path": local_path, "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
 
         # Read file bytes and compute SHA256 checksum
         try:
@@ -722,7 +767,7 @@ async def download_ids_data_format(
                 file_bytes = f.read()
         except Exception as exc:
             logger.exception("Failed to read downloaded file %s: %s", local_path, exc)
-            return {"success": False, "message": f"Failed to read downloaded file: {exc!s}", "local_path": local_path, "mongo_id": "", "note": ""}
+            return {"success": False, "message": f"Failed to read downloaded file: {exc!s}", "local_path": local_path, "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
 
         sha256_hash = hashlib.sha256(file_bytes).hexdigest()
 
@@ -740,16 +785,24 @@ async def download_ids_data_format(
         if existing:
             mongo_id = str(existing.get("_id"))
             logger.info("Reusing cached XML blob for version %s (checksum %s...)", payload.sim_version, sha256_hash[:16])
-            return {"success": True, "message": "Reused cached XML blob", "local_path": local_path, "mongo_id": mongo_id, "note": "Reused cached blob"}
+            return {
+                "success": True,
+                "message": "Reused cached XML blob",
+                "local_path": local_path,
+                "mongo_id": mongo_id,
+                "note": "Reused cached blob",
+                "backup_exists": backup_exists,
+                "is_custom": backup_exists  # If backup exists, current file is custom
+            }
 
         # No cached match - perform conversion and store new document
         try:
             converted = convert_xml(local_path)
         except FileNotFoundError:
-            return {"success": False, "message": "Downloaded file disappeared before conversion", "local_path": local_path, "mongo_id": "", "note": ""}
+            return {"success": False, "message": "Downloaded file disappeared before conversion", "local_path": local_path, "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
         except Exception as exc:
             logger.exception("Conversion failed for %s: %s", local_path, exc)
-            return {"success": False, "message": f"Conversion error: {exc!s}", "local_path": local_path, "mongo_id": "", "note": ""}
+            return {"success": False, "message": f"Conversion error: {exc!s}", "local_path": local_path, "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
 
         try:
             template_name = os.path.basename(local_path)
@@ -774,10 +827,18 @@ async def download_ids_data_format(
             mongo_id = str(result.inserted_id)
 
             logger.info("Downloaded and stored new XML schema %s (id=%s, checksum=%s...)", payload.sim_version, mongo_id, sha256_hash[:16])
-            return {"success": True, "message": "Downloaded and saved", "local_path": local_path, "mongo_id": mongo_id, "note": "Parsed new XML"}
+            return {
+                "success": True,
+                "message": "Downloaded and saved",
+                "local_path": local_path,
+                "mongo_id": mongo_id,
+                "note": "Parsed new XML",
+                "backup_exists": backup_exists,
+                "is_custom": backup_exists  # If backup exists, current file is custom
+            }
         except Exception as exc:
             logger.exception("Failed to insert converted schema into MongoDB: %s", exc)
-            return {"success": False, "message": f"Mongo insert error: {exc!s}", "local_path": local_path, "mongo_id": "", "note": ""}
+            return {"success": False, "message": f"Mongo insert error: {exc!s}", "local_path": local_path, "mongo_id": "", "note": "", "backup_exists": backup_exists, "is_custom": False}
 
     except HTTPException:
         raise
@@ -785,6 +846,248 @@ async def download_ids_data_format(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error downloading IdsDataFormat: {exc!s}"
+        )
+
+
+@router.post(
+    "/cc/{cc_ip}/irp/IdsDataFormat/upload",
+    status_code=status.HTTP_200_OK,
+)
+async def upload_custom_ids_data_format(
+        cc_ip: str,
+        file: UploadFile = File(...),
+        sim_version: str = Form(...),  # Changed from simulator_ip
+        username: str = Form(...),
+        password: str = Form(...),
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
+):
+    """Upload custom IdsDataFormat XML and immediately convert for use.
+
+    DANGEROUS: This replaces the production XML file used by CyberController.
+    Only use for development and testing.
+
+    Workflow:
+    1. Validate uploaded XML by parsing with convert_xml()
+    2. Validate that version exists in available simulators (safety check)
+    3. Create backup if doesn't exist: IdsDataFormat{version}.xml.original
+    4. Upload custom XML as IdsDataFormat{version}.xml via SCP
+    5. Download it back from CC
+    6. Convert and store in MongoDB
+    7. Return mongo_id for immediate use
+
+    Args:
+        cc_ip: CyberController IP
+        file: Custom XML file to upload
+        sim_version: Simulator version (e.g., "10.6.0.0")
+        username: SSH username for CC
+        password: SSH password for CC
+
+    Returns:
+        {"success": bool, "message": str, "version": str, "backup_created": bool, "mongo_id": str}
+    """
+    import tempfile
+    import hashlib
+    import base64
+    from datetime import datetime, timezone
+
+    try:
+        # Check CC session
+        cc_session = db.query(CCSession).filter(
+            CCSession.cc_ip == cc_ip,
+            CCSession.user_id == current_user.user_id
+        ).first()
+
+        if not cc_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
+            )
+
+        # Validate file extension
+        if not file.filename or not file.filename.lower().endswith('.xml'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File must be an XML file"
+            )
+
+        # Optional: Validate that version exists in Sapro (safety check)
+        try:
+            sapro_handler = get_sapro_handler()
+            devices = sapro_handler.get_all_devices()
+
+            # Check if any device has this version
+            version_exists = any(
+                getattr(device, 'version', None) == sim_version
+                for device in devices
+            )
+
+            if not version_exists:
+                logger.warning("Version %s not found in Sapro devices, but continuing anyway", sim_version)
+                # Don't raise error - allow upload even if version not in Sapro (for flexibility)
+
+        except Exception as exc:
+            # Non-fatal - just log and continue
+            logger.warning("Could not validate version in Sapro (non-fatal): %s", exc)
+
+        # Save uploaded file to temp location for validation
+        with tempfile.NamedTemporaryFile(suffix='.xml', delete=False) as tmp_file:
+            content = await file.read()
+            tmp_file.write(content)
+            tmp_path = tmp_file.name
+
+        try:
+            # Validate XML by parsing with convert_xml
+            logger.info("Validating uploaded XML for version %s", sim_version)
+            try:
+                converted_test = convert_xml(tmp_path)
+                if not converted_test:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="XML validation failed: Invalid IdsDataFormat structure"
+                    )
+            except Exception as exc:
+                logger.exception("XML validation failed: %s", exc)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"XML validation failed: {exc!s}"
+                )
+
+            # Get CC handler and use existing version conversion logic
+            handler = CCHandler(cc_ip, "", "")
+            format_version = handler._version_to_data_format(sim_version)
+            filename = f"IdsDataFormat{format_version}.xml"
+            backup_filename = f"IdsDataFormat{format_version}.xml.original"
+
+            remote_dir = "/var/lib/docker/radware-storage/dc_config/kvision-configuration-service/config/conf"
+            remote_path = f"{remote_dir}/{filename}"
+            backup_path = f"{remote_dir}/{backup_filename}"
+
+            # Use centralized SSH client
+            ssh_client = get_cc_ssh_client(cc_ip=cc_ip, username=username, password=password)
+
+            # Check if backup already exists
+            check_cmd = f"test -f {backup_path} && echo 'exists' || echo 'not_exists'"
+            success, output = ssh_client.execute_command(check_cmd, check_stderr=False)
+
+            backup_created = False
+            if 'not_exists' in output:
+                # Create backup
+                logger.info("Creating backup: %s -> %s", remote_path, backup_path)
+                backup_cmd = f"cp {remote_path} {backup_path}"
+                success, backup_output = ssh_client.execute_command(backup_cmd, check_stderr=True)
+
+                if not success:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Failed to create backup: {backup_output}"
+                    )
+                backup_created = True
+                logger.info("Backup created successfully")
+            else:
+                logger.info("Backup already exists, skipping backup creation")
+
+            # Upload custom XML
+            logger.info("Uploading custom XML to %s", remote_path)
+            success, upload_msg = ssh_client.upload_file(tmp_path, remote_path)
+
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to upload XML: {upload_msg}"
+                )
+
+            logger.info("Custom XML uploaded successfully, now downloading and converting...")
+
+            # Download back from CC and convert (reuse existing logic)
+            ok, download_result = handler.download_ids_data_format(sim_version, username, password)
+            if not ok:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to download uploaded XML: {download_result}"
+                )
+
+            local_path = download_result
+
+            # Read file bytes and compute SHA256 checksum
+            try:
+                with open(local_path, 'rb') as f:
+                    file_bytes = f.read()
+            except Exception as exc:
+                logger.exception("Failed to read downloaded file %s: %s", local_path, exc)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to read downloaded file: {exc!s}"
+                )
+
+            sha256_hash = hashlib.sha256(file_bytes).hexdigest()
+
+            # Convert XML
+            try:
+                converted = convert_xml(local_path)
+            except Exception as exc:
+                logger.exception("Conversion failed for %s: %s", local_path, exc)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Conversion error: {exc!s}"
+                )
+
+            # Store in MongoDB
+            try:
+                mongo_db = get_mongo_db()
+
+                template_name = os.path.basename(local_path)
+                if template_name.lower().endswith('.xml'):
+                    template_name = template_name[:-4]
+
+                insert_doc = {
+                    "template_name": f"{template_name}_CUSTOM",
+                    "description": f"Custom XML uploaded by {current_user.username} for {cc_ip}",
+                    "xml_schema": converted,
+                    "IdsDataFormat_version": sim_version,
+                    "user_id": str(current_user.user_id),
+                    "xml_blob": base64.b64encode(file_bytes).decode(),
+                    "xml_checksum": sha256_hash,
+                    "created_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(timezone.utc),
+                    "is_public": False,
+                }
+
+                result = mongo_db.irp_data_formats.insert_one(insert_doc)
+                mongo_id = str(result.inserted_id)
+
+                logger.info("Custom XML converted and stored (id=%s, version=%s, checksum=%s...)",
+                            mongo_id, sim_version, sha256_hash[:16])
+
+                return {
+                    "success": True,
+                    "message": f"Custom XML uploaded and converted successfully for version {sim_version}",
+                    "version": sim_version,
+                    "backup_created": backup_created,
+                    "mongo_id": mongo_id
+                }
+
+            except Exception as exc:
+                logger.exception("Failed to store converted schema in MongoDB: %s", exc)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to store in MongoDB: {exc!s}"
+                )
+
+        finally:
+            # Clean up temp file
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Error uploading custom XML: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error uploading custom XML: {exc!s}"
         )
 
 

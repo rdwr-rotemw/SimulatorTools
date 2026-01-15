@@ -11,13 +11,16 @@ interface DownloadSchemaRequest {
   sim_version: string
   username: string
   password: string
+  revert_to_original?: boolean
 }
 
 interface DownloadSchemaResponse {
   success: boolean
   message: string
-  local_path: string
-  mongo_id: string
+  local_path?: string
+  mongo_id?: string
+  backup_exists?: boolean
+  is_custom?: boolean
 }
 
 interface SchemaMessage {
