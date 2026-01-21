@@ -10,7 +10,9 @@ import {
   Alert,
   CircularProgress,
   Box,
+  Tooltip,
 } from '@mui/material';
+import { HelpOutline } from '@mui/icons-material';
 import { useForm } from 'react-hook-form';
 import { CCAddDeviceRequest } from '../../types/cc.types';
 import useCCStore from '../../store/ccStore';
@@ -54,9 +56,6 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
       setErrorMessage(null);
     }
   }, [open, reset]);
-
-
-  const ipv4Pattern = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
 
   const handleFormSubmit = handleSubmit(async (data: CCAddDeviceRequest) => {
     setIsLoading(true);
@@ -129,18 +128,61 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
             </TextField>
 
             {/* Management IP */}
-            <TextField
-              label="Management IP"
-              fullWidth
-              size="small"
-              {...register('management_ip', {
-                required: 'Management IP is required',
-                pattern: { value: ipv4Pattern, message: 'Enter a valid IPv4 address' },
-              })}
-              error={!!errors.management_ip}
-              helperText={errors.management_ip?.message}
-              sx={{ '& label': { fontSize: '14px' } }}
-            />
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+              <TextField
+                label="Management IP"
+                fullWidth
+                size="small"
+                placeholder="Single IP or Range (e.g., 50.50.100.1-50.50.100.25)"
+                {...register('management_ip', {
+                  required: 'Management IP is required',
+                  validate: (value) => {
+                    const trimmedValue = value.trim();
+
+                    // IPv4 single: 192.168.1.1
+                    const ipv4Single = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
+
+                    // IPv4 range: 192.168.1.1-192.168.1.25 (allows spaces around dash)
+                    const ipv4Range = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}\s*-\s*(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
+
+                    // IPv6 single: 2001:db8::1 or full format
+                    const ipv6Single = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
+
+                    // IPv6 range: 2001:db8::1-2001:db8::25 (allows spaces)
+                    const ipv6Range = /^([0-9a-fA-F:]+)\s*-\s*([0-9a-fA-F:]+)$/;
+
+                    if (ipv4Single.test(trimmedValue) || ipv4Range.test(trimmedValue) ||
+                        ipv6Single.test(trimmedValue) || ipv6Range.test(trimmedValue)) {
+                      return true;
+                    }
+
+                    return 'Enter a valid IP address or range (e.g., 50.50.100.1 or 50.50.100.1-50.50.100.25)';
+                  },
+                })}
+                error={!!errors.management_ip}
+                helperText={errors.management_ip?.message}
+                sx={{ '& label': { fontSize: '14px' } }}
+              />
+              <Tooltip
+                 title={
+                   <Box sx={{ whiteSpace: 'pre-line', fontSize: '12px', p: 0.5 }}>
+                     {'Supported formats:\n\nIPv4:\n• Single: 192.168.1.1\n• Range: 192.168.1.1-192.168.1.25\n\nIPv6:\n• Single: 2001:db8::1\n• Range: 2001:db8::1-2001:db8::25\n\nFor ranges:\nDevices will be named: {Name}_{IP}\nExample: Sim → Sim_50.50.100.1, Sim_50.50.100.2, ...'}
+                   </Box>
+                 }
+                 placement="right"
+                 arrow
+              >
+                <HelpOutline
+                   sx={{
+                     fontSize: 18,
+                     color: 'text.secondary',
+                     cursor: 'help',
+                     flexShrink: 0,
+                    mt: 0.5
+                   }}
+                 />
+              </Tooltip>
+            </Box>
 
             {/* Vision Management Port */}
             <TextField

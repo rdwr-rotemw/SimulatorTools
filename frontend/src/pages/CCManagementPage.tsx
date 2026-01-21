@@ -57,26 +57,6 @@ const CCManagementPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-refresh devices list every 30 seconds while connected to a CC
-  // Pause auto-refresh when device driver dialog is open
-  useEffect(() => {
-    if (!currentCC) return;
-
-    // Don't auto-refresh when dialogs are open
-    if (deviceDriverDialogOpen || addDialogOpen) return;
-
-    const interval = setInterval(() => {
-      try {
-        fetchDevices(currentCC);
-      } catch (err) {
-        // swallow errors here; fetchDevices internally handles errors and state
-        // so we avoid noisy interval failures bubbling up
-        // console.debug('Auto-refresh fetchDevices error', err);
-      }
-    }, 30000); // 30 seconds
-
-    return () => clearInterval(interval);
-  }, [currentCC, fetchDevices, deviceDriverDialogOpen, addDialogOpen]);
 
   const handleAddDevice = () => setAddDialogOpen(true);
 

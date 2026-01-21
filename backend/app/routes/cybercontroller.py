@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from pydantic import BaseModel
@@ -41,6 +41,7 @@ from backend.app.utils.device_driver import (
     save_uploaded_driver,
     deploy_multiple_drivers,
 )
+from backend.utils.ip_utils import parse_ip_range
 
 logger = logging.getLogger("sim-tools.cybercontroller")
 
@@ -136,6 +137,22 @@ class IRPSchemaListItem(BaseModel):
 class IRPSchemaListResponse(BaseModel):
     """Response for IRP schemas list."""
     schemas: List[IRPSchemaListItem]
+
+
+class CCDeviceAddResult(BaseModel):
+    """Represents the result of adding a single device."""
+    management_ip: str
+    name: str
+    success: bool
+    error_message: Optional[str] = None
+
+
+class CCBatchDeviceResponse(BaseModel):
+    """Represents the batch addition response for devices."""
+    total: int
+    successful: int
+    failed: int
+    results: List[CCDeviceAddResult]
 
 
 # ============================================================================
@@ -382,15 +399,24 @@ async def get_organization_parent(
 @router.post(
     "/cc/{cc_ip}/simulators",
     status_code=status.HTTP_201_CREATED,
-    response_model=CCDeviceResponse,
+    response_model=Union[CCDeviceResponse, CCBatchDeviceResponse],
 )
 async def add_cc_simulator(
         cc_ip: str,
         payload: CCAddDevicePayload,
         db: Session = Depends(get_db),
         current_user: User = Depends(require_cc_access),
-) -> CCDeviceResponse:
-    """Add a device (simulator) to a CyberController instance.
+) -> Union[CCDeviceResponse, CCBatchDeviceResponse]:
+    """Add a device (simulator) or range of devices to a CyberController instance.
+
+    Supports single IP or IP range:
+        - Single: management_ip = "50.50.100.1"
+        - Range: management_ip = "50.50.100.1-50.50.100.25"
+
+    For ranges:
+        - Only IP and name increment
+        - All other parameters (username, password, etc.) stay the same
+        - Naming format: {name}_{ip} (e.g., "Sim_50.50.100.1")
 
     Args:
         cc_ip: CyberController IP address or hostname
@@ -399,7 +425,7 @@ async def add_cc_simulator(
         current_user: Authenticated user with cc_admin or admin role
 
     Returns:
-        CCDeviceResponse with the created device details
+        CCDeviceResponse for single device or CCBatchDeviceResponse for ranges
 
     Raises:
         HTTPException: If authentication or device creation fails
@@ -426,31 +452,86 @@ async def add_cc_simulator(
         except Exception:
             pass
 
-        # Add device using new API
-        ok, result = handler.add_device(
-            name=payload.name,
-            management_ip=payload.management_ip,
-            device_type=payload.type,
-            cli_username=payload.cli_username,
-            cli_password=payload.cli_password,
-            http_username=payload.http_username,
-            https_password=payload.https_password,
-            vision_mgt_port=payload.vision_mgt_port,
-            register_device_events=payload.register_device_events,
-        )
+        # Parse IP range
+        ip_list = parse_ip_range(payload.management_ip)
 
-        if not ok:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to add device: {result}"
+        if len(ip_list) == 1:
+            # Single device - existing logic
+            ok, result = handler.add_device(
+                name=payload.name,
+                management_ip=payload.management_ip,
+                device_type=payload.type,
+                cli_username=payload.cli_username,
+                cli_password=payload.cli_password,
+                http_username=payload.http_username,
+                https_password=payload.https_password,
+                vision_mgt_port=payload.vision_mgt_port,
+                register_device_events=payload.register_device_events,
             )
 
-        # Return minimal response since new API returns success message
-        return CCDeviceResponse(
-            management_ip=payload.management_ip,
-            name=payload.name,
-            device_type=payload.type,
-        )
+            if not ok:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to add device: {result}"
+                )
+
+            # Return minimal response since new API returns success message
+            return CCDeviceResponse(
+                management_ip=payload.management_ip,
+                name=payload.name,
+                device_type=payload.type,
+            )
+        else:
+            # Batch devices
+            results = []
+            successful = 0
+            failed = 0
+
+            for ip in ip_list:
+                device_name = f"{payload.name}_{ip}"
+                try:
+                    ok, result = handler.add_device(
+                        name=device_name,
+                        management_ip=ip,
+                        device_type=payload.type,
+                        cli_username=payload.cli_username,
+                        cli_password=payload.cli_password,
+                        http_username=payload.http_username,
+                        https_password=payload.https_password,
+                        vision_mgt_port=payload.vision_mgt_port,
+                        register_device_events=payload.register_device_events,
+                    )
+
+                    if ok:
+                        successful += 1
+                        results.append(CCDeviceAddResult(
+                            management_ip=ip,
+                            name=device_name,
+                            success=True
+                        ))
+                    else:
+                        failed += 1
+                        results.append(CCDeviceAddResult(
+                            management_ip=ip,
+                            name=device_name,
+                            success=False,
+                            error_message=result
+                        ))
+                except Exception as exc:
+                    failed += 1
+                    results.append(CCDeviceAddResult(
+                        management_ip=ip,
+                        name=device_name,
+                        success=False,
+                        error_message=str(exc)
+                    ))
+
+            return CCBatchDeviceResponse(
+                total=len(ip_list),
+                successful=successful,
+                failed=failed,
+                results=results
+            )
     except HTTPException:
         raise
     except Exception as exc:
