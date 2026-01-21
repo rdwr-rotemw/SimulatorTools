@@ -646,7 +646,8 @@ class MessageBuilder:
         Process a while-loop using existing deep traversal logic, but in JSON field order.
         """
         binary_data = b''
-
+        if isinstance(values, dict):
+            values = values[while_loop.name]
         if not isinstance(values, list):
             raise ValueError(f"While-loop '{while_loop.name}' expects a list of values")
 

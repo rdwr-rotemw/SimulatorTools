@@ -11,20 +11,21 @@ These endpoints integrate directly with reporter implementation modules.
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-from typing import Any, Dict, Union, Optional
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Dict, Union, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from concurrent.futures import ThreadPoolExecutor
-import asyncio
-import json
 
 from backend.app.models.user import User
 from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo, send_irp_messages
+from backend.app.modules.reporter.irp.irp_module import send_irp_messages_with_progress
 from backend.app.modules.reporter.snmp import attack_traps
 from backend.app.modules.sapro.sapro_client import get_sapro_handler, SaproCommunicationHandler
 from backend.app.schemas.reporter import (
@@ -242,11 +243,11 @@ async def send_irp_messages_endpoint(
     "/cc/{cc_ip}/simulators/{simulator_ip}/reporter/irp/stream"
 )
 async def send_irp_messages_stream_endpoint(
-    cc_ip: str,
-    simulator_ip: str,
-    payload: IRPSendPayload,
-    _current_user: User = Depends(require_cc_access),
-    mongo_db=Depends(get_mongo_db),
+        cc_ip: str,
+        simulator_ip: str,
+        payload: IRPSendPayload,
+        _current_user: User = Depends(require_cc_access),
+        mongo_db=Depends(get_mongo_db),
 ):
     """Send IRP messages with real-time progress via Server-Sent Events."""
     try:
@@ -263,7 +264,6 @@ async def send_irp_messages_stream_endpoint(
 
         async def event_generator():
             try:
-                from backend.app.modules.reporter.irp.irp_module import send_irp_messages_with_progress
                 for progress in send_irp_messages_with_progress(schema_obj, message_data, simulator_ip, cc_ip):
                     yield f"data: {json.dumps(progress)}\n\n"
             except Exception as exc:
@@ -837,6 +837,3 @@ async def send_snmp_trap_stream_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to initialize SNMP trap streaming: {exc!s}"
         )
-
-
-
