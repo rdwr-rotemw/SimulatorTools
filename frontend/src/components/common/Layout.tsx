@@ -99,7 +99,14 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           </Box>
 
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <IconButton onClick={() => navigate(-1)} sx={{ color: 'white' }}>
+            <IconButton onClick={() => {
+              // Special handling for CC login page - go back to main dashboard
+              if (pathname === '/cc/login') {
+                navigate('/dashboard');
+              } else {
+                navigate(-1);
+              }
+            }} sx={{ color: 'white' }}>
               <ArrowBackIcon />
             </IconButton>
             <Typography variant="body2" sx={{ color: 'white' }}>
