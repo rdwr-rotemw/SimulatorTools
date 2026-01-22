@@ -120,7 +120,7 @@ export const ccService = {
   addDeviceWithStatusCheck: async (
     cc_ip: string,
     data: CCAddDeviceRequest,
-    onProgress: (current: number, total: number, ip: string, name: string, status: 'adding' | 'checking' | 'success' | 'failed', message: string) => void,
+    onProgress: (current: number, total: number, ip: string, name: string, status: 'adding' | 'added' | 'checking' | 'success' | 'failed', message: string) => void,
     onComplete: (successCount: number, failedCount: number, totalCount: number) => void,
     onError: (error: string) => void
   ): Promise<void> => {

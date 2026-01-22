@@ -595,17 +595,19 @@ async def add_cc_simulator_stream(
                     tasks = [wait_for_device_up(handler, ip, 5) for ip, _, _ in added_devices]
                     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                    # Process results
-                    for (ip, device_name, index), is_up in zip(added_devices, results):
+                    # Process results with sequential counter for waiting phase
+                    waiting_total = len(added_devices)
+                    for waiting_index, ((ip, device_name, original_index), is_up) in enumerate(
+                            zip(added_devices, results), start=1):
                         if isinstance(is_up, Exception):
                             failed += 1
-                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': f'Status check error: {str(is_up)}'})}\n\n"
+                            yield f"data: {json.dumps({'type': 'progress', 'current': waiting_index, 'total': waiting_total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': f'Status check error: {str(is_up)}'})}\n\n"
                         elif is_up:
                             successful += 1
-                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'success', 'message': 'Device is up and ready'})}\n\n"
+                            yield f"data: {json.dumps({'type': 'progress', 'current': waiting_index, 'total': waiting_total, 'ip': ip, 'name': device_name, 'status': 'success', 'message': 'Device is up and ready'})}\n\n"
                         else:
                             failed += 1
-                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': 'Device added but failed to come up within 5 minutes'})}\n\n"
+                            yield f"data: {json.dumps({'type': 'progress', 'current': waiting_index, 'total': waiting_total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': 'Device added but failed to come up within 5 minutes'})}\n\n"
 
                 # Send completion
                 yield f"data: {json.dumps({'type': 'complete', 'success_count': successful, 'failed_count': failed, 'total_count': total})}\n\n"
@@ -614,6 +616,7 @@ async def add_cc_simulator_stream(
                 logger.exception(f"Error during CC device addition streaming with status: {exc}")
                 error_event = {"type": "error", "message": str(exc)}
                 yield f"data: {json.dumps(error_event)}\n\n"
+
         return StreamingResponse(
             event_generator(),
             media_type="text/event-stream",
@@ -715,27 +718,46 @@ async def add_cc_simulator_stream_with_status(
                         failed += 1
                         yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': str(exc)})}\n\n"
 
-                # PHASE 2: Wait for ALL added devices in parallel using asyncio.gather
+                # PHASE 2: Wait for ALL added devices in parallel using asyncio.gather with callback
                 if added_devices:
                     # Send checking phase start notification
                     yield f"data: {json.dumps({'type': 'phase', 'message': f'All devices added. Now checking status for {len(added_devices)} devices in parallel...'})}\n\n"
 
+                    # Send immediate "checking" event to switch UI to waiting phase
+                    first_device = added_devices[0]
+                    yield f"data: {json.dumps({'type': 'progress', 'current': 0, 'total': len(added_devices), 'ip': first_device[0], 'name': first_device[1], 'status': 'checking', 'message': 'Checking device status...'})}\n\n"
+
                     # Create parallel tasks for all devices
                     import asyncio
-                    tasks = [wait_for_device_up(handler, ip, 5) for ip, _, _ in added_devices]
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                    # Process results
-                    for (ip, device_name, index), is_up in zip(added_devices, results):
-                        if isinstance(is_up, Exception):
+                    # We'll use a different approach: create wrapper tasks that report completion
+                    waiting_total = len(added_devices)
+                    waiting_index = 0
+
+                    async def check_and_report(ip, device_name, original_index):
+                        """Wrapper that returns device info with result"""
+                        is_up = await wait_for_device_up(handler, ip, 5)
+                        return (ip, device_name, original_index, is_up)
+
+                    # Create all tasks
+                    tasks = [check_and_report(ip, device_name, idx) for ip, device_name, idx in added_devices]
+
+                    # Process results as they complete
+                    for coro in asyncio.as_completed(tasks):
+                        waiting_index += 1
+                        try:
+                            ip, device_name, original_index, is_up = await coro
+
+                            if is_up:
+                                successful += 1
+                                yield f"data: {json.dumps({'type': 'progress', 'current': waiting_index, 'total': waiting_total, 'ip': ip, 'name': device_name, 'status': 'success', 'message': 'Device is up and ready'})}\n\n"
+                            else:
+                                failed += 1
+                                yield f"data: {json.dumps({'type': 'progress', 'current': waiting_index, 'total': waiting_total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': 'Device added but failed to come up within 5 minutes'})}\n\n"
+                        except Exception as exc:
                             failed += 1
-                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': f'Status check error: {str(is_up)}'})}\n\n"
-                        elif is_up:
-                            successful += 1
-                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'success', 'message': 'Device is up and ready'})}\n\n"
-                        else:
-                            failed += 1
-                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': 'Device added but failed to come up within 5 minutes'})}\n\n"
+                            # We don't have device info if the task failed early, so use generic message
+                            yield f"data: {json.dumps({'type': 'progress', 'current': waiting_index, 'total': waiting_total, 'ip': 'unknown', 'name': 'unknown', 'status': 'failed', 'message': f'Status check error: {str(exc)}'})}\n\n"
 
                 # Send completion
                 yield f"data: {json.dumps({'type': 'complete', 'success_count': successful, 'failed_count': failed, 'total_count': total})}\n\n"
@@ -946,8 +968,6 @@ async def get_ids_data_format(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error retrieving IdsDataFormat: {exc!s}"
         )
-
-
 
 
 @router.post(

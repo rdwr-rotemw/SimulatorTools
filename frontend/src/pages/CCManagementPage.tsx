@@ -47,6 +47,7 @@ const CCManagementPage: React.FC = () => {
   const [isAdding, setIsAdding] = useState(false);
   const [currentDevice, setCurrentDevice] = useState(0);
   const [totalDevices, setTotalDevices] = useState(0);
+  const [currentPhase, setCurrentPhase] = useState<'adding' | 'waiting' | null>(null);
   const [deviceProgress, setDeviceProgress] = useState<{
     current: number;
     total: number;
@@ -98,6 +99,14 @@ const CCManagementPage: React.FC = () => {
           (current, total, ip, name, status, message) => {
             setCurrentDevice(current);
             setTotalDevices(total);
+
+            // Detect phase from status
+            if (status === 'adding' || status === 'added') {
+              setCurrentPhase('adding');
+            } else if (status === 'checking' || status === 'success' || status === 'failed') {
+              setCurrentPhase('waiting');
+            }
+
             setDeviceProgress({
               current,
               total,
@@ -110,6 +119,7 @@ const CCManagementPage: React.FC = () => {
           (successCount, failedCount, totalCount) => {
             setIsAdding(false);
             setDeviceProgress(null);
+            setCurrentPhase(null);
             if (failedCount === 0) {
               setSnackbar({
                 open: true,
@@ -135,6 +145,7 @@ const CCManagementPage: React.FC = () => {
           (error) => {
             setIsAdding(false);
             setDeviceProgress(null);
+            setCurrentPhase(null);
             setSnackbar({
               open: true,
               message: `Error: ${error}`,
@@ -319,45 +330,45 @@ const CCManagementPage: React.FC = () => {
             <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
               <CircularProgress size={60} />
               <Typography variant="h6">
-                {deviceProgress ? (
-                  deviceProgress.status === 'adding' ? 'Adding Device...' :
-                  deviceProgress.status === 'added' ? 'Device Added, Checking Status...' :
-                  deviceProgress.status === 'checking' ? 'Waiting for Device to be Up...' :
-                  deviceProgress.status === 'success' ? 'Device Ready!' :
-                  deviceProgress.status === 'failed' ? 'Device Failed' :
-                  'Adding Devices...'
-                ) : 'Adding Devices...'}
+                {currentPhase === 'adding' ? 'Adding Devices to CyberController...' :
+                 currentPhase === 'waiting' ? 'Waiting for All Devices to be Up...' :
+                 deviceProgress?.status === 'success' ? 'All Devices Ready!' :
+                 deviceProgress?.status === 'failed' ? 'Some Devices Failed' :
+                 'Processing...'}
               </Typography>
+
+              {/* Phase-aware counter */}
               {currentDevice > 0 && (
-                <Typography variant="h5" fontWeight="bold" color="primary">
-                  {currentDevice}/{totalDevices}
-                </Typography>
-              )}
-              {deviceProgress && (
                 <Box sx={{ textAlign: 'center' }}>
+                  <Typography variant="h5" fontWeight="bold" color="primary">
+                    {currentPhase === 'adding' ? 'Adding: ' : currentPhase === 'waiting' ? 'Waiting: ' : ''}
+                    {currentDevice}/{totalDevices}
+                  </Typography>
+                  <Typography variant="caption" color="textSecondary">
+                    {currentPhase === 'adding' && 'Adding devices to CyberController...'}
+                    {currentPhase === 'waiting' && 'Waiting for all devices to be up...'}
+                  </Typography>
+                </Box>
+              )}
+
+              {/* Current device details */}
+              {deviceProgress && (
+                <Box sx={{ textAlign: 'center', mt: 2 }}>
                   <Typography variant="body1" fontWeight="medium">
                     {deviceProgress.ip} - {deviceProgress.name}
                   </Typography>
                   <Typography
                     variant="body2"
                     sx={{
-                      color: deviceProgress.status === 'failed' ? 'error.main' : 'success.main',
+                      color: deviceProgress.status === 'failed' ? 'error.main' :
+                             deviceProgress.status === 'success' ? 'success.main' :
+                             'text.secondary',
                       mt: 1
                     }}
                   >
                     {deviceProgress.message}
                   </Typography>
-                  {deviceProgress.status === 'checking' && (
-                    <Typography variant="caption" color="textSecondary" sx={{ mt: 1 }}>
-                      Polling device status (timeout: 5 minutes)...
-                    </Typography>
-                  )}
                 </Box>
-              )}
-              {!deviceProgress && (
-                <Typography variant="body2" color="textSecondary">
-                  Please wait while devices are being added to CyberController...
-                </Typography>
               )}
             </Box>
           </DialogContent>
