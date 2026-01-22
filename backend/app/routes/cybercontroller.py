@@ -14,13 +14,14 @@ handled via username/password in request body or query parameters.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from backend.app.models.cc_session import CCSession
@@ -30,6 +31,24 @@ from backend.app.modules.mongo_models import DeviceDriverDeploy
 from backend.app.modules.reporter.irp.irp_module import convert_xml
 from backend.app.modules.sapro.sapro_client import get_sapro_handler
 from backend.app.modules.sapro.src.returnTypes.models import SaproDevice
+from backend.app.schemas.cybercontroller import (
+    CCLoginPayload,
+    CCLoginResponse,
+    CCAddDevicePayload,
+    CCDeviceResponse,
+    CCDevicesListResponse,
+    CCDeleteResponse,
+    CCLogoutResponse,
+    CCIdsDataFormatResponse,
+    IdsDataFormatPayload,
+    ManagementPort,
+    ManagementPortsResponse,
+    IRPSchemaListItem,
+    IRPSchemaListResponse,
+    CCDeviceAddResult,
+    CCBatchDeviceResponse,
+    IdsDownloadPayload,
+)
 from backend.app.utils.auth import require_cc_access
 from backend.app.utils.cc_ssh import get_cc_ssh_client
 from backend.app.utils.database import get_db
@@ -46,113 +65,6 @@ from backend.utils.ip_utils import parse_ip_range
 logger = logging.getLogger("sim-tools.cybercontroller")
 
 router = APIRouter(prefix="/api", tags=["cybercontroller"])
-
-
-# ============================================================================
-# Request/Response Models
-# ============================================================================
-
-class CCLoginPayload(BaseModel):
-    """Login payload for CyberController authentication."""
-    username: str
-    password: str
-
-
-class CCLoginResponse(BaseModel):
-    """Response for CC login."""
-    success: bool
-    message: str
-
-
-class CCAddDevicePayload(BaseModel):
-    """Payload for adding a device to CyberController."""
-    name: str
-    type: str  # "DefensePro" or "Alteon"
-    cli_username: str
-    cli_password: str
-    http_username: str
-    https_password: str
-    management_ip: str
-    vision_mgt_port: str  # e.g., "G1"
-    register_device_events: bool = False
-
-
-class CCDeviceResponse(BaseModel):
-    """Single device response."""
-    management_ip: str
-    name: Optional[str] = None
-    device_id: Optional[str] = None
-    device_type: Optional[str] = None
-    status: Optional[str] = None
-    version: Optional[str] = None
-
-
-class CCDevicesListResponse(BaseModel):
-    """List of devices response."""
-    devices: List[CCDeviceResponse]
-
-
-class CCDeleteResponse(BaseModel):
-    """Response for device deletion."""
-    success: bool
-    message: str
-
-
-class CCLogoutResponse(BaseModel):
-    """Response for CC logout."""
-    success: bool
-    message: str
-
-
-class CCIdsDataFormatResponse(BaseModel):
-    """Response for IdsDataFormat XML files."""
-    files: List[str]
-
-
-class IdsDataFormatPayload(BaseModel):
-    """Payload for listing IdsDataFormat files via SSH credentials."""
-    username: str
-    password: str
-
-
-class ManagementPort(BaseModel):
-    """Single management port."""
-    interface: str
-    address: str
-
-
-class ManagementPortsResponse(BaseModel):
-    """Response for management ports list."""
-    ports: List[ManagementPort]
-
-
-class IRPSchemaListItem(BaseModel):
-    """Single IRP schema item."""
-    mongo_id: str
-    template_name: str
-    version: str
-    created_at: str
-
-
-class IRPSchemaListResponse(BaseModel):
-    """Response for IRP schemas list."""
-    schemas: List[IRPSchemaListItem]
-
-
-class CCDeviceAddResult(BaseModel):
-    """Represents the result of adding a single device."""
-    management_ip: str
-    name: str
-    success: bool
-    error_message: Optional[str] = None
-
-
-class CCBatchDeviceResponse(BaseModel):
-    """Represents the batch addition response for devices."""
-    total: int
-    successful: int
-    failed: int
-    results: List[CCDeviceAddResult]
 
 
 # ============================================================================
@@ -541,6 +453,314 @@ async def add_cc_simulator(
         )
 
 
+async def wait_for_device_up(handler: CCHandler, device_ip: str, timeout_minutes: int = 5) -> bool:
+    """Wait for a device to be up by polling its status.
+
+    Polls the device status every 10 seconds until deviceStatus.status == 'OK'
+    or timeout is reached.
+
+    Args:
+        handler: CCHandler instance with active session
+        device_ip: IP address of the device to check
+        timeout_minutes: Maximum time to wait in minutes (default: 5)
+
+    Returns:
+        True if device is up, False if timeout or error
+    """
+    import asyncio
+
+    timeout_seconds = timeout_minutes * 60
+    poll_interval = 10
+
+    logger.info(f"Starting to wait for device {device_ip} to be up (timeout: {timeout_minutes} minutes)")
+
+    for elapsed in range(0, timeout_seconds, poll_interval):
+        try:
+            ok, result = handler.get_device_status(device_ip)
+            if not ok:
+                logger.debug(f"Failed to get status for device {device_ip}: {result}")
+                await asyncio.sleep(poll_interval)
+                continue
+
+            device_data = result  # type: ignore
+            device_status = device_data.get('deviceStatus', {}).get('status')
+
+            logger.debug(f"Device {device_ip} status: {device_status}")
+
+            if device_status == 'OK':
+                logger.info(f"Device {device_ip} is now up")
+                return True
+
+            await asyncio.sleep(poll_interval)
+
+        except Exception as exc:
+            logger.exception(f"Error checking device status for {device_ip}: {exc}")
+            await asyncio.sleep(poll_interval)
+
+    logger.warning(f"Timeout waiting for device {device_ip} to be up after {timeout_minutes} minutes")
+    return False
+
+
+@router.post(
+    "/cc/{cc_ip}/simulators/stream",
+    status_code=status.HTTP_200_OK,
+)
+async def add_cc_simulator_stream(
+        cc_ip: str,
+        payload: CCAddDevicePayload,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
+):
+    """Add devices to CyberController with real-time progress via Server-Sent Events (SSE).
+
+    Supports both single IP and IP ranges with streaming progress updates.
+    Frontend receives progress events for each device addition.
+
+    Event format:
+        - progress: {"type": "progress", "current": N, "total": M, "ip": "X.X.X.X", "name": "...", "status": "success"/"failed", "message": "..."}
+        - complete: {"type": "complete", "success_count": N, "failed_count": M, "total_count": T}
+        - error: {"type": "error", "message": "..."}
+    """
+    try:
+        # Query for active session
+        cc_session = db.query(CCSession).filter(
+            CCSession.cc_ip == cc_ip,
+            CCSession.user_id == current_user.user_id
+        ).first()
+
+        if not cc_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
+            )
+
+        handler = CCHandler(cc_ip, "", "")
+        jsession_id = str(cc_session.jsession_id)
+        handler._creds = CCCredentials(jsession_id=jsession_id, cc_ip=cc_ip,
+                                       authenticated_at=getattr(cc_session, 'login_time', None))
+        try:
+            handler._session.cookies.set("JSESSIONID", jsession_id)
+        except Exception:
+            pass
+
+        # Parse IP range
+        ip_list = parse_ip_range(payload.management_ip)
+
+        async def event_generator():
+            successful = 0
+            failed = 0
+            total = len(ip_list)
+
+            try:
+                # PHASE 1: Add ALL devices (sequential but no waiting)
+                added_devices = []  # Track successfully added device IPs
+
+                for index, ip in enumerate(ip_list, start=1):
+                    device_name = f"{payload.name}_{ip}" if len(ip_list) > 1 else payload.name
+
+                    try:
+                        # Send "adding" status
+                        yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'adding', 'message': 'Adding device...'})}\n\n"
+
+                        ok, result = handler.add_device(
+                            name=device_name,
+                            management_ip=ip,
+                            device_type=payload.type,
+                            cli_username=payload.cli_username,
+                            cli_password=payload.cli_password,
+                            http_username=payload.http_username,
+                            https_password=payload.https_password,
+                            vision_mgt_port=payload.vision_mgt_port,
+                            register_device_events=payload.register_device_events,
+                        )
+
+                        if ok:
+                            added_devices.append((ip, device_name, index))
+                            # Send "added" status (not yet checking)
+                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'added', 'message': 'Device added, will check status after all additions complete'})}\n\n"
+                        else:
+                            failed += 1
+                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': f'Failed to add: {result}'})}\n\n"
+                    except Exception as exc:
+                        failed += 1
+                        yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': str(exc)})}\n\n"
+
+                # PHASE 2: Wait for ALL added devices in parallel using asyncio.gather
+                if added_devices:
+                    # Send checking phase start notification
+                    yield f"data: {json.dumps({'type': 'phase', 'message': f'All devices added. Now checking status for {len(added_devices)} devices in parallel...'})}\n\n"
+
+                    # Create parallel tasks for all devices
+                    import asyncio
+                    tasks = [wait_for_device_up(handler, ip, 5) for ip, _, _ in added_devices]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    # Process results
+                    for (ip, device_name, index), is_up in zip(added_devices, results):
+                        if isinstance(is_up, Exception):
+                            failed += 1
+                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': f'Status check error: {str(is_up)}'})}\n\n"
+                        elif is_up:
+                            successful += 1
+                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'success', 'message': 'Device is up and ready'})}\n\n"
+                        else:
+                            failed += 1
+                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': 'Device added but failed to come up within 5 minutes'})}\n\n"
+
+                # Send completion
+                yield f"data: {json.dumps({'type': 'complete', 'success_count': successful, 'failed_count': failed, 'total_count': total})}\n\n"
+
+            except Exception as exc:
+                logger.exception(f"Error during CC device addition streaming with status: {exc}")
+                error_event = {"type": "error", "message": str(exc)}
+                yield f"data: {json.dumps(error_event)}\n\n"
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(f"Failed to initialize CC device addition streaming: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initialize CC device addition streaming: {exc!s}"
+        )
+
+
+@router.post(
+    "/cc/{cc_ip}/simulators/stream-with-status",
+    status_code=status.HTTP_200_OK,
+)
+async def add_cc_simulator_stream_with_status(
+        cc_ip: str,
+        payload: CCAddDevicePayload,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
+):
+    """Add devices to CyberController with real-time progress and status checking via Server-Sent Events (SSE).
+
+    Supports both single IP and IP ranges with streaming progress updates.
+    After adding each device, waits for it to be "up" before proceeding.
+
+    Event format:
+        - progress: {"type": "progress", "current": N, "total": M, "ip": "X.X.X.X", "name": "...", "status": "adding|added|checking|success|failed", "message": "..."}
+        - phase: {"type": "phase", "message": "..."}
+        - complete: {"type": "complete", "success_count": N, "failed_count": M, "total_count": T}
+        - error: {"type": "error", "message": "..."}
+    """
+    try:
+        # Query for active session
+        cc_session = db.query(CCSession).filter(
+            CCSession.cc_ip == cc_ip,
+            CCSession.user_id == current_user.user_id
+        ).first()
+
+        if not cc_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
+            )
+
+        handler = CCHandler(cc_ip, "", "")
+        jsession_id = str(cc_session.jsession_id)
+        handler._creds = CCCredentials(jsession_id=jsession_id, cc_ip=cc_ip,
+                                       authenticated_at=getattr(cc_session, 'login_time', None))
+        try:
+            handler._session.cookies.set("JSESSIONID", jsession_id)
+        except Exception:
+            pass
+
+        # Parse IP range
+        ip_list = parse_ip_range(payload.management_ip)
+
+        async def event_generator():
+            successful = 0
+            failed = 0
+            total = len(ip_list)
+
+            try:
+                # PHASE 1: Add ALL devices (sequential but no waiting)
+                added_devices = []  # Track successfully added device IPs
+
+                for index, ip in enumerate(ip_list, start=1):
+                    device_name = f"{payload.name}_{ip}" if len(ip_list) > 1 else payload.name
+
+                    try:
+                        # Send "adding" status
+                        yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'adding', 'message': 'Adding device...'})}\n\n"
+
+                        ok, result = handler.add_device(
+                            name=device_name,
+                            management_ip=ip,
+                            device_type=payload.type,
+                            cli_username=payload.cli_username,
+                            cli_password=payload.cli_password,
+                            http_username=payload.http_username,
+                            https_password=payload.https_password,
+                            vision_mgt_port=payload.vision_mgt_port,
+                            register_device_events=payload.register_device_events,
+                        )
+
+                        if ok:
+                            added_devices.append((ip, device_name, index))
+                            # Send "added" status (not yet checking)
+                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'added', 'message': 'Device added, will check status after all additions complete'})}\n\n"
+                        else:
+                            failed += 1
+                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': f'Failed to add: {result}'})}\n\n"
+                    except Exception as exc:
+                        failed += 1
+                        yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': str(exc)})}\n\n"
+
+                # PHASE 2: Wait for ALL added devices in parallel using asyncio.gather
+                if added_devices:
+                    # Send checking phase start notification
+                    yield f"data: {json.dumps({'type': 'phase', 'message': f'All devices added. Now checking status for {len(added_devices)} devices in parallel...'})}\n\n"
+
+                    # Create parallel tasks for all devices
+                    import asyncio
+                    tasks = [wait_for_device_up(handler, ip, 5) for ip, _, _ in added_devices]
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                    # Process results
+                    for (ip, device_name, index), is_up in zip(added_devices, results):
+                        if isinstance(is_up, Exception):
+                            failed += 1
+                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': f'Status check error: {str(is_up)}'})}\n\n"
+                        elif is_up:
+                            successful += 1
+                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'success', 'message': 'Device is up and ready'})}\n\n"
+                        else:
+                            failed += 1
+                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'status': 'failed', 'message': 'Device added but failed to come up within 5 minutes'})}\n\n"
+
+                # Send completion
+                yield f"data: {json.dumps({'type': 'complete', 'success_count': successful, 'failed_count': failed, 'total_count': total})}\n\n"
+
+            except Exception as exc:
+                logger.exception(f"Error during CC device addition streaming with status: {exc}")
+                error_event = {"type": "error", "message": str(exc)}
+                yield f"data: {json.dumps(error_event)}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(f"Failed to initialize CC device addition streaming with status: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initialize CC device addition streaming with status: {exc!s}"
+        )
+
+
 @router.delete(
     "/cc/{cc_ip}/simulators/{device_id}",
     status_code=status.HTTP_200_OK,
@@ -728,27 +948,6 @@ async def get_ids_data_format(
         )
 
 
-class IdsDownloadPayload(BaseModel):
-    """Payload for downloading an IdsDataFormat based on simulator version.
-
-    sim_version: Simulator version string such as "10.3.0" or "8.2.1". This
-    will be converted to the corresponding IdsDataFormat filename (for example
-    "10.3.0" -> "IdsDataFormat100300.xml") and that file will be downloaded
-    via SCP to /tmp/data_formats/ on the backend host.
-
-    revert_to_original: If True and backup exists, restore original and download it.
-    """
-    sim_version: str
-    username: str
-    password: str
-    revert_to_original: bool = False  # NEW FIELD
-
-
-class IdsUploadPayload(BaseModel):
-    """Payload for uploading custom IdsDataFormat XML."""
-    simulator_ip: str  # Used to extract version
-    username: str
-    password: str
 
 
 @router.post(

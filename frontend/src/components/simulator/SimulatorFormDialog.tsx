@@ -12,10 +12,12 @@ import {
   IconButton,
   Snackbar,
   Alert,
+  Tooltip,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
+import { HelpOutline } from '@mui/icons-material';
 import { useForm } from 'react-hook-form';
 import { Simulator, SimulatorCreate, SimulatorUpdate } from '../../types/simulator.types';
 import { DeviceTemplate, DeviceTemplateCreate, DeviceTemplateUpdate } from '../../types/template.types';
@@ -136,7 +138,6 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
     }
   }, [simulators]);
 
-  const ipPattern = /^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$/;
 
   const handleFormSubmit = async (data: SimulatorCreate | SimulatorUpdate) => {
     setIsLoading(true);
@@ -322,18 +323,58 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
       <DialogContent sx={{ paddingTop: '24px !important', paddingBottom: '24px' }}>
         <form id="simulator-form" onSubmit={handleSubmit(handleFormSubmit)}>
           <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
-            <Box>
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
               <TextField
                 label="IP Address"
                 fullWidth
                 disabled={isEditMode}
+                placeholder="Single IP or Range (e.g., 192.168.1.1-192.168.1.25)"
                 {...register('ip_address' as any, {
-                  required: 'IP Address is required',
-                  pattern: { value: ipPattern, message: 'Invalid IP address' },
+                  required: !isEditMode ? 'IP Address is required' : false,
+                  validate: (value) => {
+                    if (isEditMode) return true; // Skip validation in edit mode
+
+                    const trimmedValue = value?.trim();
+                    if (!trimmedValue) return 'IP Address is required';
+
+                    // IPv4 single: 192.168.1.1
+                    const ipv4Single = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
+
+                    // IPv4 range: 192.168.1.1-192.168.1.25 (allows spaces around dash)
+                    const ipv4Range = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}\s*-\s*(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
+
+                    if (ipv4Single.test(trimmedValue) || ipv4Range.test(trimmedValue)) {
+                      return true;
+                    }
+
+                    return 'Enter a valid IP address or range (e.g., 192.168.1.1 or 192.168.1.1-192.168.1.25)';
+                  },
                 })}
                 error={!!(errors as any)?.ip_address}
                 helperText={(errors as any)?.ip_address?.message}
+                sx={{ flex: 1 }}
               />
+              {!isEditMode && (
+                <Tooltip
+                  title={
+                    <Box sx={{ whiteSpace: 'pre-line', fontSize: '12px', p: 0.5 }}>
+                      {'Supported formats:\n\n• Single IP: 192.168.1.1\n• IP Range: 192.168.1.1-192.168.1.25\n\nFor ranges:\nSimulators will be created with IPs incrementing within the range.\nExample: 192.168.1.1, 192.168.1.2, 192.168.1.3, ...'}
+                    </Box>
+                  }
+                  placement="right"
+                  arrow
+                >
+                  <HelpOutline
+                    sx={{
+                      fontSize: 18,
+                      color: 'text.secondary',
+                      cursor: 'help',
+                      flexShrink: 0,
+                      mt: 2
+                    }}
+                  />
+                </Tooltip>
+              )}
             </Box>
 
             <Box>

@@ -1,14 +1,28 @@
-import React, { useEffect, useState } from 'react';
-import { Box, Typography, Button, Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions, Snackbar, Alert, TextField } from '@mui/material';
+import React, {useEffect, useState} from 'react';
+import {
+  Alert,
+  Box,
+  Button,
+  CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
+  Snackbar,
+  TextField,
+  Typography
+} from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import SearchIcon from '@mui/icons-material/Search';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import Layout from '../components/common/Layout';
-import { SimulatorTable } from '../components/simulator/SimulatorTable';
+import {SimulatorTable} from '../components/simulator/SimulatorTable';
 import SimulatorFormDialog from '../components/simulator/SimulatorFormDialog';
 import useSimulatorStore from '../store/simulatorStore';
-import { Simulator, SimulatorCreate, SimulatorUpdate } from '../types/simulator.types';
+import {Simulator, SimulatorCreate, SimulatorUpdate} from '../types/simulator.types';
 import apiClient from '../api/client';
+import { simulatorService } from '../api/services/simulator.service';
 
 interface SnackbarState {
   open: boolean;
@@ -36,6 +50,11 @@ export const SimulatorsPage: React.FC = () => {
   const [mapStartLoading, setMapStartLoading] = useState<string | null>(null);
   const [mapStopLoading, setMapStopLoading] = useState<string | null>(null);
 
+  // Simulator creation progress state
+  const [isCreating, setIsCreating] = useState(false);
+  const [currentSimulator, setCurrentSimulator] = useState(0);
+  const [totalSimulators, setTotalSimulators] = useState(0);
+
   const {
     simulators,
     isLoading,
@@ -46,11 +65,6 @@ export const SimulatorsPage: React.FC = () => {
   } = useSimulatorStore();
 
   const [templates, setTemplates] = useState<Array<{ _id: string; name: string }>>([]);
-  const templateMap = React.useMemo(() => {
-    const m: Record<string, string> = {};
-    templates.forEach((t) => (m[t._id] = t.name));
-    return m;
-  }, [templates]);
 
   useEffect(() => {
     fetchSimulators();
@@ -68,6 +82,7 @@ export const SimulatorsPage: React.FC = () => {
     loadTemplates();
 
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Fetch maps for Map Management dialog
@@ -203,8 +218,58 @@ export const SimulatorsPage: React.FC = () => {
         await updateSimulator(selectedSimulator.ip_address, data as SimulatorUpdate);
         setSnackbar({ open: true, message: 'Simulator updated successfully', severity: 'success' });
       } else {
-        await createSimulator(data as SimulatorCreate);
-        setSnackbar({ open: true, message: 'Simulator created successfully', severity: 'success' });
+        const createData = data as SimulatorCreate;
+        // Check if IP is a range
+        const isRange = createData.ip_address && createData.ip_address.includes('-');
+
+        if (isRange) {
+          // Use streaming for ranges
+          setIsCreating(true);
+          setCurrentSimulator(0);
+          setTotalSimulators(0);
+
+          await simulatorService.createSimulatorWithProgress(
+            createData,
+            (current, total, ip, status, message) => {
+              setCurrentSimulator(current);
+              setTotalSimulators(total);
+            },
+            (successCount, failedCount, totalCount) => {
+              setIsCreating(false);
+              if (failedCount === 0) {
+                setSnackbar({
+                  open: true,
+                  message: `Successfully created all ${successCount} simulator(s)`,
+                  severity: 'success'
+                });
+              } else if (successCount === 0) {
+                setSnackbar({
+                  open: true,
+                  message: `Failed to create all ${failedCount} simulator(s)`,
+                  severity: 'error'
+                });
+              } else {
+                setSnackbar({
+                  open: true,
+                  message: `Created ${successCount} simulator(s), ${failedCount} failed`,
+                  severity: 'success'
+                });
+              }
+            },
+            (error) => {
+              setIsCreating(false);
+              setSnackbar({
+                open: true,
+                message: `Error: ${error}`,
+                severity: 'error'
+              });
+            }
+          );
+        } else {
+          // Single IP - use regular creation
+          await createSimulator(createData);
+          setSnackbar({ open: true, message: 'Simulator created successfully', severity: 'success' });
+        }
       }
 
       // Refresh simulator list from backend to reflect Sapro state
@@ -464,6 +529,31 @@ export const SimulatorsPage: React.FC = () => {
           <DialogActions>
             <Button onClick={handleMapDialogClose}>Close</Button>
           </DialogActions>
+        </Dialog>
+
+        {/* Simulator Creation Progress Dialog */}
+        <Dialog
+          open={isCreating}
+          maxWidth="sm"
+          fullWidth
+          disableEscapeKeyDown
+        >
+          <DialogContent>
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+              <CircularProgress size={60} />
+              <Typography variant="h6">
+                Creating Simulators...
+              </Typography>
+              {currentSimulator > 0 && (
+                <Typography variant="h5" fontWeight="bold" color="primary">
+                  {currentSimulator}/{totalSimulators}
+                </Typography>
+              )}
+              <Typography variant="body2" color="textSecondary">
+                Please wait while simulators are being created...
+              </Typography>
+            </Box>
+          </DialogContent>
         </Dialog>
 
         <Snackbar open={snackbar.open} autoHideDuration={6000} onClose={handleSnackbarClose}>

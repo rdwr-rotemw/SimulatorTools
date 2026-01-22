@@ -6,7 +6,7 @@ Defaults for optional fields are handled in the reporter/attack_traps modules.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pydantic import BaseModel, Field
 
@@ -95,6 +95,18 @@ class IRPPcapAnalysisResponse(BaseModel):
     schema_info: IRPPcapAnalysisSchemaInfo
 
 
+class IRPSendPayload(BaseModel):
+    """Payload for sending IRP messages via custom data."""
+    mongo_id: str = Field(..., description="MongoDB _id of the IRP schema to use")
+    message_data: Dict[str, Any] = Field(..., description="Message data to populate the template")
+
+
+class IRPTemplatePayload(BaseModel):
+    """Payload for generating IRP message templates."""
+    mongo_id: str = Field(..., description="MongoDB _id of the IRP schema")
+    message_id: Union[int, str] = Field(..., description="Message ID to generate template for")
+
+
 __all__ = [
     "TrapConfig",
     "ReporterSNMPPayload",
@@ -105,4 +117,6 @@ __all__ = [
     "IRPPcapAnalysisError",
     "IRPPcapAnalysisSchemaInfo",
     "IRPPcapAnalysisResponse",
+    "IRPSendPayload",
+    "IRPTemplatePayload",
 ]

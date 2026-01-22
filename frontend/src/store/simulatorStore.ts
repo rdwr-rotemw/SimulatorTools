@@ -1,8 +1,8 @@
-import { create } from 'zustand';
-import { simulatorService } from '../api/services/simulator.service';
-import { SimulatorState, SimulatorCreate, SimulatorUpdate } from '../types/simulator.types';
+import {create} from 'zustand';
+import {simulatorService} from '../api/services/simulator.service';
+import {SimulatorCreate, SimulatorState, SimulatorUpdate} from '../types/simulator.types';
 
-export const useSimulatorStore = create<SimulatorState>((set, get) => ({
+export const useSimulatorStore = create<SimulatorState>((set) => ({
   simulators: [],
   selectedSimulator: null,
   isLoading: false,
@@ -34,6 +34,7 @@ export const useSimulatorStore = create<SimulatorState>((set, get) => ({
     set({ isLoading: true, error: null });
     try {
       const created = await simulatorService.createSimulator(data);
+      // Backend may return single simulator or batch response - handle both
       set((state) => ({ simulators: [...state.simulators, created], isLoading: false }));
     } catch (err: any) {
       const message = err?.response?.data?.detail || 'Failed to create simulator';

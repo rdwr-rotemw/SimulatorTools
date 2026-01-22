@@ -1,23 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Dict, Any
-from pydantic import BaseModel
 
 from backend.app.models.user import User
+from backend.app.schemas.snmp_templates import SNMPTemplate, SNMPTemplateResponse
 from backend.app.utils.auth import require_cc_access
 from backend.app.utils.database import get_mongo_db
 
 router = APIRouter(prefix="/api/cc/{cc_ip}/reporter/snmp", tags=["snmp_templates"])
 
-
-class SNMPTemplate(BaseModel):
-    name: str
-    traps: List[Dict[str, Any]]
-
-
-class SNMPTemplateResponse(BaseModel):
-    name: str
-    created_at: str
-    trap_count: int
 
 
 @router.post("/templates", status_code=status.HTTP_201_CREATED)
@@ -111,4 +101,3 @@ async def delete_template(
 
 
 __all__ = ["router"]
-

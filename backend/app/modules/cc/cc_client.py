@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import paramiko
 import requests
 import urllib3
 
@@ -43,7 +44,7 @@ class CCDevice:
     """Structured representation of a CyberController device.
 
     Only a single IP field (management_ip) is retained. Previously both
-    ip_address and management_ip were present but they represented the same
+    ip_address and management_ip were present, but they represented the same
     value in our usage, so ip_address was removed for clarity.
     """
 
@@ -172,7 +173,7 @@ class CCHandler:
             temp_session = requests.Session()
             temp_session.cookies.set("JSESSIONID", jsession_id)
 
-            # POST to logout endpoint with JSESSIONID cookie
+            # POST to log out endpoint with JSESSIONID cookie
             resp = temp_session.post(logout_url, verify=self._verify_ssl, timeout=10)
 
             # Clear local session state regardless of server response
@@ -868,6 +869,43 @@ class CCHandler:
             # Unexpected error
             logger.exception("Unexpected error in download_ids_data_format: %s", exc)
             return False, f"Unexpected download error: {exc!s}"
+
+    def get_device_status(self, device_ip: str) -> Tuple[bool, Union[str, Dict[str, Any]]]:
+        """Get device status by IP address.
+
+        Makes GET request to /mgmt/system/config/tree/device/byip/{device_ip}
+        to retrieve device status information.
+
+        Args:
+            device_ip: The management IP address of the device
+
+        Returns:
+            (True, device_data) on success where device_data contains deviceStatus.status
+            or (False, error_message) on failure.
+        """
+        try:
+            if not self.is_logged_in():
+                ok, msg = self.refresh_session()
+                if not ok:
+                    raise RuntimeError(f"Authentication required and refresh failed: {msg}")
+
+            url = f"{self.base_url}/mgmt/system/config/tree/device/byip/{device_ip}"
+            cookies = {"JSESSIONID": self._creds.jsession_id}
+            resp = requests.get(url, cookies=cookies, verify=self._verify_ssl, timeout=30)
+
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    return True, data
+                except (ValueError, TypeError) as exc:
+                    logger.debug("Failed to parse JSON response in get_device_status: %s", exc)
+                    return False, f"Failed to parse device status response: {exc}"
+
+            return False, f"Failed to get device status: HTTP {resp.status_code} - {resp.text}"
+
+        except requests.RequestException as exc:
+            logger.exception("Request exception in get_device_status: %s", exc)
+            return False, f"Request exception in get_device_status: {exc!s}"
 
     def get_management_ports(self) -> Tuple[bool, Union[str, List[Dict[str, str]]]]:
         """Fetch management port interfaces from CyberController.

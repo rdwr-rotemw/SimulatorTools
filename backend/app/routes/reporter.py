@@ -21,7 +21,6 @@ from typing import Any, Dict, Union, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 
 from backend.app.models.user import User
 from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo, send_irp_messages
@@ -33,6 +32,8 @@ from backend.app.schemas.reporter import (
     ReporterPollingPayload,
     ReporterResponse,
     IRPPcapAnalysisResponse,
+    IRPSendPayload,
+    IRPTemplatePayload,
 )
 from backend.app.utils.auth import require_cc_access, get_current_user
 from backend.app.utils.database import get_mongo_db
@@ -43,15 +44,6 @@ logger = logging.getLogger("sim-tools.reporter")
 # Module-level executor for blocking PCAP parsing
 _executor = ThreadPoolExecutor(max_workers=2)
 
-
-class IRPSendPayload(BaseModel):
-    mongo_id: str
-    message_data: Dict[str, Any]
-
-
-class IRPTemplatePayload(BaseModel):
-    mongo_id: str
-    message_id: Union[int, str]
 
 
 @router.post(

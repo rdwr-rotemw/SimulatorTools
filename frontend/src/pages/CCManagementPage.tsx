@@ -4,6 +4,7 @@ import {
   Box,
   Typography,
   Button,
+  CircularProgress,
   Dialog,
   DialogTitle,
   DialogContent,
@@ -21,6 +22,7 @@ import { CCDeviceTable } from '../components/cc/CCDeviceTable';
 import { CCAddDeviceDialog } from '../components/cc/CCAddDeviceDialog';
 import useCCStore from '../store/ccStore';
 import { CCAddDeviceRequest } from '../types/cc.types';
+import { ccService } from '../api/services/cc.service';
 
 import { CCDeviceDriverDialog } from '../components/cc/CCDeviceDriverDialog';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
@@ -40,6 +42,19 @@ const CCManagementPage: React.FC = () => {
   const [sortBy, setSortBy] = useState<'management_ip' | 'name' | 'device_type' | 'status'>('management_ip');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [deviceDriverDialogOpen, setDeviceDriverDialogOpen] = useState(false);
+
+  // Progress dialog state
+  const [isAdding, setIsAdding] = useState(false);
+  const [currentDevice, setCurrentDevice] = useState(0);
+  const [totalDevices, setTotalDevices] = useState(0);
+  const [deviceProgress, setDeviceProgress] = useState<{
+    current: number;
+    total: number;
+    ip: string;
+    name: string;
+    status: 'adding' | 'added' | 'checking' | 'success' | 'failed';
+    message: string;
+  } | null>(null);
 
   const currentCC = useCCStore((state) => state.currentCC);
   const devices = useCCStore((state) => state.devices);
@@ -64,13 +79,85 @@ const CCManagementPage: React.FC = () => {
 
   const handleAddDeviceSubmit = async (data: CCAddDeviceRequest) => {
     if (!currentCC) return;
-    try {
-      await addDevice(currentCC, data);
-      setAddDialogOpen(false);
-      setSnackbar({ open: true, message: 'Device added successfully', severity: 'success' });
-    } catch (err: any) {
-      const msg = err?.response?.data?.detail || err?.message || 'Failed to add device';
-      setSnackbar({ open: true, message: msg, severity: 'error' });
+
+    // Check if IP is a range
+    const isRange = data.management_ip && data.management_ip.includes('-');
+
+    if (isRange) {
+      // Use streaming with status check for ranges
+      setIsAdding(true);
+      setCurrentDevice(0);
+      setTotalDevices(0);
+      setDeviceProgress(null);
+      setAddDialogOpen(false); // Close dialog immediately for streaming
+
+      try {
+        await ccService.addDeviceWithStatusCheck(
+          currentCC,
+          data,
+          (current, total, ip, name, status, message) => {
+            setCurrentDevice(current);
+            setTotalDevices(total);
+            setDeviceProgress({
+              current,
+              total,
+              ip,
+              name,
+              status,
+              message
+            });
+          },
+          (successCount, failedCount, totalCount) => {
+            setIsAdding(false);
+            setDeviceProgress(null);
+            if (failedCount === 0) {
+              setSnackbar({
+                open: true,
+                message: `Successfully added all ${successCount} device(s)`,
+                severity: 'success'
+              });
+            } else if (successCount === 0) {
+              setSnackbar({
+                open: true,
+                message: `Failed to add all ${failedCount} device(s)`,
+                severity: 'error'
+              });
+            } else {
+              setSnackbar({
+                open: true,
+                message: `Added ${successCount} device(s), ${failedCount} failed`,
+                severity: 'success'
+              });
+            }
+            // Refresh devices after completion
+            fetchDevices(currentCC);
+          },
+          (error) => {
+            setIsAdding(false);
+            setDeviceProgress(null);
+            setSnackbar({
+              open: true,
+              message: `Error: ${error}`,
+              severity: 'error'
+            });
+          }
+        );
+      } catch (err: any) {
+        setIsAdding(false);
+        setDeviceProgress(null);
+        const msg = err?.response?.data?.detail || err?.message || 'Failed to add devices';
+        setSnackbar({ open: true, message: msg, severity: 'error' });
+      }
+    } else {
+      // Single IP - use regular addDevice
+      try {
+        await addDevice(currentCC, data);
+        setAddDialogOpen(false);
+        setSnackbar({ open: true, message: 'Device added successfully', severity: 'success' });
+      } catch (err: any) {
+        const msg = err?.response?.data?.detail || err?.message || 'Failed to add device';
+        setSnackbar({ open: true, message: msg, severity: 'error' });
+      }
     }
   };
 
@@ -219,6 +306,61 @@ const CCManagementPage: React.FC = () => {
               Delete
             </Button>
           </DialogActions>
+        </Dialog>
+
+        {/* Device Addition Progress Dialog */}
+        <Dialog
+          open={isAdding}
+          maxWidth="sm"
+          fullWidth
+          disableEscapeKeyDown
+        >
+          <DialogContent>
+            <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
+              <CircularProgress size={60} />
+              <Typography variant="h6">
+                {deviceProgress ? (
+                  deviceProgress.status === 'adding' ? 'Adding Device...' :
+                  deviceProgress.status === 'added' ? 'Device Added, Checking Status...' :
+                  deviceProgress.status === 'checking' ? 'Waiting for Device to be Up...' :
+                  deviceProgress.status === 'success' ? 'Device Ready!' :
+                  deviceProgress.status === 'failed' ? 'Device Failed' :
+                  'Adding Devices...'
+                ) : 'Adding Devices...'}
+              </Typography>
+              {currentDevice > 0 && (
+                <Typography variant="h5" fontWeight="bold" color="primary">
+                  {currentDevice}/{totalDevices}
+                </Typography>
+              )}
+              {deviceProgress && (
+                <Box sx={{ textAlign: 'center' }}>
+                  <Typography variant="body1" fontWeight="medium">
+                    {deviceProgress.ip} - {deviceProgress.name}
+                  </Typography>
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: deviceProgress.status === 'failed' ? 'error.main' : 'success.main',
+                      mt: 1
+                    }}
+                  >
+                    {deviceProgress.message}
+                  </Typography>
+                  {deviceProgress.status === 'checking' && (
+                    <Typography variant="caption" color="textSecondary" sx={{ mt: 1 }}>
+                      Polling device status (timeout: 5 minutes)...
+                    </Typography>
+                  )}
+                </Box>
+              )}
+              {!deviceProgress && (
+                <Typography variant="body2" color="textSecondary">
+                  Please wait while devices are being added to CyberController...
+                </Typography>
+              )}
+            </Box>
+          </DialogContent>
         </Dialog>
 
         <Snackbar open={snackbar.open} autoHideDuration={6000} onClose={handleSnackbarClose}>
