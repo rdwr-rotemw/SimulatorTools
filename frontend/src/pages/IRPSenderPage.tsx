@@ -37,8 +37,28 @@ import ScienceIcon from '@mui/icons-material/Science'
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore'
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward'
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward'
+import DragIndicatorIcon from '@mui/icons-material/DragIndicator'
 import { IRPPcapAnalysisResponse } from '../api/services/irpSchema.service'
 import Checkbox from '@mui/material/Checkbox'
+import {
+    DndContext,
+    closestCenter,
+    KeyboardSensor,
+    PointerSensor,
+    useSensor,
+    useSensors,
+    DragEndEvent,
+} from '@dnd-kit/core'
+import {
+    arrayMove,
+    SortableContext,
+    sortableKeyboardCoordinates,
+    verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
+import { useSortable } from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 
 import Layout from '../components/common/Layout'
 import useCCStore from '../store/ccStore'
@@ -721,6 +741,161 @@ export function generateAttackId(): string {
     return `${cnt}-${time}`
 }
 
+// ============================================================================
+// SORTABLE MESSAGE COMPONENT
+// ============================================================================
+interface SortableMessageProps {
+    id: number
+    index: number
+    msg: any
+    isExpanded: boolean
+    isFirst: boolean
+    isLast: boolean
+    onToggle: () => void
+    onDelete: () => void
+    onUpdate: (data: Record<string, any>) => void
+    onMoveUp: () => void
+    onMoveDown: () => void
+    onTestMessage: () => void
+    onRandomize: () => void
+    onValidationChange: (isValid: boolean) => void
+    isTestingMessage: boolean
+    isValid: boolean
+    messages: any[]
+    setMessages: (messages: any[]) => void
+}
+
+const SortableMessage: React.FC<SortableMessageProps> = React.memo(({
+    id,
+    index,
+    msg,
+    isExpanded,
+    isFirst,
+    isLast,
+    onToggle,
+    onDelete,
+    onUpdate,
+    onMoveUp,
+    onMoveDown,
+    onTestMessage,
+    onRandomize,
+    onValidationChange,
+    isTestingMessage,
+    isValid,
+    messages,
+    setMessages
+}) => {
+    const {
+        attributes,
+        listeners,
+        setNodeRef,
+        transform,
+        transition,
+        isDragging,
+    } = useSortable({ id })
+
+    const style = {
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.5 : 1,
+    }
+
+    return (
+        <Paper ref={setNodeRef} style={style} sx={{ marginBottom: 2, padding: 2 }}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                {/* Left side: Drag handle + Up/Down arrows */}
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                    <IconButton
+                        {...attributes}
+                        {...listeners}
+                        size="small"
+                        sx={{ cursor: 'grab', '&:active': { cursor: 'grabbing' } }}
+                    >
+                        <DragIndicatorIcon />
+                    </IconButton>
+                    <IconButton
+                        size="small"
+                        onClick={onMoveUp}
+                        disabled={isFirst}
+                        color="primary"
+                    >
+                        <ArrowUpwardIcon fontSize="small" />
+                    </IconButton>
+                    <IconButton
+                        size="small"
+                        onClick={onMoveDown}
+                        disabled={isLast}
+                        color="primary"
+                    >
+                        <ArrowDownwardIcon fontSize="small" />
+                    </IconButton>
+                    <Typography variant="h6" sx={{ marginLeft: 1 }}>{msg.messageName}</Typography>
+                </Box>
+
+                {/* Right side: Action buttons */}
+                <Box>
+                    <IconButton onClick={onToggle}>
+                        {isExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                    </IconButton>
+                    <Tooltip title="Generate random values (preserves iterations)">
+                        <IconButton onClick={onRandomize} size="small">
+                            <CasinoIcon fontSize="small" />
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Test message parsing">
+                        <IconButton
+                            onClick={onTestMessage}
+                            size="small"
+                            color="primary"
+                            disabled={!isValid || isTestingMessage}
+                        >
+                            <ScienceIcon fontSize="small" />
+                        </IconButton>
+                    </Tooltip>
+                    <IconButton onClick={onDelete} color="error">
+                        <DeleteIcon />
+                    </IconButton>
+                </Box>
+            </Box>
+            <Collapse in={isExpanded}>
+                <IRPMessageForm
+                    messageData={msg.data}
+                    schema={msg.schema}
+                    onChange={onUpdate}
+                    onValidationChange={onValidationChange}
+                />
+                <TextField
+                    label="Pause After Message (seconds)"
+                    type="number"
+                    size="small"
+                    fullWidth
+                    value={msg.pause ?? ''}
+                    onChange={(e) => {
+                        const newMessages = [...messages]
+                        newMessages[index].pause = e.target.value ? parseInt(e.target.value) : undefined
+                        setMessages(newMessages)
+                    }}
+                    inputProps={{ min: 0, max: 60, step: 1 }}
+                    helperText="Optional: Wait before sending next message (max 60s)"
+                    sx={{ marginTop: 2 }}
+                />
+            </Collapse>
+        </Paper>
+    )
+}, (prevProps, nextProps) => {
+    // Custom comparison to prevent unnecessary re-renders
+    return (
+        prevProps.id === nextProps.id &&
+        prevProps.index === nextProps.index &&
+        prevProps.msg === nextProps.msg &&
+        prevProps.isExpanded === nextProps.isExpanded &&
+        prevProps.isFirst === nextProps.isFirst &&
+        prevProps.isLast === nextProps.isLast &&
+        prevProps.isTestingMessage === nextProps.isTestingMessage &&
+        prevProps.isValid === nextProps.isValid
+    )
+})
+
 export const IRPSenderPage: React.FC = () => {
     const navigate = useNavigate()
     const [searchParams] = useSearchParams()
@@ -785,6 +960,20 @@ export const IRPSenderPage: React.FC = () => {
 
     // PCAP Import state
     const [pcapDialogOpen, setPcapDialogOpen] = useState(false)
+
+    // ========================================================================
+    // DRAG AND DROP SENSORS
+    // ========================================================================
+    const sensors = useSensors(
+        useSensor(PointerSensor, {
+            activationConstraint: {
+                distance: 8, // 8px movement required to start drag
+            },
+        }),
+        useSensor(KeyboardSensor, {
+            coordinateGetter: sortableKeyboardCoordinates,
+        })
+    )
     const [pcapFile, setPcapFile] = useState<File | null>(null)
     const [pcapResults, setPcapResults] = useState<IRPPcapAnalysisResponse | null>(null)
     const [analyzingPcap, setAnalyzingPcap] = useState(false)
@@ -958,6 +1147,158 @@ export const IRPSenderPage: React.FC = () => {
             return next
         })
     }
+
+    // ========================================================================
+    // MESSAGE REORDERING FUNCTIONS - OPTIMIZED
+    // ========================================================================
+
+    // Move message up - OPTIMIZED with React.startTransition
+    const moveMessageUp = (index: number) => {
+        if (index === 0) return
+
+        // Use React batching for multiple state updates
+        React.startTransition(() => {
+            setMessages((prev) => arrayMove(prev, index, index - 1))
+            setExpandedMessages((prev) => {
+                return prev.map((i) => {
+                    if (i === index) return index - 1
+                    if (i === index - 1) return index
+                    return i
+                })
+            })
+            // Update validation state map indices
+            setMessageValidationState((prev) => {
+                const newMap = new Map()
+                prev.forEach((value, key) => {
+                    if (key === index) {
+                        newMap.set(index - 1, value)
+                    } else if (key === index - 1) {
+                        newMap.set(index, value)
+                    } else {
+                        newMap.set(key, value)
+                    }
+                })
+                return newMap
+            })
+        })
+    }
+
+    // Move message down - OPTIMIZED with React.startTransition
+    const moveMessageDown = (index: number) => {
+        if (index === messages.length - 1) return
+
+        // Use React batching for multiple state updates
+        React.startTransition(() => {
+            setMessages((prev) => arrayMove(prev, index, index + 1))
+            setExpandedMessages((prev) => {
+                return prev.map((i) => {
+                    if (i === index) return index + 1
+                    if (i === index + 1) return index
+                    return i
+                })
+            })
+            // Update validation state map indices
+            setMessageValidationState((prev) => {
+                const newMap = new Map()
+                prev.forEach((value, key) => {
+                    if (key === index) {
+                        newMap.set(index + 1, value)
+                    } else if (key === index + 1) {
+                        newMap.set(index, value)
+                    } else {
+                        newMap.set(key, value)
+                    }
+                })
+                return newMap
+            })
+        })
+    }
+
+    // Handle drag end - OPTIMIZED with React.startTransition
+    const handleDragEnd = (event: DragEndEvent) => {
+        const { active, over } = event
+
+        if (!over || active.id === over.id) return
+
+        const oldIndex = Number(active.id)
+        const newIndex = Number(over.id)
+
+        if (oldIndex === newIndex) return
+
+        // Use React batching for multiple state updates
+        React.startTransition(() => {
+            setMessages((prev) => arrayMove(prev, oldIndex, newIndex))
+
+            // Update expanded messages indices
+            setExpandedMessages((prev) => {
+                return prev.map((expandedIdx) => {
+                    if (expandedIdx === oldIndex) return newIndex
+                    if (expandedIdx > oldIndex && expandedIdx <= newIndex) return expandedIdx - 1
+                    if (expandedIdx < oldIndex && expandedIdx >= newIndex) return expandedIdx + 1
+                    return expandedIdx
+                })
+            })
+
+            // Update validation state map indices
+            setMessageValidationState((prev) => {
+                const newMap = new Map()
+                prev.forEach((value, key) => {
+                    let newKey = key
+                    if (key === oldIndex) {
+                        newKey = newIndex
+                    } else if (key > oldIndex && key <= newIndex) {
+                        newKey = key - 1
+                    } else if (key < oldIndex && key >= newIndex) {
+                        newKey = key + 1
+                    }
+                    newMap.set(newKey, value)
+                })
+                return newMap
+            })
+        })
+    }
+
+    // ========================================================================
+    // MEMOIZED CALLBACKS FOR PERFORMANCE
+    // ========================================================================
+
+    // Memoize callbacks to prevent re-creating functions on every render
+    const memoizedToggleMessage = React.useCallback((index: number) => {
+        toggleMessage(index)
+    }, [])
+
+    const memoizedDeleteMessage = React.useCallback((index: number) => {
+        deleteMessage(index)
+    }, [])
+
+    const memoizedUpdateMessage = React.useCallback((index: number, data: Record<string, any>) => {
+        updateMessage(index, data)
+    }, [])
+
+    const memoizedMoveUp = React.useCallback((index: number) => {
+        moveMessageUp(index)
+    }, [messages.length])
+
+    const memoizedMoveDown = React.useCallback((index: number) => {
+        moveMessageDown(index)
+    }, [messages.length])
+
+    const memoizedTestMessage = React.useCallback((index: number) => {
+        handleTestMessage(index)
+    }, [testingMessage])
+
+    const memoizedRandomize = React.useCallback((index: number, msg: any) => {
+        const randomData = generateRandomData(msg.schema, msg.data)
+        updateMessage(index, randomData)
+    }, [])
+
+    const memoizedValidationChange = React.useCallback((index: number, isValid: boolean) => {
+        setMessageValidationState(prev => {
+            const newMap = new Map(prev)
+            newMap.set(index, isValid)
+            return newMap
+        })
+    }, [])
 
     // Save Template
     const handleSaveTemplate = async () => {
@@ -1520,76 +1861,40 @@ export const IRPSenderPage: React.FC = () => {
                         <Typography color="textSecondary">No messages. Use "Add Message" to add one from the
                             schema.</Typography>
                     ) : (
-                        messages.map((msg, index) => (
-                            <Paper key={index} sx={{marginBottom: 2, padding: 2}}>
-                                <Box sx={{
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
-                                    marginBottom: 2
-                                }}>
-                                    <Typography variant="h6">{msg.messageName}</Typography>
-                                    <Box>
-                                        <IconButton onClick={() => toggleMessage(index)}>
-                                            {expandedMessages.includes(index) ? <ExpandLessIcon/> : <ExpandMoreIcon/>}
-                                        </IconButton>
-                                        <Tooltip title="Generate random values (preserves iterations)">
-                                            <IconButton
-                                                onClick={() => {
-                                                    const randomData = generateRandomData(msg.schema, msg.data)
-                                                    updateMessage(index, randomData)
-                                                }}
-                                                size="small"
-                                            >
-                                                <CasinoIcon fontSize="small"/>
-                                            </IconButton>
-                                        </Tooltip>
-                                        <Tooltip title="Test message parsing">
-                                            <IconButton
-                                                onClick={() => handleTestMessage(index)}
-                                                size="small"
-                                                color="primary"
-                                                disabled={!messageValidationState.get(index) || testingMessage}
-                                            >
-                                                <ScienceIcon fontSize="small"/>
-                                            </IconButton>
-                                        </Tooltip>
-                                        <IconButton onClick={() => deleteMessage(index)} color="error">
-                                            <DeleteIcon/>
-                                        </IconButton>
-                                    </Box>
-                                </Box>
-                                <Collapse in={expandedMessages.includes(index)}>
-                                    <IRPMessageForm
-                                        messageData={msg.data}
-                                        schema={msg.schema}
-                                        onChange={(data) => updateMessage(index, data)}
-                                        onValidationChange={(isValid) => {
-                                            setMessageValidationState(prev => {
-                                                const newMap = new Map(prev)
-                                                newMap.set(index, isValid)
-                                                return newMap
-                                            })
-                                        }}
+                        <DndContext
+                            sensors={sensors}
+                            collisionDetection={closestCenter}
+                            onDragEnd={handleDragEnd}
+                        >
+                            <SortableContext
+                                items={messages.map((_, index) => index)}
+                                strategy={verticalListSortingStrategy}
+                            >
+                                {messages.map((msg, index) => (
+                                    <SortableMessage
+                                        key={index}
+                                        id={index}
+                                        index={index}
+                                        msg={msg}
+                                        isExpanded={expandedMessages.includes(index)}
+                                        isFirst={index === 0}
+                                        isLast={index === messages.length - 1}
+                                        onToggle={() => memoizedToggleMessage(index)}
+                                        onDelete={() => memoizedDeleteMessage(index)}
+                                        onUpdate={(data) => memoizedUpdateMessage(index, data)}
+                                        onMoveUp={() => memoizedMoveUp(index)}
+                                        onMoveDown={() => memoizedMoveDown(index)}
+                                        onTestMessage={() => memoizedTestMessage(index)}
+                                        onRandomize={() => memoizedRandomize(index, msg)}
+                                        onValidationChange={(isValid) => memoizedValidationChange(index, isValid)}
+                                        isTestingMessage={testingMessage}
+                                        isValid={messageValidationState.get(index) ?? true}
+                                        messages={messages}
+                                        setMessages={setMessages}
                                     />
-                                    <TextField
-                                        label="Pause After Message (seconds)"
-                                        type="number"
-                                        size="small"
-                                        fullWidth
-                                        value={msg.pause ?? ''}
-                                        onChange={(e) => {
-                                            const newMessages = [...messages];
-                                            newMessages[index].pause = e.target.value ? parseInt(e.target.value) : undefined;
-                                            setMessages(newMessages);
-                                        }}
-                                        inputProps={{ min: 0, max: 60, step: 1 }}
-                                        helperText="Optional: Wait before sending next message (max 60s)"
-                                        sx={{ marginTop: 2 }}
-                                    />
-                                </Collapse>
-                            </Paper>
-                        ))
+                                ))}
+                            </SortableContext>
+                        </DndContext>
                     )}
                 </Box>
 
