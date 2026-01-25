@@ -94,7 +94,7 @@ async def send_snmp_trap_endpoint(
         # Call attack_traps module directly
         logger.info(f"Sending {len(trap_data['traps'])} trap(s) from {simulator_ip} to {cc_ip}")
         success_count, failed_count, total_count = attack_traps.send_attack_traps(
-            cc_ip, simulator_ip, trap_data, payload.map
+            cc_ip, simulator_ip, trap_data
         )
 
         # Report accurate results
