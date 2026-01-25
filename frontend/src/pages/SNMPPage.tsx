@@ -63,6 +63,7 @@ export const SNMPPage: React.FC = () => {
     const user = useAuthStore((state) => state.user);
 
     const [selectedSimulator, setSelectedSimulator] = useState<string>('');
+    const [selectedSimulatorMap, setSelectedSimulatorMap] = useState<string>('');
     const [selectedDestinationPort, setSelectedDestinationPort] = useState<string>('');
     const [traps, setTraps] = useState<SNMPTrap[]>([{
         attackName: '',
@@ -411,6 +412,11 @@ export const SNMPPage: React.FC = () => {
             return;
         }
 
+        if (!selectedSimulatorMap) {
+            setSnackbar({open: true, message: 'Selected simulator does not have a map configured', severity: 'error'});
+            return;
+        }
+
         if (!validateAll()) {
             setSnackbar({open: true, message: 'Please fix validation errors', severity: 'error'});
             return;
@@ -426,6 +432,7 @@ export const SNMPPage: React.FC = () => {
             await snmpTemplateService.sendTrapsWithProgress(
                 selectedDestinationPort,
                 selectedSimulator,
+                selectedSimulatorMap,
                 traps,
                 (current, total, trapName, status) => {
                     setCurrentTrap(current);
@@ -486,8 +493,13 @@ export const SNMPPage: React.FC = () => {
     };
 
     const sendTrapsOnce = async () => {
+        if (!selectedSimulatorMap) {
+            setSnackbar({open: true, message: 'Simulator map not configured', severity: 'error'});
+            return false;
+        }
+
         try {
-            await snmpTemplateService.sendTraps(selectedDestinationPort, selectedSimulator, traps);
+            await snmpTemplateService.sendTraps(selectedDestinationPort, selectedSimulator, selectedSimulatorMap, traps);
             return true;
         } catch (error: any) {
             const errorMsg = error.response?.data?.detail || error.message || 'Failed to send traps';
@@ -499,7 +511,7 @@ export const SNMPPage: React.FC = () => {
     // Update ref whenever dependencies change to prevent stale closures
     useEffect(() => {
         sendTrapsOnceRef.current = sendTrapsOnce;
-    }, [selectedDestinationPort, selectedSimulator, traps]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [selectedDestinationPort, selectedSimulator, selectedSimulatorMap, traps]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Auto-save form state to localStorage on every change
     useEffect(() => {
@@ -516,6 +528,11 @@ export const SNMPPage: React.FC = () => {
 
         if (!selectedDestinationPort) {
             setSnackbar({open: true, message: 'Please select a destination port', severity: 'error'});
+            return;
+        }
+
+        if (!selectedSimulatorMap) {
+            setSnackbar({open: true, message: 'Selected simulator does not have a map configured', severity: 'error'});
             return;
         }
 
@@ -615,12 +632,25 @@ export const SNMPPage: React.FC = () => {
                         <InputLabel>Target Simulator</InputLabel>
                         <Select
                             value={selectedSimulator}
-                            onChange={(e) => setSelectedSimulator(e.target.value as string)}
+                            onChange={(e) => {
+                                const selectedIp = e.target.value as string;
+                                setSelectedSimulator(selectedIp);
+
+                                // Find the selected device and get its map
+                                const device = devicesList.find(d => d.management_ip === selectedIp);
+                                if (device && device.map) {
+                                    setSelectedSimulatorMap(device.map);
+                                } else {
+                                    setSelectedSimulatorMap('');
+                                    console.warn(`No map found for simulator ${selectedIp}`);
+                                }
+                            }}
                             label="Target Simulator"
                         >
                             {devicesList.map((device) => (
                                 <MenuItem key={device.management_ip} value={device.management_ip}>
                                     {device.name || device.management_ip} ({device.management_ip})
+                                    {device.map && ` - Map: ${device.map}`}
                                 </MenuItem>
                             ))}
                         </Select>

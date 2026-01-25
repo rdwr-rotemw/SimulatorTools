@@ -211,6 +211,9 @@ async def get_cc_simulators(
         # Create IP to version mapping from Sapro devices
         sapro_versions = {getattr(s, 'ip_address', None): getattr(s, 'version', None) for s in sapro_sims if
                           getattr(s, 'ip_address', None) is not None}
+        # Create IP to map mapping from Sapro devices
+        sapro_maps = {getattr(s, 'ip_address', None): getattr(s, 'map', None) for s in sapro_sims if
+                      getattr(s, 'ip_address', None) is not None}
         filtered_devices = [d for d in result if d.management_ip in sapro_ips]
 
         # Convert to response model
@@ -222,6 +225,7 @@ async def get_cc_simulators(
                 device_type=d.device_type,
                 status=d.status,
                 version=sapro_versions.get(d.management_ip),
+                map=sapro_maps.get(d.management_ip),
             )
             for d in filtered_devices
         ]

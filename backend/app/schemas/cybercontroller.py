@@ -44,6 +44,7 @@ class CCDeviceResponse(BaseModel):
     device_type: Optional[str] = Field(None, description="Device type")
     status: Optional[str] = Field(None, description="Device status")
     version: Optional[str] = Field(None, description="Device software version")
+    map: Optional[str] = Field(None, description="Sapro device map name")
 
 
 class CCDevicesListResponse(BaseModel):

@@ -96,9 +96,10 @@ def send_attack_traps(cc_ip, device_ip, payload):
     success_count = 0
     failed_count = 0
     total_traps = len(payload['traps'])
+    device_map = payload['map']
 
     for index, trap in enumerate(payload['traps'], start=1):
-        command_to_send = (f'/opt/sapro/bin/sapcnsl -m DefensePros.map -c tcl -d {device_ip} '
+        command_to_send = (f'/opt/sapro/bin/sapcnsl -m {device_map}.map -c tcl -d {device_ip} '
                            f'-f /opt/sapro/util/send_attack.tcl -a '
                            f'\"{set_trap_string_to_send(cc_ip, trap)}\"')
         success, output = execute_sapro_command(command_to_send)
@@ -302,9 +303,9 @@ def send_attack_traps_with_progress(cc_ip, device_ip, payload):
     success_count = 0
     failed_count = 0
     total_traps = len(payload['traps'])
-
+    device_map = payload['map']
     for index, trap in enumerate(payload['traps'], start=1):
-        command_to_send = (f'/opt/sapro/bin/sapcnsl -m DefensePros.map -c tcl -d {device_ip} '
+        command_to_send = (f'/opt/sapro/bin/sapcnsl -m {device_map}.map -c tcl -d {device_ip} '
                            f'-f /opt/sapro/util/send_attack.tcl -a '
                            f'\"{set_trap_string_to_send(cc_ip, trap)}\"')
         success, output = execute_sapro_command(command_to_send)

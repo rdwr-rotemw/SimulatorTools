@@ -44,6 +44,7 @@ class TrapConfig(BaseModel):
 
 class ReporterSNMPPayload(BaseModel):
     """SNMP trap configuration payload matching attack_traps structure."""
+    map: str
     traps: List[TrapConfig]
 
 

@@ -42,9 +42,12 @@ class SNMPTemplateService {
     await apiClient.delete(url);
   }
 
-  async sendTraps(destinationPortIp: string, simulatorIp: string, traps: SNMPTrap[]): Promise<void> {
+  async sendTraps(destinationPortIp: string, simulatorIp: string, simulatorMap: string, traps: SNMPTrap[]): Promise<void> {
     const url = `/cc/${destinationPortIp}/simulators/${simulatorIp}/reporter/snmp`;
-    await apiClient.post(url, { traps }, {
+    await apiClient.post(url, {
+      map: simulatorMap,
+      traps
+    }, {
       timeout: 600000, // 10 minutes - allows for pause delays and multiple traps
     });
   }
@@ -52,6 +55,7 @@ class SNMPTemplateService {
   async sendTrapsWithProgress(
     destinationPortIp: string,
     simulatorIp: string,
+    simulatorMap: string,
     traps: SNMPTrap[],
     onProgress: (current: number, total: number, trapName: string, status: string) => void,
     onComplete: (successCount: number, failedCount: number, totalCount: number) => void,
@@ -80,7 +84,10 @@ class SNMPTemplateService {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({ traps })
+          body: JSON.stringify({
+            map: simulatorMap,
+            traps
+          })
         });
 
         if (!response.ok) {

@@ -11,6 +11,7 @@ export interface CCDevice {
   device_type?: string;
   status?: string;
   version?: string;
+  map?: string;
 }
 
 export interface CCLoginRequest {

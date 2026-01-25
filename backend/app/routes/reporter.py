@@ -17,7 +17,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Union, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
@@ -26,6 +26,7 @@ from backend.app.models.user import User
 from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo, send_irp_messages
 from backend.app.modules.reporter.irp.irp_module import send_irp_messages_with_progress
 from backend.app.modules.reporter.snmp import attack_traps
+from backend.app.modules.reporter.snmp.attack_traps import send_attack_traps_with_progress
 from backend.app.modules.sapro.sapro_client import get_sapro_handler, SaproCommunicationHandler
 from backend.app.schemas.reporter import (
     ReporterSNMPPayload,
@@ -43,7 +44,6 @@ logger = logging.getLogger("sim-tools.reporter")
 
 # Module-level executor for blocking PCAP parsing
 _executor = ThreadPoolExecutor(max_workers=2)
-
 
 
 @router.post(
@@ -94,7 +94,7 @@ async def send_snmp_trap_endpoint(
         # Call attack_traps module directly
         logger.info(f"Sending {len(trap_data['traps'])} trap(s) from {simulator_ip} to {cc_ip}")
         success_count, failed_count, total_count = attack_traps.send_attack_traps(
-            cc_ip, simulator_ip, trap_data
+            cc_ip, simulator_ip, trap_data, payload.map
         )
 
         # Report accurate results
@@ -801,7 +801,6 @@ async def send_snmp_trap_stream_endpoint(
 
         async def event_generator():
             try:
-                from backend.app.modules.reporter.snmp.attack_traps import send_attack_traps_with_progress
                 for progress in send_attack_traps_with_progress(cc_ip, simulator_ip, trap_data):
                     yield f"data: {json.dumps(progress)}\n\n"
             except Exception as exc:
