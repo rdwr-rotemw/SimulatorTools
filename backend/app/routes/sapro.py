@@ -232,7 +232,7 @@ async def list_available_workspaces(
 def create_simulator(
         payload: SaproSimulatorCreate,
         db: Session = Depends(get_db),
-        _current_user=Depends(require_sapro_access),
+        current_user: User = Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler),
         mongo_db=Depends(get_mongo_db),
 ) -> Union[SaproSimulatorResponse, SaproSimulatorBatchResponse]:
@@ -269,8 +269,11 @@ def create_simulator(
         # Load template and convert to XML
         tpl_doc, xml_content = _load_template_and_convert_to_xml(mongo_db, payload.template_id, ip)
 
+        # Get workspace for device creation
+        workspace = current_user.workspace if current_user.workspace else "default"
+
         # Call Sapro to create device
-        success, message = sapro_handler.create_device(ip, xml_content, payload.map)
+        success, message = sapro_handler.create_device(ip, xml_content, payload.map, workspace=workspace)
         if not success:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
 
@@ -290,14 +293,14 @@ def create_simulator(
         except IntegrityError:
             db.rollback()
             try:
-                sapro_handler.delete_device(payload.map, ip)
+                sapro_handler.delete_device(payload.map, ip, workspace=workspace)
             except Exception:
                 logger.exception("Failed to cleanup Sapro device after DB integrity error for %s", ip)
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Simulator with this IP already exists")
         except SQLAlchemyError as exc:
             db.rollback()
             try:
-                ok, msg = sapro_handler.delete_device(payload.map, ip)
+                ok, msg = sapro_handler.delete_device(payload.map, ip, workspace=workspace)
                 if ok:
                     logger.info("Cleaned up Sapro device %s after DB failure", ip)
                     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -334,10 +337,13 @@ def create_simulator(
         successful = 0
         failed = 0
 
+        # Get workspace for device creation
+        workspace = current_user.workspace if current_user.workspace else "default"
+
         for ip in ip_list:
             try:
                 customized_xml = base_xml.replace("{{IP_ADDRESS}}", ip)
-                success_flag, message = sapro_handler.create_device(ip, customized_xml, payload.map)
+                success_flag, message = sapro_handler.create_device(ip, customized_xml, payload.map, workspace=workspace)
 
                 if success_flag:
                     successful += 1
@@ -390,7 +396,7 @@ def create_simulator(
             # Best-effort cleanup in Sapro
             for ip in successful_ips:
                 try:
-                    sapro_handler.delete_device(payload.map, ip)
+                    sapro_handler.delete_device(payload.map, ip, workspace=workspace)
                 except Exception as cleanup_exc:
                     logger.exception(f"Failed to cleanup Sapro device {ip} after DB failure: {cleanup_exc}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -408,7 +414,7 @@ def create_simulator(
 async def create_simulator_stream(
         payload: SaproSimulatorCreate,
         db: Session = Depends(get_db),
-        _current_user=Depends(require_sapro_access),
+        current_user: User = Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler),
         mongo_db=Depends(get_mongo_db),
 ):
@@ -445,12 +451,15 @@ async def create_simulator_stream(
             failed = 0
             total = len(ip_list)
 
+            # Get workspace for device creation
+            workspace = current_user.workspace if current_user.workspace else "default"
+
             try:
                 # Create devices sequentially (1 by 1) with progress updates
                 for index, ip in enumerate(ip_list, start=1):
                     try:
                         customized_xml = base_xml.replace("{{IP_ADDRESS}}", ip)
-                        success_flag, message = sapro_handler.create_device(ip, customized_xml, payload.map)
+                        success_flag, message = sapro_handler.create_device(ip, customized_xml, payload.map, workspace=workspace)
 
                         if success_flag:
                             successful += 1
@@ -513,7 +522,7 @@ async def create_simulator_stream(
                         # Best-effort cleanup in Sapro
                         for ip in successful_ips:
                             try:
-                                sapro_handler.delete_device(payload.map, ip)
+                                sapro_handler.delete_device(payload.map, ip, workspace=workspace)
                             except Exception as cleanup_exc:
                                 logger.exception(f"Failed to cleanup Sapro device {ip} after DB failure: {cleanup_exc}")
 
@@ -660,7 +669,7 @@ def update_simulator(
         simulator_ip: str,
         payload: SaproSimulatorUpdate,
         db: Session = Depends(get_db),
-        _current_user=Depends(require_sapro_access),
+        current_user: User = Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler),
         mongo_db=Depends(get_mongo_db),
 ) -> SaproSimulatorResponse:
@@ -691,9 +700,12 @@ def update_simulator(
     if not map_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Map is required")
 
+    # Get workspace from user
+    workspace = current_user.workspace if current_user.workspace else "default"
+
     # 3) Delete device from map using SSH deldev command
     logger.info(f"Deleting device {simulator_ip} from map {map_name}")
-    success, message = sapro_handler.delete_device(map_name, simulator_ip)
+    success, message = sapro_handler.delete_device(map_name, simulator_ip, workspace=workspace)
     if not success:
         logger.warning(f"Delete device warning (continuing anyway): {message}")
         # Don't fail - device might not be in map, we'll add it back
@@ -702,7 +714,20 @@ def update_simulator(
     logger.info(f"Updating device file for {simulator_ip} with template {template_id}")
     tpl_doc, xml_content = _load_template_and_convert_to_xml(mongo_db, template_id, simulator_ip)
 
-    device_file_path = f"{sapro_handler.map_directory}{map_name}/{simulator_ip}.map"
+    # Get full map path from sapro handler
+    try:
+        map_path = sapro_handler.get_full_map_path(map_name)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get map path: {e}"
+        )
+
+    # Extract directory from map full path for device file
+    # Example: /opt/sapro/projects/dev/map/DP.map -> /opt/sapro/projects/dev/map/
+    map_directory = '/'.join(map_path.split('/')[:-1]) + '/'
+    device_file_path = f"{map_directory}{simulator_ip}.map"
+
     success, message = sapro_handler.create_device_file_on_server(device_file_path, xml_content)
     if not success:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -712,7 +737,7 @@ def update_simulator(
     logger.info(f"Adding device {simulator_ip} back to map {map_name}")
     from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 
-    map_path = f"/opt/sapro/map/{map_name}.map"
+    # Use the map_path we already retrieved (no hardcoding)
     cmd = f"/opt/sapro/bin/sapcnsl -p {sapro_handler.sapro_port} -m {map_path} -c adddev -f {device_file_path}"
 
     try:
@@ -753,7 +778,7 @@ def update_simulator(
 def delete_simulator(
         simulator_ip: str,
         db: Session = Depends(get_db),
-        _current_user=Depends(require_sapro_access),
+        current_user=Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler),
 ) -> SuccessResponse:
     """Delete a Sapro-managed simulator from Sapro and the DB.
@@ -765,9 +790,16 @@ def delete_simulator(
     if not sim:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Simulator not found")
 
-    # Attempt to delete from Sapro first
+    # Get map name from simulator
     map_name = sim.map or ""
-    success, message = sapro_handler.delete_device(map_name, simulator_ip)
+    if not map_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
+
+    # Get workspace from user
+    workspace = current_user.workspace if current_user.workspace else "default"
+
+    # Attempt to delete from Sapro first (method handles path lookup internally)
+    success, message = sapro_handler.delete_device(map_name, simulator_ip, workspace=workspace)
     if not success:
         # Sapro deletion failed
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
@@ -899,7 +931,16 @@ def start_simulator(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
 
     try:
-        success, message = sapro_handler.start_devices_from_map(map_name, [simulator_ip])
+        # Get full map path first
+        try:
+            map_path = sapro_handler.get_full_map_path(map_name)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get map path: {e}"
+            )
+
+        success, message = sapro_handler.start_devices_from_map(map_path, [simulator_ip])
         if not success:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
 
@@ -931,7 +972,16 @@ def stop_simulator(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
 
     try:
-        success, message = sapro_handler.stop_devices_from_map(map_name, [simulator_ip])
+        # Get full map path first
+        try:
+            map_path = sapro_handler.get_full_map_path(map_name)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get map path: {e}"
+            )
+
+        success, message = sapro_handler.stop_devices_from_map(map_path, [simulator_ip])
         if not success:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
 

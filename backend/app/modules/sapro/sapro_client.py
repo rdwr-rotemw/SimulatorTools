@@ -5,7 +5,6 @@ from typing import Optional, Tuple
 # removed devices_templates import (DB-only templates now)
 from backend.app.modules.sapro.src import (
     saproCommunication,
-    saproMapFunctions,
     saproDeviceFunctions,
     saproFileFunctions,
 )
@@ -436,11 +435,12 @@ class SaproCommunicationHandler:
             return "LinkProofs"
         return None
 
-    def get_full_map_path(self, map_name: str) -> str:
+    def get_full_map_path(self, map_name: str, workspace: str = "default") -> str:
         """Return the full path to a map file on the sapro server.
 
         Args:
             map_name: The logical map name (without extension).
+            workspace: Workspace to search in (defaults to "default")
 
         Returns:
             Full path string from get_all_maps().
@@ -448,37 +448,11 @@ class SaproCommunicationHandler:
         Raises:
             Exception: If map not found.
         """
-        try:
-            maps = self.get_all_maps()
-            map_info = next((m for m in maps if m['name'] == map_name), None)
-            if not map_info:
-                raise Exception(f"Map {map_name} not found")
-            return map_info['full_path']
-        except Exception as e:
-            logger.error(f"Failed to get full path for map {map_name}: {e}")
-            # Fallback to old behavior for backward compatibility
-            return f"{self.map_directory}{map_name}.map"
-
-    def start_map(self, map_name: str) -> Tuple[bool, str]:
-        """Start a map on the sapro server.
-
-        Args:
-            map_name: The map path or name expected by the underlying library.
-
-        Returns:
-            (success, message)
-        """
-        try:
-            saproMapFunctions.SendStartCmdToMap(self._sapro, map_name)
-            return True, f"Map {map_name} started"
-        except SaproException as e:
-            msg = getattr(e, "toString", lambda: str(e))()
-            # keep same semantics as previous code for already running
-            if "Map was already running" in msg:
-                return True, f"Map {map_name} was already running"
-            return False, f"Failed to start map {map_name}: {msg}"
-        except Exception as e:
-            return False, f"Failed to start map {map_name}: {str(e)}"
+        maps = self.get_all_maps(workspace=workspace)
+        map_info = next((m for m in maps if m['name'] == map_name), None)
+        if not map_info:
+            raise Exception(f"Map {map_name} not found in workspace {workspace}")
+        return map_info['full_path']
 
     def start_map_and_wait(self, map_name: str) -> Tuple[bool, str]:
         """Start a map and wait until it's running.
@@ -626,48 +600,22 @@ class SaproCommunicationHandler:
         except Exception as e:
             return False, f"Failed to create device file on server {remote_file_path}: {str(e)}"
 
-    def add_new_device(self, map_name: str, remote_file_path: str) -> Tuple[bool, str]:
-        """Add a previously uploaded device file to the specified map.
-
-        Args:
-            map_name: Map path or name expected by underlying library.
-            remote_file_path: Path to the device file on the sapro server filesystem.
-
-        Returns:
-            (success, message)
-        """
-        try:
-            add_device_msg = saproMapFunctions.SendAddDevCmdToMap(self._sapro, map_name, remote_file_path)
-            return True, str(add_device_msg)
-        except SaproException as e:
-            msg = getattr(e, "toString", lambda: str(e))()
-            return False, f"Failed to add device to map {map_name}: {msg}"
-        except Exception as e:
-            return False, f"Failed to add device to map {map_name}: {str(e)}"
-
-    def start_devices_from_map(self, map_name: str, devices_names: list) -> Tuple[bool, str]:
+    def start_devices_from_map(self, map_full_path: str, devices_names: list) -> Tuple[bool, str]:
         """Start one or more devices listed in a map using SSH commands.
 
         Args:
-            map_name: Map name (without .map extension)
+            map_full_path: Full path to map file (e.g., /opt/sapro/projects/dev/map/DP.map)
             devices_names: List of device names/IPs to start
 
         Returns:
             (success, combined_messages)
         """
         try:
-            # Get map info to find full path
-            maps = self.get_all_maps()
-            map_info = next((m for m in maps if m['name'] == map_name), None)
-            if not map_info:
-                return False, f"Map {map_name} not found"
-            map_full_path = map_info['full_path']
-
             ssh_client = get_sapro_ssh_client()
             messages = []
 
             for device_ip in devices_names:
-                # Build SSH command with full path
+                # Build SSH command with full path (already provided)
                 cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_full_path} -c startdev -d {device_ip}"
 
                 logger.debug(f"Executing start device command via SSH: {cmd}")
@@ -683,32 +631,25 @@ class SaproCommunicationHandler:
             return all_success, "\n".join(messages)
 
         except Exception as e:
-            logger.error(f"Failed to start device(s) from map {map_name}: {e}", exc_info=True)
+            logger.error(f"Failed to start device(s): {e}", exc_info=True)
             return False, f"Failed to start device(s): {e}"
 
-    def stop_devices_from_map(self, map_name: str, devices_names: list) -> Tuple[bool, str]:
+    def stop_devices_from_map(self, map_full_path: str, devices_names: list) -> Tuple[bool, str]:
         """Stop one or more devices listed in a map using SSH commands.
 
         Args:
-            map_name: Map name (without .map extension)
+            map_full_path: Full path to map file (e.g., /opt/sapro/projects/dev/map/DP.map)
             devices_names: List of device names/IPs to stop
 
         Returns:
             (success, combined_messages)
         """
         try:
-            # Get map info to find full path
-            maps = self.get_all_maps()
-            map_info = next((m for m in maps if m['name'] == map_name), None)
-            if not map_info:
-                return False, f"Map {map_name} not found"
-            map_full_path = map_info['full_path']
-
             ssh_client = get_sapro_ssh_client()
             messages = []
 
             for device_ip in devices_names:
-                # Build SSH command with full path
+                # Build SSH command with full path (already provided)
                 cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_full_path} -c stopdev -d {device_ip}"
 
                 logger.debug(f"Executing stop device command via SSH: {cmd}")
@@ -724,97 +665,142 @@ class SaproCommunicationHandler:
             return all_success, "\n".join(messages)
 
         except Exception as e:
-            logger.error(f"Failed to stop device(s) from map {map_name}: {e}", exc_info=True)
+            logger.error(f"Failed to stop device(s): {e}", exc_info=True)
             return False, f"Failed to stop device(s): {e}"
 
-    def create_device(self, device_ip: str, raw_xml_content: str, map_name: str) -> Tuple[bool, str]:
-        """Create (or start existing) simulator device on the sapro server.
+    def create_device(self, device_ip: str, raw_xml_content: str, map_name: str, workspace: str = "default") -> Tuple[bool, str]:
+        """Create (or start existing) simulator device on the sapro server using SSH.
 
         Workflow:
-        - Resolve map name by device type or get map from user
-        - Ensure map is started
-        - If device exists: start it
-        - Otherwise: create device file, upload it, and add it to the map
+        1. Get full map path from workspace
+        2. Check if device already exists using SSH devlist
+        3. If exists: start it using SSH startdev
+        4. If not exists: create device file and add using SSH adddev
+
+        Args:
+            device_ip: Device IP address
+            raw_xml_content: Device configuration XML
+            map_name: Map name (without extension)
+            workspace: Workspace name (defaults to "default")
 
         Returns:
             (success, message)
         """
+        from backend.app.utils.sapro_ssh import get_sapro_ssh_client
+
         try:
-            map_path = self.get_full_map_path(map_name)
+            ssh_client = get_sapro_ssh_client()
 
-            started_ok, start_msg = self.start_map(map_path)
-            if not started_ok:
-                # still attempt to proceed only if map is "already running"
-                if "already running" not in start_msg:
-                    return False, start_msg
+            # Get full map path from workspace
+            map_path = self.get_full_map_path(map_name, workspace=workspace)
 
-            # Inline FindDevice call to avoid static-analysis unresolved-attribute warning
-            found = saproDeviceFunctions.FindDevice(self._sapro, device_ip)
-            if found:
-                # start the device
-                devices_list = [device_ip]
-                ok, msg = self.start_devices_from_map(map_path, devices_list)
+            # Check if device already exists using SSH devlist command
+            devlist_cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c devlist"
+            logger.debug(f"Checking if device {device_ip} exists: {devlist_cmd}")
+
+            success, output = ssh_client.execute_command(devlist_cmd, check_stderr=False)
+
+            device_exists = False
+            if success and output:
+                # Parse devlist output to check if device exists
+                lines = output.split('\n')
+                in_table = False
+                for line in lines:
+                    # Skip header separators
+                    if line.strip().startswith('---'):
+                        in_table = True
+                        continue
+
+                    # Stop at footer separator
+                    if in_table and line.strip().startswith('---'):
+                        break
+
+                    # Skip non-table lines
+                    if not in_table or not line.strip():
+                        continue
+
+                    parts = line.split()
+                    if parts:
+                        device_name = parts[0]
+                        # Extract IP (strip //port suffix)
+                        if '//' in device_name:
+                            ip = device_name.split('//')[0]
+                        else:
+                            ip = device_name
+
+                        if ip == device_ip:
+                            device_exists = True
+                            break
+
+            if device_exists:
+                # Device exists - start it
+                logger.info(f"Device {device_ip} already exists, starting it")
+                ok, msg = self.start_devices_from_map(map_path, [device_ip])
                 if ok:
                     return True, f"Simulator {device_ip} already exists and was started"
                 return False, f"Simulator {device_ip} already exists but failed to start: {msg}"
 
-            # create device file path
-            new_device_file_path = f"{self.map_directory}{map_name}/{device_ip}.map"
+            # Device doesn't exist - create it
+            logger.info(f"Device {device_ip} doesn't exist, creating it")
 
-            # use raw XML content directly
+            # Extract directory from map full path
+            # Example: /opt/sapro/projects/dev/map/DP.map -> /opt/sapro/projects/dev/map/
+            map_directory = '/'.join(map_path.split('/')[:-1]) + '/'
+
+            # Create device file path in same directory as map
+            new_device_file_path = f"{map_directory}{device_ip}.map"
+
+            # Write device file to server
             device_file_content = raw_xml_content.strip()
-
             ok, msg = self.create_device_file_on_server(new_device_file_path, device_file_content)
             if not ok:
                 return False, msg
 
-            ok, msg = self.add_new_device(map_path, new_device_file_path)
-            if not ok:
-                return False, msg
+            # Add device to map using SSH adddev command
+            adddev_cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_path} -c adddev -f {new_device_file_path}"
+            logger.debug(f"Adding device to map: {adddev_cmd}")
 
+            success, output = ssh_client.execute_command(adddev_cmd, check_stderr=False)
+
+            if not success:
+                return False, f"Failed to add device to map: {output}"
+
+            logger.info(f"Device {device_ip} added to map successfully: {output}")
+
+            # Start the device
             ok, msg = self.start_devices_from_map(map_path, [device_ip])
             if not ok:
                 return False, f"Device {device_ip} added but failed to start: {msg}"
 
             return True, f"Device {device_ip} created and added to map {map_path}"
-        except SaproException as e:
-            msg = getattr(e, "toString", lambda: str(e))()
-            return False, f"Failed to create device {device_ip}: {msg}"
+
         except Exception as e:
+            logger.error(f"Failed to create device {device_ip}: {e}", exc_info=True)
             return False, f"Failed to create device {device_ip}: {str(e)}"
 
-    def delete_device(self, map_name: str, device_ip: str) -> Tuple[bool, str]:
-        """Delete a device from the specified map.
+    def delete_device(self, map_name: str, device_ip: str, workspace: str = "default") -> Tuple[bool, str]:
+        """Delete a device from the specified map using SSH.
 
         Args:
-            map_name: Logical map name (without extension) or full path expected by the underlying library.
-            device_ip: IP/name of the device to delete.
+            map_name: Map name (without .map extension)
+            device_ip: IP/name of the device to delete
+            workspace: Workspace name (defaults to "default")
 
         Returns:
             (success, message)
         """
-        # Normalize map_full_name: if provided map_name already looks like a path or endswith .map use it,
-        # otherwise resolve against configured map directory.
-        if map_name.endswith('.map') or '/' in map_name:
-            map_full_name = map_name
-        else:
-            map_full_name = self.get_full_map_path(map_name)
-
-        # 1) Stop device first (keep existing behavior)
-        try:
-            saproDeviceFunctions.SendStopCmdToDevice(self._sapro, map_full_name, device_ip)
-        except Exception as e:
-            # Log but continue to attempt deletion via SSH
-            logger.debug("Stopping device before delete raised: %s", e)
-
-        # 2) Execute remote sapcnsl delete command over SSH on the Sapro server using centralized SSH client
-        cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_full_name} -c deldev -d {device_ip}"
+        from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 
         try:
+            # Get full map path from workspace (consistent with other methods)
+            map_path = self.get_full_map_path(map_name, workspace=workspace)
+
             ssh_client = get_sapro_ssh_client()
-            logger.debug(f"Executing delete command via SSH: {cmd}")
 
-            # Use centralized SSH client with connection pooling
+            # Execute delete command via SSH
+            cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c deldev -d {device_ip}"
+
+            logger.debug(f"Executing delete device command via SSH: {cmd}")
             success, output = ssh_client.execute_command(cmd, check_stderr=False)
 
             if not success:
