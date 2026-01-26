@@ -18,6 +18,8 @@ import {
 } from '@mui/material';
 import { useForm, Controller } from 'react-hook-form';
 import { User, UserCreate, UserUpdate } from '../../types/user.types';
+import { workspaceService } from '../../api/services/workspace.service';
+import { useAuthStore } from '../../store/authStore';
 
 interface UserFormDialogProps {
   open: boolean;
@@ -34,13 +36,17 @@ export const UserFormDialog: React.FC<UserFormDialogProps> = ({ open, user, onCl
   const { errors } = formState;
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [availableWorkspaces, setAvailableWorkspaces] = useState<string[]>([]);  // ADD THIS LINE
+  const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);  // ADD THIS LINE
+  const currentUser = useAuthStore(state => state.user);  // ADD THIS LINE
+  const isSuperAdmin = currentUser?.username === 'admin';  // ADD THIS LINE
   const isEditMode = !!user;
 
   useEffect(() => {
     if (user) {
-      reset({ username: user.username, password: '', roles: user.roles });
+      reset({ username: user.username, password: '', roles: user.roles, workspace: user.workspace });
     } else {
-      reset({ username: '', password: '', roles: [] });
+      reset({ username: '', password: '', roles: [], workspace: undefined });
     }
   }, [user, reset]);
 
@@ -58,7 +64,7 @@ export const UserFormDialog: React.FC<UserFormDialogProps> = ({ open, user, onCl
         }
       }
       await onSubmit(payload);
-      reset({ username: '', password: '', roles: [] });
+      reset({ username: '', password: '', roles: [], workspace: undefined });  // ADD workspace
       onClose();
       setErrorMessage(null);
     } catch (error: any) {
@@ -146,6 +152,39 @@ export const UserFormDialog: React.FC<UserFormDialogProps> = ({ open, user, onCl
                 )}
               />
             </FormControl>
+
+            {isSuperAdmin && (  // ADD THIS BLOCK
+              <FormControl fullWidth>
+                <InputLabel id="workspace-label">Workspace</InputLabel>
+                <Controller
+                  control={control}
+                  name="workspace"
+                  render={({ field }) => (
+                    <Select
+                      labelId="workspace-label"
+                      value={field.value || ''}
+                      onChange={(e) => field.onChange(e.target.value)}
+                      label="Workspace"
+                      disabled={loadingWorkspaces}
+                    >
+                      <MenuItem value="">
+                        <em>{isEditMode ? 'Keep current' : 'Auto-assign from admin'}</em>
+                      </MenuItem>
+                      {availableWorkspaces.map((workspace) => (
+                        <MenuItem key={workspace} value={workspace}>
+                          {workspace === '*' ? '* (All Workspaces)' : workspace}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  )}
+                />
+                {loadingWorkspaces && (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', mt: 1 }}>
+                    <CircularProgress size={20} />
+                  </Box>
+                )}
+              </FormControl>
+            )}  // ADD THIS BLOCK
 
           </Box>
         </form>

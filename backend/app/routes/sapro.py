@@ -9,9 +9,9 @@ This file consolidates endpoints previously split across:
 Router: single APIRouter(prefix="/api", tags=["sapro"]) with simulator endpoints first,
 then template endpoints.
 """
+import json
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Union
-import json
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -22,6 +22,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.app.models.simulator import Simulator
+from backend.app.models.user import User
 from backend.app.modules import get_sapro_handler
 from backend.app.modules.mongo_models import (
     DeviceTemplateCreate,
@@ -76,9 +77,9 @@ def _replace_ip_in_template(template_dict: Dict[str, Any], ip_address: str) -> D
 
 
 def _load_template_and_convert_to_xml(
-    mongo_db,
-    template_id: str,
-    ip_address: str
+        mongo_db,
+        template_id: str,
+        ip_address: str
 ) -> tuple[Dict[str, Any], str]:
     """Load template from MongoDB and convert to XML.
 
@@ -167,13 +168,14 @@ def _load_template_and_get_base_xml(mongo_db, template_id: str) -> tuple[Dict[st
 
 
 # ----------------------------- Simulator Endpoints -----------------------------
-@router.post("/simulators", response_model=Union[SaproSimulatorResponse, SaproSimulatorBatchResponse], status_code=status.HTTP_201_CREATED)
+@router.post("/simulators", response_model=Union[SaproSimulatorResponse, SaproSimulatorBatchResponse],
+             status_code=status.HTTP_201_CREATED)
 def create_simulator(
         payload: SaproSimulatorCreate,
         db: Session = Depends(get_db),
         _current_user=Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler),
-        mongo_db = Depends(get_mongo_db),
+        mongo_db=Depends(get_mongo_db),
 ) -> Union[SaproSimulatorResponse, SaproSimulatorBatchResponse]:
     """Create a simulator or range of simulators in Sapro and persist to DB.
 
@@ -239,13 +241,16 @@ def create_simulator(
                 ok, msg = sapro_handler.delete_device(payload.map, ip)
                 if ok:
                     logger.info("Cleaned up Sapro device %s after DB failure", ip)
-                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to save simulator to DB: {str(exc)}; device removed from Sapro")
+                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                        detail=f"Failed to save simulator to DB: {str(exc)}; device removed from Sapro")
                 else:
                     logger.error("Failed to remove Sapro device %s after DB failure: %s", ip, msg)
-                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to save simulator to DB: {str(exc)}; additionally failed to cleanup device on Sapro: {msg}")
+                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                        detail=f"Failed to save simulator to DB: {str(exc)}; additionally failed to cleanup device on Sapro: {msg}")
             except Exception as cleanup_exc:
                 logger.exception("Cleanup after DB failure also failed for device %s: %s", ip, cleanup_exc)
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to save simulator to DB and cleanup Sapro device: {cleanup_exc}")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                    detail=f"Failed to save simulator to DB and cleanup Sapro device: {cleanup_exc}")
 
         return SaproSimulatorResponse.model_validate(sim)
 
@@ -258,7 +263,8 @@ def create_simulator(
         existing_sims = db.query(Simulator).filter(Simulator.ip_address.in_(ip_list)).all()
         if existing_sims:
             existing_ips = [s.ip_address for s in existing_sims]
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Simulators already exist for IPs: {', '.join(existing_ips)}")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail=f"Simulators already exist for IPs: {', '.join(existing_ips)}")
 
         # Load template and get base XML
         tpl_doc, base_xml = _load_template_and_get_base_xml(mongo_db, payload.template_id)
@@ -299,7 +305,8 @@ def create_simulator(
                 logger.exception(f"Exception while creating device for IP {ip}: {exc}")
 
         if not successful_ips:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="All simulator creations failed")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail="All simulator creations failed")
 
         # Persist successful ones to DB
         sim_objects = []
@@ -327,7 +334,8 @@ def create_simulator(
                     sapro_handler.delete_device(payload.map, ip)
                 except Exception as cleanup_exc:
                     logger.exception(f"Failed to cleanup Sapro device {ip} after DB failure: {cleanup_exc}")
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to save simulators to DB: {str(exc)}; attempted cleanup of Sapro devices")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail=f"Failed to save simulators to DB: {str(exc)}; attempted cleanup of Sapro devices")
 
         return SaproSimulatorBatchResponse(
             total=len(ip_list),
@@ -366,7 +374,8 @@ async def create_simulator_stream(
         existing_sims = db.query(Simulator).filter(Simulator.ip_address.in_(ip_list)).all()
         if existing_sims:
             existing_ips = [s.ip_address for s in existing_sims]
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Simulators already exist for IPs: {', '.join(existing_ips)}")
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                                detail=f"Simulators already exist for IPs: {', '.join(existing_ips)}")
 
         # Load template and get base XML
         tpl_doc, base_xml = _load_template_and_get_base_xml(mongo_db, payload.template_id)
@@ -419,7 +428,7 @@ async def create_simulator_stream(
                             "message": str(exc)
                         }
                         yield f"data: {json.dumps(progress_event)}\n\n"
-                        logger.exception(f"Exception while creating simulator for IP {ip}: {exc}")
+                        logger.exception(f"Exception while creating device for IP {ip}: {exc}")
 
                 # Persist successful ones to DB
                 if successful_ips:
@@ -449,7 +458,8 @@ async def create_simulator_stream(
                             except Exception as cleanup_exc:
                                 logger.exception(f"Failed to cleanup Sapro device {ip} after DB failure: {cleanup_exc}")
 
-                        error_event = {"type": "error", "message": f"Failed to save simulators to DB: {str(exc)}; attempted cleanup"}
+                        error_event = {"type": "error",
+                                       "message": f"Failed to save simulators to DB: {str(exc)}; attempted cleanup"}
                         yield f"data: {json.dumps(error_event)}\n\n"
                         return
 
@@ -495,16 +505,19 @@ def get_simulator(simulator_ip: str, db: Session = Depends(get_db)) -> SaproSimu
 @router.get("/simulators", response_model=List[SaproSimulatorResponse])
 def list_simulators(
         db: Session = Depends(get_db),
-        _current_user=Depends(require_sapro_access),
+        current_user: User = Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler)
 ) -> List[SaproSimulatorResponse]:
-    """Get all devices from Sapro and sync to DB.
+    """Get all devices from Sapro and sync to DB, filtered by user's workspace.
+
+    - Super user sees devices from all workspaces
+    - Regular users only see devices in their assigned workspace
 
     New behavior:
     1. Query Sapro for currently running devices
     2. Upsert each Sapro device into the SQL DB
     3. Remove any DB simulators that are not present in Sapro (orphan cleanup)
-    4. Return the current DB simulator list
+    4. Filter returned simulators by user's workspace
     """
     try:
         devices = sapro_handler.get_all_devices()  # List[SaproDevice]
@@ -549,9 +562,38 @@ def list_simulators(
         db.commit()
         logger.info("Removed %d orphaned simulator(s) from DB not present in Sapro", removed)
 
-    # Return the remaining simulators from DB
-    sims = db.query(Simulator).all()
-    return [SaproSimulatorResponse.model_validate(s) for s in sims]
+    # Get maps for user's workspace (or all if super user)
+    workspace = current_user.workspace if current_user.workspace else "default"
+    try:
+        available_maps = sapro_handler.get_all_maps(workspace=workspace)
+    except Exception as exc:
+        logger.exception("Failed to get maps for workspace %s: %s", workspace, exc)
+        # Fallback to no filtering if map query fails
+        available_maps = []
+
+    # Create set of available map names for filtering
+    if workspace == "*":
+        # Super user: all maps are available
+        map_names_set = {m['name'] for m in available_maps} if available_maps else set()
+    else:
+        # Regular user: filter by workspace maps
+        map_names_set = {m['name'] for m in available_maps} if available_maps else set()
+
+    # Get all simulators from DB
+    all_sims = db.query(Simulator).all()
+
+    # Filter simulators by available maps
+    if workspace == "*":
+        # Super user sees all
+        filtered_sims = all_sims
+    else:
+        # Regular user sees only devices in their workspace maps
+        filtered_sims = [s for s in all_sims if s.map in map_names_set]
+
+    logger.info(
+        f"User '{current_user.username}' (workspace: {workspace}): {len(filtered_sims)}/{len(all_sims)} simulators")
+
+    return [SaproSimulatorResponse.model_validate(s) for s in filtered_sims]
 
 
 @router.put("/simulators/{simulator_ip}", response_model=SaproSimulatorResponse)
@@ -604,7 +646,8 @@ def update_simulator(
     device_file_path = f"{sapro_handler.map_directory}{map_name}/{simulator_ip}.map"
     success, message = sapro_handler.create_device_file_on_server(device_file_path, xml_content)
     if not success:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to update device file: {message}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Failed to update device file: {message}")
 
     # 5) Add device to map using SSH adddev command (matching Java implementation)
     logger.info(f"Adding device {simulator_ip} back to map {map_name}")
@@ -618,12 +661,14 @@ def update_simulator(
         success, output = ssh_client.execute_command(cmd, check_stderr=False)
 
         if not success:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to add device to map: {output}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail=f"Failed to add device to map: {output}")
 
         logger.info(f"Device {simulator_ip} added to map successfully: {output}")
     except Exception as exc:
         logger.error(f"Failed to execute adddev command: {exc}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to add device to map: {exc}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Failed to add device to map: {exc}")
 
     # 6) Update DB with new metadata
     sim.type = tpl_doc.get("name") or sim.type
@@ -638,7 +683,8 @@ def update_simulator(
     except SQLAlchemyError as exc:
         db.rollback()
         logger.error(f"Failed to update DB for {simulator_ip}: {exc}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Device updated on Sapro but failed to update DB: {str(exc)}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Device updated on Sapro but failed to update DB: {str(exc)}")
 
     logger.info(f"Simulator {simulator_ip} updated successfully")
     return SaproSimulatorResponse.model_validate(sim)
@@ -679,9 +725,9 @@ def delete_simulator(
 
 @router.get("/maps", response_model=List[Dict[str, str]])
 def list_maps(
-     _current_user=Depends(require_sapro_access),
-     sapro_handler=Depends(get_sapro_handler)
- ) -> List[Dict[str, str]]:
+        _current_user=Depends(require_sapro_access),
+        sapro_handler=Depends(get_sapro_handler)
+) -> List[Dict[str, str]]:
     """Get list of all available maps from Sapro workspace with their status.
 
     Returns:
@@ -702,9 +748,9 @@ def list_maps(
 
 @router.post("/maps/{map_name}/start", response_model=SuccessResponse)
 def start_map(
-    map_name: str,
-    _current_user=Depends(require_sapro_access),
-    sapro_handler=Depends(get_sapro_handler)
+        map_name: str,
+        _current_user=Depends(require_sapro_access),
+        sapro_handler=Depends(get_sapro_handler)
 ) -> SuccessResponse:
     """Start a map and wait until it's running.
 
@@ -737,9 +783,9 @@ def start_map(
 
 @router.post("/maps/{map_name}/stop", response_model=SuccessResponse)
 def stop_map(
-    map_name: str,
-    _current_user=Depends(require_sapro_access),
-    sapro_handler=Depends(get_sapro_handler)
+        map_name: str,
+        _current_user=Depends(require_sapro_access),
+        sapro_handler=Depends(get_sapro_handler)
 ) -> SuccessResponse:
     """Stop a map and wait until terminated.
 
@@ -798,10 +844,12 @@ def start_simulator(
         if not success:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
 
-        return SuccessResponse(message=f"Simulator {simulator_ip} started successfully", data={"ip_address": simulator_ip})
+        return SuccessResponse(message=f"Simulator {simulator_ip} started successfully",
+                               data={"ip_address": simulator_ip})
     except Exception as exc:
         logger.exception("Failed to start simulator %s: %s", simulator_ip, exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to start simulator: {exc}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Failed to start simulator: {exc}")
 
 
 @router.post("/simulators/{simulator_ip}/stop", response_model=SuccessResponse)
@@ -828,18 +876,20 @@ def stop_simulator(
         if not success:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
 
-        return SuccessResponse(message=f"Simulator {simulator_ip} stopped successfully", data={"ip_address": simulator_ip})
+        return SuccessResponse(message=f"Simulator {simulator_ip} stopped successfully",
+                               data={"ip_address": simulator_ip})
     except Exception as exc:
         logger.exception("Failed to stop simulator %s: %s", simulator_ip, exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to stop simulator: {exc}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Failed to stop simulator: {exc}")
 
 
 # ----------------------------- Device Template Endpoints -----------------------------
 @router.post("/device-templates", status_code=status.HTTP_201_CREATED)
 async def create_device_template(
-    payload: DeviceTemplateCreate,
-    current_user=Depends(require_sapro_access),
-    mongo_db = Depends(get_mongo_db),
+        payload: DeviceTemplateCreate,
+        current_user=Depends(require_sapro_access),
+        mongo_db=Depends(get_mongo_db),
 ):
     """Create a new device template. Returns minimal metadata on success.
 
@@ -873,8 +923,8 @@ async def create_device_template(
 
 @router.get("/device-templates", response_model=List[Dict[str, Any]])
 async def list_device_templates(
-    current_user=Depends(require_sapro_access),
-    mongo_db = Depends(get_mongo_db),
+        current_user=Depends(require_sapro_access),
+        mongo_db=Depends(get_mongo_db),
 ):
     """List all device templates (lightweight listing without full template body)."""
     collection = mongo_db["device_templates"]
@@ -901,9 +951,9 @@ async def list_device_templates(
 
 @router.get("/device-templates/{template_id}")
 async def get_device_template(
-    template_id: str,
-    current_user=Depends(require_sapro_access),
-    mongo_db = Depends(get_mongo_db),
+        template_id: str,
+        current_user=Depends(require_sapro_access),
+        mongo_db=Depends(get_mongo_db),
 ):
     """Return full device template by id."""
     collection = mongo_db["device_templates"]
@@ -931,10 +981,10 @@ async def get_device_template(
 
 @router.put("/device-templates/{template_id}")
 async def update_device_template(
-    template_id: str,
-    payload: DeviceTemplateUpdate,
-    current_user=Depends(require_sapro_access),
-    mongo_db = Depends(get_mongo_db),
+        template_id: str,
+        payload: DeviceTemplateUpdate,
+        current_user=Depends(require_sapro_access),
+        mongo_db=Depends(get_mongo_db),
 ):
     """Update fields of a device template. Returns updated metadata.
 
@@ -987,9 +1037,9 @@ async def update_device_template(
 
 @router.delete("/device-templates/{template_id}")
 async def delete_device_template(
-    template_id: str,
-    current_user=Depends(require_sapro_access),
-    mongo_db = Depends(get_mongo_db),
+        template_id: str,
+        current_user=Depends(require_sapro_access),
+        mongo_db=Depends(get_mongo_db),
 ):
     """Delete device template by id."""
     collection = mongo_db["device_templates"]
@@ -1008,8 +1058,8 @@ async def delete_device_template(
 # ----------------------------- Sapro File Listing Endpoints -----------------------------
 @router.get("/sapro-files/{file_type}")
 async def list_sapro_files(
-    file_type: str,
-    current_user=Depends(require_sapro_access),
+        file_type: str,
+        current_user=Depends(require_sapro_access),
 ):
     """List files from Sapro server directories for template field dropdowns.
 
@@ -1087,8 +1137,8 @@ async def list_sapro_files(
 
 @router.get("/sapro-files/validate/{file_path:path}")
 async def validate_sapro_file(
-    file_path: str,
-    current_user=Depends(require_sapro_access),
+        file_path: str,
+        current_user=Depends(require_sapro_access),
 ):
     """Check if a file exists on the Sapro server.
 

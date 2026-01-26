@@ -11,74 +11,90 @@ Endpoints:
 This module implements DB operations using SQLAlchemy sessions from
 `get_db` and uses `auth` utilities for hashing and JWT creation.
 """
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm import Session
 
-from backend.app.schemas.user import UserCreate, UserResponse, UserUpdate, UserWithRolesResponse, AssignRoleRequest
+from backend.app.models.role import Role
+from backend.app.models.user import User
+from backend.app.models.user_role import UserRole
 from backend.app.schemas.auth import LoginRequest, LoginResponse
 from backend.app.schemas.common import ErrorResponse
-from backend.app.models.user import User
-from backend.app.models.role import Role
-from backend.app.models.user_role import UserRole
-from backend.app.utils.database import get_db
+from backend.app.schemas.user import UserCreate, UserResponse, UserUpdate, UserWithRolesResponse, AssignRoleRequest
 from backend.app.utils.auth import hash_password, verify_password, create_access_token, get_current_user, require_admin
+from backend.app.utils.database import get_db
 
 router = APIRouter(prefix="/api", tags=["users"])
 
 
-@router.post("/users", response_model=UserWithRolesResponse, status_code=status.HTTP_201_CREATED, responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
-def create_user(payload: UserCreate, db: Session = Depends(get_db), admin_user: User = Depends(require_admin)) -> UserWithRolesResponse:
-    """Create a new user (admin only).
+@router.post("/users", response_model=UserWithRolesResponse, status_code=status.HTTP_201_CREATED,
+             responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
+def create_user(payload: UserCreate, db: Session = Depends(get_db),
+                admin_user: User = Depends(require_admin)) -> UserWithRolesResponse:
+    """Create a new user account (admin only).
 
-    Requires the requesting user to have the 'admin' role.
-    - Hashes the provided password using `hash_password`.
-    - Persists the user record to the database.
-    - Assigns any requested roles.
-    - Returns the created user including roles.
+    Workspace assignment rules:
+    - Super user (username='admin') can set any workspace
+    - Regular admins automatically assign their own workspace
     """
+    # Check if username already exists
+    existing = db.query(User).filter(User.username == payload.username).first()
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already exists"
+        )
+
+    # Hash the password
     hashed = hash_password(payload.password)
-    user = User(username=payload.username, password_hash=hashed)
-    try:
-        db.add(user)
+
+    # Determine workspace assignment
+    assigned_workspace = None
+    if admin_user.username == 'admin':
+        # Super user can set workspace explicitly
+        assigned_workspace = payload.workspace if payload.workspace else '*'
+    else:
+        # Regular admins pass their own workspace
+        assigned_workspace = admin_user.workspace
+
+    # Create user
+    new_user = User(
+        username=payload.username,
+        password_hash=hashed,
+        workspace=assigned_workspace,
+    )
+
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+
+    # Assign roles
+    if payload.roles:
+        for role_name in payload.roles:
+            role = db.query(Role).filter(Role.role_name == role_name).first()
+            if role:
+                user_role = UserRole(user_id=new_user.user_id, role_id=role.role_id)
+                db.add(user_role)
+
         db.commit()
-        db.refresh(user)
-
-        # Assign roles to the user
-        if getattr(payload, 'roles', None):
-            for role_name in payload.roles:
-                role = db.query(Role).filter(Role.role_name == role_name).first()
-                if role:
-                    user_role = UserRole(user_id=user.user_id, role_id=role.role_id)
-                    db.add(user_role)
-            db.commit()
-            # Reload user from database to get the roles relationship populated
-            db.refresh(user)
-
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exists")
-    except SQLAlchemyError as exc:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-
-    # Query roles directly from database
-    user_roles = db.query(Role).join(UserRole).filter(UserRole.user_id == user.user_id).all()
-    loaded_roles = [role.role_name for role in user_roles]
+        db.refresh(new_user)
 
     return UserWithRolesResponse(
-        user_id=user.user_id,
-        username=user.username,
-        roles=loaded_roles,
-        created_at=user.created_at,
-        updated_at=getattr(user, "updated_at", None),
+        user_id=new_user.user_id,
+        username=new_user.username,
+        roles=[role.role_name for role in new_user.roles],
+        workspace=new_user.workspace,
+        created_at=new_user.created_at,
+        updated_at=getattr(new_user, "updated_at", None),
     )
 
 
 @router.get("/users/{user_id}", response_model=UserResponse, responses={404: {"model": ErrorResponse}})
-def get_user(user_id: int, db: Session = Depends(get_db), _current_user: Any = Depends(get_current_user)) -> UserResponse:
+def get_user(user_id: int, db: Session = Depends(get_db),
+             _current_user: Any = Depends(get_current_user)) -> UserResponse:
     """Retrieve a user by ID (protected).
 
     Requires authentication (via `get_current_user`).
@@ -89,13 +105,15 @@ def get_user(user_id: int, db: Session = Depends(get_db), _current_user: Any = D
     return UserResponse(
         user_id=user.user_id,
         username=user.username,
+        workspace=user.workspace,
         created_at=user.created_at,
         updated_at=getattr(user, "updated_at", None),
     )
 
 
 @router.get("/users", response_model=list[UserWithRolesResponse], status_code=status.HTTP_200_OK)
-def get_all_users(db: Session = Depends(get_db), _current_user: Any = Depends(get_current_user)) -> list[UserWithRolesResponse]:
+def get_all_users(db: Session = Depends(get_db), _current_user: Any = Depends(get_current_user)) -> list[
+    UserWithRolesResponse]:
     """Retrieve all users (protected).
 
     Requires authentication (via `get_current_user`).
@@ -106,6 +124,7 @@ def get_all_users(db: Session = Depends(get_db), _current_user: Any = Depends(ge
             user_id=user.user_id,
             username=user.username,
             roles=[role.role_name for role in user.roles],
+            workspace=user.workspace,
             created_at=user.created_at,
             updated_at=getattr(user, "updated_at", None),
         )
@@ -113,8 +132,10 @@ def get_all_users(db: Session = Depends(get_db), _current_user: Any = Depends(ge
     ]
 
 
-@router.put("/users/{user_id}", response_model=UserResponse, status_code=status.HTTP_200_OK, responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
-def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db), admin_user: User = Depends(require_admin)) -> UserResponse:
+@router.put("/users/{user_id}", response_model=UserResponse, status_code=status.HTTP_200_OK,
+            responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
+def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db),
+                admin_user: User = Depends(require_admin)) -> UserResponse:
     """Update a user by ID (admin only).
 
     Requires the requesting user to have the 'admin' role.
@@ -146,6 +167,18 @@ def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db)
     if payload.username is not None:
         user.username = payload.username
 
+    # UPDATE WORKSPACE - ADD THIS BLOCK
+    if payload.workspace is not None:
+        # Only super user can change workspace
+        if admin_user.username != 'admin':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only super user can change workspace assignments"
+            )
+        user.workspace = payload.workspace
+
+    user.updated_at = datetime.now(timezone.utc)
+
     try:
         db.commit()
         db.refresh(user)
@@ -164,7 +197,8 @@ def update_user(user_id: int, payload: UserUpdate, db: Session = Depends(get_db)
     )
 
 
-@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, responses={404: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 400: {"model": ErrorResponse}})
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT,
+               responses={404: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 400: {"model": ErrorResponse}})
 def delete_user(user_id: int, db: Session = Depends(get_db), admin_user: User = Depends(require_admin)) -> None:
     """Delete a user by ID (admin only).
 
@@ -229,6 +263,7 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse
         user_id=user.user_id,
         username=user.username,
         roles=[role.role_name for role in user.roles],
+        workspace=user.workspace,
         created_at=user.created_at,
         updated_at=getattr(user, "updated_at", None),
     ))
@@ -236,9 +271,9 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse
 
 @router.get("/users/{username}/roles", response_model=UserWithRolesResponse, responses={404: {"model": ErrorResponse}})
 def get_user_with_roles(
-    username: str,
-    db: Session = Depends(get_db),
-    _current_user: Any = Depends(get_current_user)
+        username: str,
+        db: Session = Depends(get_db),
+        _current_user: Any = Depends(get_current_user)
 ) -> UserWithRolesResponse:
     """Get a user with their assigned roles (protected).
 
@@ -255,17 +290,19 @@ def get_user_with_roles(
         user_id=user.user_id,
         username=user.username,
         roles=role_names,
+        workspace=user.workspace,
         created_at=user.created_at,
         updated_at=getattr(user, "updated_at", None),
     )
 
 
-@router.post("/users/{username}/roles", response_model=UserWithRolesResponse, status_code=status.HTTP_200_OK, responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
+@router.post("/users/{username}/roles", response_model=UserWithRolesResponse, status_code=status.HTTP_200_OK,
+             responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
 def assign_role_to_user(
-    username: str,
-    payload: AssignRoleRequest,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(require_admin)
+        username: str,
+        payload: AssignRoleRequest,
+        db: Session = Depends(get_db),
+        admin_user: User = Depends(require_admin)
 ) -> UserWithRolesResponse:
     """Assign a role to a user (admin only).
 
@@ -314,17 +351,19 @@ def assign_role_to_user(
         user_id=user.user_id,
         username=user.username,
         roles=role_names,
+        workspace=user.workspace,
         created_at=user.created_at,
         updated_at=getattr(user, "updated_at", None),
     )
 
 
-@router.delete("/users/{username}/roles/{role_name}", response_model=UserWithRolesResponse, responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
+@router.delete("/users/{username}/roles/{role_name}", response_model=UserWithRolesResponse,
+               responses={404: {"model": ErrorResponse}, 400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}})
 def remove_role_from_user(
-    username: str,
-    role_name: str,
-    db: Session = Depends(get_db),
-    admin_user: User = Depends(require_admin)
+        username: str,
+        role_name: str,
+        db: Session = Depends(get_db),
+        admin_user: User = Depends(require_admin)
 ) -> UserWithRolesResponse:
     """Remove a role from a user (admin only).
 
@@ -376,6 +415,7 @@ def remove_role_from_user(
         user_id=user.user_id,
         username=user.username,
         roles=role_names,
+        workspace=user.workspace,
         created_at=user.created_at,
         updated_at=getattr(user, "updated_at", None),
     )

@@ -46,6 +46,7 @@ export const UserTable: React.FC<UserTableProps> = ({ users, currentUser, onEdit
                 </Box>
               </TableCell>
               <TableCell>Roles</TableCell>
+              <TableCell>Workspace</TableCell>
               <TableCell>Active</TableCell>
               <TableCell
                 onClick={() => onSort('created_at')}
@@ -65,6 +66,8 @@ export const UserTable: React.FC<UserTableProps> = ({ users, currentUser, onEdit
                 <TableCell><Skeleton variant="text" width={30} /></TableCell>
                 <TableCell><Skeleton variant="text" width={120} /></TableCell>
                 <TableCell><Skeleton variant="rectangular" width={100} height={24} sx={{ borderRadius: '12px' }} /></TableCell>
+                <TableCell><Skeleton variant="rectangular" width={100} height={24} sx={{ borderRadius: '12px' }} /></TableCell>
+                <TableCell><Skeleton variant="rectangular" width={80} height={24} sx={{ borderRadius: '12px' }} /></TableCell>  {/* Workspace skeleton */}
                 <TableCell><Skeleton variant="rectangular" width={70} height={24} sx={{ borderRadius: '12px' }} /></TableCell>
                 <TableCell><Skeleton variant="text" width={100} /></TableCell>
                 <TableCell>
@@ -112,6 +115,7 @@ export const UserTable: React.FC<UserTableProps> = ({ users, currentUser, onEdit
                 </Box>
               </TableCell>
               <TableCell>Roles</TableCell>
+              <TableCell>Workspace</TableCell>
               <TableCell>Active</TableCell>
               <TableCell
                 onClick={() => onSort('created_at')}
@@ -134,6 +138,14 @@ export const UserTable: React.FC<UserTableProps> = ({ users, currentUser, onEdit
                   {(user.roles || []).map((role, idx) => (
                     <Chip key={`${user.user_id}-role-${idx}`} label={role} size="small" color="primary" sx={{ mr: 0.5 }} />
                   ))}
+                </TableCell>
+                <TableCell>
+                  <Chip
+                    label={user.workspace || 'Not assigned'}
+                    size="small"
+                    color={user.workspace === '*' ? 'secondary' : 'default'}
+                    sx={{ fontFamily: 'monospace' }}
+                  />
                 </TableCell>
                 <TableCell>
                   <Chip label={user.is_active ? 'Active' : 'Inactive'} color={user.is_active ? 'success' : 'default'} size="small" />

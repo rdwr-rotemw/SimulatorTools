@@ -9,6 +9,7 @@ class UserCreate(BaseModel):
     username: str = Field(..., min_length=3, max_length=150, description="Desired username")
     password: str = Field(..., min_length=8, description="Plaintext password (will be hashed)")
     roles: List[str] = Field(default_factory=list, description="List of role names to assign to the user")
+    workspace: Optional[str] = Field(None, description="Workspace name (only super user can set this)")
 
     model_config = {"from_attributes": True}
 
@@ -16,6 +17,7 @@ class UserCreate(BaseModel):
 class UserResponse(BaseModel):
     user_id: int = Field(..., description="User identifier")
     username: str = Field(..., description="Username")
+    workspace: Optional[str] = Field(None, description="Assigned workspace")
     created_at: datetime = Field(..., description="Account creation timestamp")
     updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
 
@@ -27,6 +29,7 @@ class UserWithRolesResponse(BaseModel):
     user_id: int = Field(..., description="User identifier")
     username: str = Field(..., description="Username")
     roles: List[str] = Field(default_factory=list, description="List of role names assigned to user")
+    workspace: Optional[str] = Field(None, description="Assigned workspace")
     created_at: datetime = Field(..., description="Account creation timestamp")
     updated_at: Optional[datetime] = Field(None, description="Last update timestamp")
 
@@ -36,6 +39,7 @@ class UserWithRolesResponse(BaseModel):
 class UserUpdate(BaseModel):
     """Schema for updating user information."""
     username: Optional[str] = Field(None, min_length=3, max_length=150, description="New username (optional)")
+    workspace: Optional[str] = Field(None, description="New workspace (only super user can update)")
 
     model_config = {"from_attributes": True}
 

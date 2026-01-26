@@ -273,22 +273,33 @@ class SaproCommunicationHandler:
             logger.error(f"SNMP query failed for {device_ip}: {type(e).__name__}: {e}")
             return None, None
 
-    def get_all_maps(self) -> List[Dict[str, str]]:
-        """Get list of all available maps from Sapro workspace with their status.
+    def get_all_maps(self, workspace: str = "default") -> List[Dict[str, str]]:
+        """Get list of all available maps from specified Sapro workspace with their status.
 
-        Executes SSH command: /opt/sapro/bin/sapcnsl -w /opt/sapro/wsp/default.wsp -c wspstats
+        Args:
+            workspace: Workspace name (without .wsp extension). Defaults to "default".
+                        Use "*" to query all workspaces and aggregate results.
+
+        Executes SSH command: /opt/sapro/bin/sapcnsl -w /opt/sapro/wsp/{workspace}.wsp -c wspstats
         Parses the table output to extract map names and running status.
 
         Returns:
             List of dicts with:
             - name: Map name (without .map extension and /opt/sapro/map/ prefix)
             - status: "running" if R in Status column, "" (empty) if stopped, "error" otherwise
+            - workspace: Workspace name (added when querying all workspaces)
         """
-        cmd = "/opt/sapro/bin/sapcnsl -w /opt/sapro/wsp/default.wsp -c wspstats"
+        from backend.app.utils.sapro_ssh import get_sapro_ssh_client
+
+        # Special case: aggregate all workspaces for super user
+        if workspace == "*":
+            return self._get_all_maps_aggregated()
+
+        cmd = f"/opt/sapro/bin/sapcnsl -w /opt/sapro/wsp/{workspace}.wsp -c wspstats"
 
         try:
             ssh_client = get_sapro_ssh_client()
-            logger.debug(f"Executing wspstats command via SSH: {cmd}")
+            logger.debug(f"Executing wspstats command for workspace '{workspace}': {cmd}")
 
             success, output = ssh_client.execute_command(cmd, check_stderr=False)
 
@@ -351,12 +362,53 @@ class SaproCommunicationHandler:
 
                 result.append({'name': map_name, 'status': status})
 
-            logger.info(f"Retrieved {len(result)} maps from workspace")
+            logger.info(f"Retrieved {len(result)} maps from workspace '{workspace}'")
             return result
 
         except Exception as e:
-            logger.error(f"Failed to get map list via wspstats: {e}", exc_info=True)
-            raise Exception(f"Failed to get map list: {e}")
+            logger.error(f"Failed to get map list from workspace '{workspace}': {e}", exc_info=True)
+            raise Exception(f"Failed to get map list from workspace '{workspace}': {e}")
+
+    def _get_all_maps_aggregated(self) -> List[Dict[str, str]]:
+        """Get maps from all workspaces and aggregate results (super user only).
+
+        Returns:
+            List of dicts with name, status, and workspace fields.
+        """
+        from backend.app.utils.sapro_ssh import get_sapro_ssh_client
+
+        try:
+            ssh_client = get_sapro_ssh_client()
+            wsp_dir = "/opt/sapro/wsp/"
+
+            # List all .wsp files
+            all_files = ssh_client.list_directory(wsp_dir)
+            wsp_files = [f.replace('.wsp', '') for f in all_files if f.endswith('.wsp')]
+
+            if not wsp_files:
+                logger.warning("No workspace files found")
+                return []
+
+            # Query each workspace and aggregate
+            aggregated_maps: List[Dict[str, str]] = []
+
+            for workspace in wsp_files:
+                try:
+                    maps = self.get_all_maps(workspace=workspace)
+                    # Add workspace field to each map
+                    for map_info in maps:
+                        map_info['workspace'] = workspace
+                        aggregated_maps.append(map_info)
+                except Exception as e:
+                    logger.warning(f"Failed to query workspace '{workspace}': {e}")
+                    continue
+
+            logger.info(f"Aggregated {len(aggregated_maps)} maps from {len(wsp_files)} workspaces")
+            return aggregated_maps
+
+        except Exception as e:
+            logger.error(f"Failed to aggregate maps from all workspaces: {e}", exc_info=True)
+            raise Exception(f"Failed to aggregate maps: {e}")
 
     def get_map_by_type(self, device_type: str) -> Optional[str]:
         """Return the map name for a given device type.

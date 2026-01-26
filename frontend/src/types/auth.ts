@@ -13,6 +13,7 @@ export interface User {
   username: string;
   is_active: boolean;
   roles: string[];
+  workspace?: string;  // ADD THIS LINE - assigned workspace name
   created_at: string; // ISO8601 timestamp
   updated_at: string | null; // ISO8601 timestamp or null
 }
