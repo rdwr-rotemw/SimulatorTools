@@ -89,7 +89,7 @@ class SaproCommunicationHandler:
         """
         return bool(self._is_connected)
 
-    def get_all_devices(self) -> List[SaproDevice]:
+    def get_all_devices(self, workspace: str) -> List[SaproDevice]:
         """Get all devices from all running maps using SSH commands.
 
         New flow:
@@ -106,7 +106,7 @@ class SaproCommunicationHandler:
 
         # Step 1: Get all maps with status
         try:
-            all_maps = self.get_all_maps()
+            all_maps = self.get_all_maps(workspace=workspace)
         except Exception as e:
             logger.error(f"Failed to get map list: {e}")
             return []
@@ -121,7 +121,8 @@ class SaproCommunicationHandler:
 
         for map_info in running_maps:
             map_name = map_info['name']
-            cmd = f"/opt/sapro/bin/sapcnsl -m /opt/sapro/map/{map_name}.map -c devlist"
+            map_full_path = map_info['full_path']
+            cmd = f"/opt/sapro/bin/sapcnsl -m {map_full_path} -c devlist"
 
             try:
                 logger.debug(f"Executing devlist for map {map_name}")
@@ -289,7 +290,6 @@ class SaproCommunicationHandler:
             - status: "running" if R in Status column, "" (empty) if stopped, "error" otherwise
             - workspace: Workspace name (added when querying all workspaces)
         """
-        from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 
         # Special case: aggregate all workspaces for super user
         if workspace == "*":
@@ -340,7 +340,7 @@ class SaproCommunicationHandler:
                 # Find map name (last element, should contain /opt/sapro/map/)
                 map_path = None
                 for part in reversed(parts):
-                    if '/opt/sapro/map/' in part:
+                    if '/opt/sapro/' in part:
                         map_path = part
                         break
 
@@ -360,7 +360,11 @@ class SaproCommunicationHandler:
                 else:
                     status = "error"
 
-                result.append({'name': map_name, 'status': status})
+                result.append({
+                    'name': map_name,
+                    'status': status,
+                    'full_path': map_path
+                })
 
             logger.info(f"Retrieved {len(result)} maps from workspace '{workspace}'")
             return result
@@ -439,9 +443,21 @@ class SaproCommunicationHandler:
             map_name: The logical map name (without extension).
 
         Returns:
-            Full path string (map_directory + map_name + ".map").
+            Full path string from get_all_maps().
+
+        Raises:
+            Exception: If map not found.
         """
-        return f"{self.map_directory}{map_name}.map"
+        try:
+            maps = self.get_all_maps()
+            map_info = next((m for m in maps if m['name'] == map_name), None)
+            if not map_info:
+                raise Exception(f"Map {map_name} not found")
+            return map_info['full_path']
+        except Exception as e:
+            logger.error(f"Failed to get full path for map {map_name}: {e}")
+            # Fallback to old behavior for backward compatibility
+            return f"{self.map_directory}{map_name}.map"
 
     def start_map(self, map_name: str) -> Tuple[bool, str]:
         """Start a map on the sapro server.
@@ -478,7 +494,17 @@ class SaproCommunicationHandler:
         """
         import time
 
-        map_path = f"/opt/sapro/map/{map_name}.map"
+        # Get map info to find full path
+        try:
+            maps = self.get_all_maps()
+            map_info = next((m for m in maps if m['name'] == map_name), None)
+            if not map_info:
+                return False, f"Map {map_name} not found"
+            map_path = map_info['full_path']
+        except Exception as e:
+            logger.error(f"Failed to get map info for {map_name}: {e}")
+            return False, f"Failed to get map info: {e}"
+
         cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c start"
 
         try:
@@ -514,7 +540,8 @@ class SaproCommunicationHandler:
                     logger.info(f"Map {map_name} is now running (took {elapsed}s)")
                     return True, f"Map {map_name} started successfully"
 
-                logger.debug(f"Map {map_name} status: {map_status['status'] if map_status else 'not found'}, elapsed: {elapsed}s")
+                logger.debug(
+                    f"Map {map_name} status: {map_status['status'] if map_status else 'not found'}, elapsed: {elapsed}s")
 
             # Timeout reached
             return False, f"Timeout waiting for map {map_name} to start (5 minutes)"
@@ -536,7 +563,17 @@ class SaproCommunicationHandler:
 
         (success, message)
         """
-        map_path = f"/opt/sapro/map/{map_name}.map"
+        # Get map info to find full path
+        try:
+            maps = self.get_all_maps()
+            map_info = next((m for m in maps if m['name'] == map_name), None)
+            if not map_info:
+                return False, f"Map {map_name} not found"
+            map_path = map_info['full_path']
+        except Exception as e:
+            logger.error(f"Failed to get map info for {map_name}: {e}")
+            return False, f"Failed to get map info: {e}"
+
         cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c stop"
 
         try:
@@ -612,25 +649,26 @@ class SaproCommunicationHandler:
         """Start one or more devices listed in a map using SSH commands.
 
         Args:
-            map_name: Map path or name
+            map_name: Map name (without .map extension)
             devices_names: List of device names/IPs to start
 
         Returns:
             (success, combined_messages)
         """
         try:
+            # Get map info to find full path
+            maps = self.get_all_maps()
+            map_info = next((m for m in maps if m['name'] == map_name), None)
+            if not map_info:
+                return False, f"Map {map_name} not found"
+            map_full_path = map_info['full_path']
+
             ssh_client = get_sapro_ssh_client()
             messages = []
 
             for device_ip in devices_names:
-                # Normalize map name (ensure .map extension)
-                if not map_name.endswith('.map'):
-                    map_full = f"{map_name}.map"
-                else:
-                    map_full = map_name
-
-                # Build SSH command
-                cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_full} -c startdev -d {device_ip}"
+                # Build SSH command with full path
+                cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_full_path} -c startdev -d {device_ip}"
 
                 logger.debug(f"Executing start device command via SSH: {cmd}")
                 success, output = ssh_client.execute_command(cmd, check_stderr=False)
@@ -652,25 +690,26 @@ class SaproCommunicationHandler:
         """Stop one or more devices listed in a map using SSH commands.
 
         Args:
-            map_name: Map path or name
+            map_name: Map name (without .map extension)
             devices_names: List of device names/IPs to stop
 
         Returns:
             (success, combined_messages)
         """
         try:
+            # Get map info to find full path
+            maps = self.get_all_maps()
+            map_info = next((m for m in maps if m['name'] == map_name), None)
+            if not map_info:
+                return False, f"Map {map_name} not found"
+            map_full_path = map_info['full_path']
+
             ssh_client = get_sapro_ssh_client()
             messages = []
 
             for device_ip in devices_names:
-                # Normalize map name (ensure .map extension)
-                if not map_name.endswith('.map'):
-                    map_full = f"{map_name}.map"
-                else:
-                    map_full = map_name
-
-                # Build SSH command
-                cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_full} -c stopdev -d {device_ip}"
+                # Build SSH command with full path
+                cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_full_path} -c stopdev -d {device_ip}"
 
                 logger.debug(f"Executing stop device command via SSH: {cmd}")
                 success, output = ssh_client.execute_command(cmd, check_stderr=False)

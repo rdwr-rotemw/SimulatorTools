@@ -36,7 +36,7 @@ from backend.app.schemas.sapro_simulator import (
     SaproSimulatorResponse,
     SaproSimulatorBatchResponse, SaproSimulatorAddResult,
 )
-from backend.app.utils.auth import require_sapro_access
+from backend.app.utils.auth import require_sapro_access, require_admin
 from backend.app.utils.database import get_db, get_mongo_db
 from backend.app.utils.logger import logger
 from backend.utils.ip_utils import parse_ip_range
@@ -165,6 +165,65 @@ def _load_template_and_get_base_xml(mongo_db, template_id: str) -> tuple[Dict[st
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Failed to convert template to XML: {exc}")
 
     return tpl_doc, base_xml
+
+
+# ----------------------------- Workspace Endpoints -----------------------------
+@router.get("/sapro/workspaces", response_model=List[Dict[str, str]])
+async def list_available_workspaces(
+    current_user: User = Depends(require_admin),
+):
+    """List all available Sapro workspaces (admin only).
+
+    Reads all .wsp files from /opt/sapro/wsp/ directory.
+    Used by super user for workspace assignment dropdown.
+
+    Returns:
+        List of dicts with:
+        - name: Workspace name (without .wsp extension)
+        - full_path: Full path to workspace file
+    """
+    from backend.app.utils.sapro_ssh import get_sapro_ssh_client
+
+    try:
+        ssh_client = get_sapro_ssh_client()
+        wsp_dir = "/opt/sapro/wsp/"
+
+        # Check if directory exists
+        if not ssh_client.file_exists(wsp_dir):
+            logger.error(f"Workspace directory not found: {wsp_dir}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Workspace directory not found: {wsp_dir}"
+            )
+
+        # List all files in workspace directory
+        all_files = ssh_client.list_directory(wsp_dir)
+
+        # Filter .wsp files
+        wsp_files = [f for f in all_files if f.endswith('.wsp')]
+
+        # Extract workspace names
+        workspaces = []
+        for wsp_file in wsp_files:
+            name = wsp_file.replace('.wsp', '')
+            workspaces.append({
+                'name': name,
+                'full_path': f"{wsp_dir}{wsp_file}"
+            })
+
+        # Sort alphabetically
+        workspaces.sort(key=lambda w: w['name'])
+
+        logger.info(f"Found {len(workspaces)} workspaces in {wsp_dir}")
+
+        return workspaces
+
+    except Exception as e:
+        logger.error(f"Failed to list workspaces: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list workspaces: {str(e)}"
+        )
 
 
 # ----------------------------- Simulator Endpoints -----------------------------
@@ -520,7 +579,7 @@ def list_simulators(
     4. Filter returned simulators by user's workspace
     """
     try:
-        devices = sapro_handler.get_all_devices()  # List[SaproDevice]
+        devices = sapro_handler.get_all_devices(current_user.workspace)  # List[SaproDevice]
     except Exception as exc:
         logger.exception("Failed to query Sapro for devices: %s", exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to query Sapro: {exc}")

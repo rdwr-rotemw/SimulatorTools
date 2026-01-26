@@ -36,10 +36,10 @@ export const UserFormDialog: React.FC<UserFormDialogProps> = ({ open, user, onCl
   const { errors } = formState;
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [availableWorkspaces, setAvailableWorkspaces] = useState<string[]>([]);  // ADD THIS LINE
-  const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);  // ADD THIS LINE
-  const currentUser = useAuthStore(state => state.user);  // ADD THIS LINE
-  const isSuperAdmin = currentUser?.username === 'admin';  // ADD THIS LINE
+  const [availableWorkspaces, setAvailableWorkspaces] = useState<string[]>([]);
+  const [loadingWorkspaces, setLoadingWorkspaces] = useState(false);
+  const currentUser = useAuthStore(state => state.user);
+  const isSuperAdmin = currentUser?.username === 'admin';
   const isEditMode = !!user;
 
   useEffect(() => {
@@ -49,6 +49,25 @@ export const UserFormDialog: React.FC<UserFormDialogProps> = ({ open, user, onCl
       reset({ username: '', password: '', roles: [], workspace: undefined });
     }
   }, [user, reset]);
+
+  useEffect(() => {
+    // Only load workspaces if super admin and dialog is open
+    if (open && isSuperAdmin) {
+      const loadWorkspaces = async () => {
+        setLoadingWorkspaces(true);
+        try {
+          const workspaces = await workspaceService.getWorkspaces();
+          setAvailableWorkspaces(workspaces.map(w => w.name));
+        } catch (error) {
+          console.error('Failed to load workspaces:', error);
+          setAvailableWorkspaces([]);
+        } finally {
+          setLoadingWorkspaces(false);
+        }
+      };
+      loadWorkspaces();
+    }
+  }, [open, isSuperAdmin]);
 
   const availableRoles = ['admin', 'sapro_admin', 'cc_admin'];
 
@@ -64,7 +83,7 @@ export const UserFormDialog: React.FC<UserFormDialogProps> = ({ open, user, onCl
         }
       }
       await onSubmit(payload);
-      reset({ username: '', password: '', roles: [], workspace: undefined });  // ADD workspace
+      reset({ username: '', password: '', roles: [], workspace: undefined });
       onClose();
       setErrorMessage(null);
     } catch (error: any) {
@@ -153,7 +172,7 @@ export const UserFormDialog: React.FC<UserFormDialogProps> = ({ open, user, onCl
               />
             </FormControl>
 
-            {isSuperAdmin && (  // ADD THIS BLOCK
+            {isSuperAdmin && (
               <FormControl fullWidth>
                 <InputLabel id="workspace-label">Workspace</InputLabel>
                 <Controller
@@ -167,9 +186,6 @@ export const UserFormDialog: React.FC<UserFormDialogProps> = ({ open, user, onCl
                       label="Workspace"
                       disabled={loadingWorkspaces}
                     >
-                      <MenuItem value="">
-                        <em>{isEditMode ? 'Keep current' : 'Auto-assign from admin'}</em>
-                      </MenuItem>
                       {availableWorkspaces.map((workspace) => (
                         <MenuItem key={workspace} value={workspace}>
                           {workspace === '*' ? '* (All Workspaces)' : workspace}
@@ -184,7 +200,7 @@ export const UserFormDialog: React.FC<UserFormDialogProps> = ({ open, user, onCl
                   </Box>
                 )}
               </FormControl>
-            )}  // ADD THIS BLOCK
+            )}
 
           </Box>
         </form>

@@ -7,8 +7,8 @@ export interface WorkspaceInfo {
 
 class WorkspaceService {
   async getWorkspaces(): Promise<WorkspaceInfo[]> {
-    const response = await apiClient.get<{ workspaces: WorkspaceInfo[] }>('/workspaces');
-    return response.data.workspaces;
+    const response = await apiClient.get<WorkspaceInfo[]>('/sapro/workspaces');
+    return response.data;
   }
 }
 
