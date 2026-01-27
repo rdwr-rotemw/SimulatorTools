@@ -46,7 +46,7 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
   const [isLoading, setIsLoading] = useState(false);
   const [templates, setTemplates] = useState<Array<{ _id: string; name: string }>>([]);
   const [isTemplatesLoading, setIsTemplatesLoading] = useState(false);
-  const [maps, setMaps] = useState<string[]>([]);
+  const [maps, setMaps] = useState<Array<{ name: string; status: string }>>([]);
   const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
   const [selectedTemplateForEdit, setSelectedTemplateForEdit] = useState<DeviceTemplate | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
@@ -104,8 +104,35 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
     }
   }, [open, simulator, setValue, reset]);
 
+  // Load all maps from API when dialog opens (both running and stopped)
   useEffect(() => {
-    // Fetch templates on mount
+    if (!open) return; // Only load when dialog is open
+
+    let cancelled = false;
+    const loadMaps = async () => {
+      try {
+        const resp = await apiClient.get('/maps');
+        // Expect an array of {name, status}
+        const data = resp.data as Array<{ name: string; status: string }>;
+        if (!cancelled) {
+          setMaps(data);
+        }
+      } catch (err) {
+        console.error('Failed to load maps', err);
+        if (!cancelled) setMaps([]);
+      }
+    };
+
+    loadMaps();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]); // Runs whenever dialog opens
+
+  // Fetch templates when dialog opens
+  useEffect(() => {
+    if (!open) return; // Only load when dialog is open
+
     let cancelled = false;
     const loadTemplates = async () => {
       setIsTemplatesLoading(true);
@@ -128,16 +155,7 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  // derive unique maps from provided simulators prop when available
-  useEffect(() => {
-    if (simulators && simulators.length > 0) {
-      const uniq = Array.from(new Set(simulators.map((s) => (s.map || '').trim()).filter(Boolean)));
-      if (uniq.length > 0) setMaps((prev) => Array.from(new Set([...uniq, ...prev])));
-    }
-  }, [simulators]);
-
+  }, [open]); // Runs whenever dialog opens
 
   const handleFormSubmit = async (data: SimulatorCreate | SimulatorUpdate) => {
     setIsLoading(true);
@@ -389,7 +407,9 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
                 sx={{ flex: 1 }}
               >
                 {maps.map((m) => (
-                  <MenuItem key={m} value={m}>{m}</MenuItem>
+                  <MenuItem key={m.name} value={m.name}>
+                    {m.name} {m.status === 'running' ? '(Running)' : '(Stopped)'}
+                  </MenuItem>
                 ))}
               </TextField>
             </Box>

@@ -49,6 +49,9 @@ export const SimulatorsPage: React.FC = () => {
   const [mapsLoading, setMapsLoading] = useState(false);
   const [mapStartLoading, setMapStartLoading] = useState<string | null>(null);
   const [mapStopLoading, setMapStopLoading] = useState<string | null>(null);
+  const [createMapDialogOpen, setCreateMapDialogOpen] = useState(false);
+  const [newMapName, setNewMapName] = useState('');
+  const [createMapLoading, setCreateMapLoading] = useState(false);
 
   // Simulator creation progress state
   const [isCreating, setIsCreating] = useState(false);
@@ -209,6 +212,31 @@ export const SimulatorsPage: React.FC = () => {
       });
     } finally {
       setMapStopLoading(null);
+    }
+  };
+
+  const handleCreateMap = async () => {
+    if (!newMapName.trim()) {
+      setSnackbar({ open: true, message: 'Map name is required', severity: 'error' });
+      return;
+    }
+
+    setCreateMapLoading(true);
+    try {
+      await apiClient.post(`/maps?map_name=${encodeURIComponent(newMapName.trim())}`);
+      setSnackbar({ open: true, message: `Map ${newMapName} created successfully`, severity: 'success' });
+      setCreateMapDialogOpen(false);
+      setNewMapName('');
+      await fetchMaps();
+    } catch (err: any) {
+      console.error('Failed to create map:', err);
+      setSnackbar({
+        open: true,
+        message: err?.response?.data?.detail || 'Failed to create map',
+        severity: 'error'
+      });
+    } finally {
+      setCreateMapLoading(false);
     }
   };
 
@@ -454,7 +482,16 @@ export const SimulatorsPage: React.FC = () => {
 
         {/* Map Management Dialog */}
         <Dialog open={mapDialogOpen} onClose={handleMapDialogClose} maxWidth="md" fullWidth>
-          <DialogTitle>Map Management</DialogTitle>
+          <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            Map Management
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={() => setCreateMapDialogOpen(true)}
+            >
+              Create Map
+            </Button>
+          </DialogTitle>
           <DialogContent>
             <Alert severity="info" sx={{ marginTop: 2, marginBottom: 2 }}>
               <Typography variant="body2" sx={{ fontWeight: 600, marginBottom: 0.5 }}>
@@ -528,6 +565,43 @@ export const SimulatorsPage: React.FC = () => {
           </DialogContent>
           <DialogActions>
             <Button onClick={handleMapDialogClose}>Close</Button>
+          </DialogActions>
+        </Dialog>
+
+        {/* Create Map Dialog */}
+        <Dialog open={createMapDialogOpen} onClose={() => setCreateMapDialogOpen(false)} maxWidth="sm" fullWidth>
+          <DialogTitle>Create New Map</DialogTitle>
+          <DialogContent>
+            <Alert severity="info" sx={{ marginTop: 2, marginBottom: 2 }}>
+              <Typography variant="body2">
+                Map name should contain only letters, numbers, hyphens, and underscores.
+                The map will be created in your current workspace.
+              </Typography>
+            </Alert>
+            <TextField
+              autoFocus
+              margin="dense"
+              label="Map Name"
+              type="text"
+              fullWidth
+              value={newMapName}
+              onChange={(e) => setNewMapName(e.target.value)}
+              placeholder="e.g., MyNewMap"
+              disabled={createMapLoading}
+              helperText="Do not include .map extension"
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setCreateMapDialogOpen(false)} disabled={createMapLoading}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleCreateMap}
+              variant="contained"
+              disabled={createMapLoading || !newMapName.trim()}
+            >
+              {createMapLoading ? <CircularProgress size={20} /> : 'Create'}
+            </Button>
           </DialogActions>
         </Dialog>
 

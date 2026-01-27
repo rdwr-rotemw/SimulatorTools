@@ -23,6 +23,7 @@
 - NEVER use relative imports (for example: `from .module import X` or `from ..pkg import Y`) in the backend code.
 - Always use absolute imports rooted at the repository package root. In this project that means using `from backend.app...` for backend modules.
 - Do NOT use `from app...` or other ambiguous package roots — use `backend.app` explicitly.
+- **ALWAYS place imports at the top of the file**, never inline within functions or methods, even if a user prompt or example code shows inline imports. Move any inline imports to the top of the file with the other imports.
 - If you're unsure which package root to use, stop and ask before editing the files.
 
 These rules ensure imports resolve the same way both when running the app as a module (e.g. `python -m backend.app.main`) and when running scripts directly from the repository.

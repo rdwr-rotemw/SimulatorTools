@@ -9,7 +9,9 @@ This file consolidates endpoints previously split across:
 Router: single APIRouter(prefix="/api", tags=["sapro"]) with simulator endpoints first,
 then template endpoints.
 """
+import copy
 import json
+import re
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Union
 
@@ -39,6 +41,7 @@ from backend.app.schemas.sapro_simulator import (
 from backend.app.utils.auth import require_sapro_access, require_admin
 from backend.app.utils.database import get_db, get_mongo_db
 from backend.app.utils.logger import logger
+from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 from backend.utils.ip_utils import parse_ip_range
 
 router = APIRouter(prefix="/api", tags=["sapro"])
@@ -55,7 +58,6 @@ def _replace_ip_in_template(template_dict: Dict[str, Any], ip_address: str) -> D
     Returns:
         Copy of template with <ip> replaced
     """
-    import copy
     result = copy.deepcopy(template_dict)
 
     def replace_recursive(obj):
@@ -170,7 +172,7 @@ def _load_template_and_get_base_xml(mongo_db, template_id: str) -> tuple[Dict[st
 # ----------------------------- Workspace Endpoints -----------------------------
 @router.get("/sapro/workspaces", response_model=List[Dict[str, str]])
 async def list_available_workspaces(
-    current_user: User = Depends(require_admin),
+        current_user: User = Depends(require_admin),
 ):
     """List all available Sapro workspaces (admin only).
 
@@ -182,7 +184,6 @@ async def list_available_workspaces(
         - name: Workspace name (without .wsp extension)
         - full_path: Full path to workspace file
     """
-    from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 
     try:
         ssh_client = get_sapro_ssh_client()
@@ -269,8 +270,8 @@ def create_simulator(
         # Load template and convert to XML
         tpl_doc, xml_content = _load_template_and_convert_to_xml(mongo_db, payload.template_id, ip)
 
-        # Get workspace for device creation
-        workspace = current_user.workspace if current_user.workspace else "default"
+        # Get workspace for device creation - use "default" for super admin
+        workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
 
         # Call Sapro to create device
         success, message = sapro_handler.create_device(ip, xml_content, payload.map, workspace=workspace)
@@ -343,7 +344,8 @@ def create_simulator(
         for ip in ip_list:
             try:
                 customized_xml = base_xml.replace("{{IP_ADDRESS}}", ip)
-                success_flag, message = sapro_handler.create_device(ip, customized_xml, payload.map, workspace=workspace)
+                success_flag, message = sapro_handler.create_device(ip, customized_xml, payload.map,
+                                                                    workspace=workspace)
 
                 if success_flag:
                     successful += 1
@@ -459,7 +461,8 @@ async def create_simulator_stream(
                 for index, ip in enumerate(ip_list, start=1):
                     try:
                         customized_xml = base_xml.replace("{{IP_ADDRESS}}", ip)
-                        success_flag, message = sapro_handler.create_device(ip, customized_xml, payload.map, workspace=workspace)
+                        success_flag, message = sapro_handler.create_device(ip, customized_xml, payload.map,
+                                                                            workspace=workspace)
 
                         if success_flag:
                             successful += 1
@@ -679,9 +682,11 @@ def update_simulator(
     1. Verify simulator exists in DB
     2. Validate required fields (template_id and map)
     3. Delete device from map via SSH (deldev command)
-    4. Overwrite device file with new template content
-    5. Add device back to map via SSH (adddev command)
-    6. Update DB with new metadata
+    4. Load template and convert to XML
+    5. Check if map is empty (first device) or has devices
+    6. If empty: Add device XML directly to map file
+    7. If not empty: Create device file and use adddev command
+    8. Update DB with new metadata
 
     Only map and template_id are updatable. IP cannot change.
     """
@@ -700,8 +705,8 @@ def update_simulator(
     if not map_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Map is required")
 
-    # Get workspace from user
-    workspace = current_user.workspace if current_user.workspace else "default"
+    # Get workspace from user - use "default" for super admin
+    workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
 
     # 3) Delete device from map using SSH deldev command
     logger.info(f"Deleting device {simulator_ip} from map {map_name}")
@@ -710,13 +715,13 @@ def update_simulator(
         logger.warning(f"Delete device warning (continuing anyway): {message}")
         # Don't fail - device might not be in map, we'll add it back
 
-    # 4) Load template and convert to XML, then overwrite device file
+    # 4) Load template and convert to XML
     logger.info(f"Updating device file for {simulator_ip} with template {template_id}")
     tpl_doc, xml_content = _load_template_and_convert_to_xml(mongo_db, template_id, simulator_ip)
 
-    # Get full map path from sapro handler
+    # Get full map path from sapro handler WITH WORKSPACE
     try:
-        map_path = sapro_handler.get_full_map_path(map_name)
+        map_path = sapro_handler.get_full_map_path(map_name, workspace=workspace)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -726,33 +731,103 @@ def update_simulator(
     # Extract directory from map full path for device file
     # Example: /opt/sapro/projects/dev/map/DP.map -> /opt/sapro/projects/dev/map/
     map_directory = '/'.join(map_path.split('/')[:-1]) + '/'
-    device_file_path = f"{map_directory}{simulator_ip}.map"
 
-    success, message = sapro_handler.create_device_file_on_server(device_file_path, xml_content)
-    if not success:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Failed to update device file: {message}")
-
-    # 5) Add device to map using SSH adddev command (matching Java implementation)
-    logger.info(f"Adding device {simulator_ip} back to map {map_name}")
-    from backend.app.utils.sapro_ssh import get_sapro_ssh_client
-
-    # Use the map_path we already retrieved (no hardcoding)
-    cmd = f"/opt/sapro/bin/sapcnsl -p {sapro_handler.sapro_port} -m {map_path} -c adddev -f {device_file_path}"
-
+    # 5) Check if map is empty (no other devices after deletion)
     try:
         ssh_client = get_sapro_ssh_client()
-        success, output = ssh_client.execute_command(cmd, check_stderr=False)
+
+        # Read map file to check if empty
+        read_map_cmd = f"cat {map_path}"
+        success, map_content = ssh_client.execute_command(read_map_cmd, check_stderr=False)
 
         if not success:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                detail=f"Failed to add device to map: {output}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to read map file: {map_content}"
+            )
 
-        logger.info(f"Device {simulator_ip} added to map successfully: {output}")
+        # Check if map is empty (no <Device> tags)
+        is_empty_map = '<Device>' not in map_content
+
+        logger.info(f"Map {map_name} is {'empty' if is_empty_map else 'not empty'} after device deletion")
+
+        if is_empty_map:
+            # EMPTY MAP: Add device XML directly into map file
+            logger.info(f"Adding device to empty map {map_name} by editing map file")
+
+            # Insert device XML before closing </DeviceMap> tag
+            if '</DeviceMap>' not in map_content:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Map file format invalid (no </DeviceMap> tag)"
+                )
+
+            # Extract only the <Device>...</Device> section from xml_content
+            # The template may contain full <DeviceMap> wrapper or just <Device> tags
+            device_xml = xml_content.strip()
+
+            # If the XML contains <DeviceMap> wrapper, extract only the <Device> section
+            if '<DeviceMap' in device_xml and '</DeviceMap>' in device_xml:
+                # Find the content between <DeviceMap...> and </DeviceMap>
+                start_idx = device_xml.find('>') + 1  # After first > in <DeviceMap...>
+                end_idx = device_xml.rfind('</DeviceMap>')
+                device_xml = device_xml[start_idx:end_idx].strip()
+
+            # Now insert only the Device section before </DeviceMap>
+            updated_map_content = map_content.replace('</DeviceMap>', f'\n{device_xml}\n</DeviceMap>')
+
+            # Write updated map file
+            escaped_content = updated_map_content.replace("'", "'\\''")
+            write_map_cmd = f"echo '{escaped_content}' > {map_path}"
+            success, output = ssh_client.execute_command(write_map_cmd, check_stderr=False)
+
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to update map file: {output}"
+                )
+
+            logger.info(f"Added device {simulator_ip} directly to map file {map_path}")
+        else:
+            # NON-EMPTY MAP: Create device file and use adddev command
+            logger.info(f"Adding device to non-empty map using adddev command")
+
+            device_file_path = f"{map_directory}{simulator_ip}.map"
+
+            # Write device file using SSH
+            escaped_content = xml_content.strip().replace("'", "'\\''")
+            write_device_file_cmd = f"echo '{escaped_content}' > {device_file_path}"
+            success, output = ssh_client.execute_command(write_device_file_cmd, check_stderr=False)
+
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to create device file: {output}"
+                )
+
+            logger.info(f"Created device file: {device_file_path}")
+
+            # Add device to map using SSH adddev command
+            cmd = f"/opt/sapro/bin/sapcnsl -p {sapro_handler.sapro_port} -m {map_path} -c adddev -f {device_file_path}"
+
+            success, output = ssh_client.execute_command(cmd, check_stderr=False)
+
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to add device to map: {output}"
+                )
+
+            logger.info(f"Device {simulator_ip} added to map successfully: {output}")
+
+    except HTTPException:
+        raise
     except Exception as exc:
-        logger.error(f"Failed to execute adddev command: {exc}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Failed to add device to map: {exc}")
+        logger.error(f"Failed to update device on Sapro: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update device on Sapro: {exc}"
+        )
 
     # 6) Update DB with new metadata
     sim.type = tpl_doc.get("name") or sim.type
@@ -767,8 +842,10 @@ def update_simulator(
     except SQLAlchemyError as exc:
         db.rollback()
         logger.error(f"Failed to update DB for {simulator_ip}: {exc}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Device updated on Sapro but failed to update DB: {str(exc)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Device updated on Sapro but failed to update DB: {str(exc)}"
+        )
 
     logger.info(f"Simulator {simulator_ip} updated successfully")
     return SaproSimulatorResponse.model_validate(sim)
@@ -795,8 +872,8 @@ def delete_simulator(
     if not map_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
 
-    # Get workspace from user
-    workspace = current_user.workspace if current_user.workspace else "default"
+    # Get workspace from user - use "default" for super admin
+    workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
 
     # Attempt to delete from Sapro first (method handles path lookup internally)
     success, message = sapro_handler.delete_device(map_name, simulator_ip, workspace=workspace)
@@ -816,7 +893,7 @@ def delete_simulator(
 
 @router.get("/maps", response_model=List[Dict[str, str]])
 def list_maps(
-        _current_user=Depends(require_sapro_access),
+        current_user=Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler)
 ) -> List[Dict[str, str]]:
     """Get list of all available maps from Sapro workspace with their status.
@@ -827,7 +904,7 @@ def list_maps(
         - status: "running" (R), "stopped" (empty), or "error" (other)
     """
     try:
-        maps = sapro_handler.get_all_maps()
+        maps = sapro_handler.get_all_maps(workspace=current_user.workspace)
         return maps
     except Exception as exc:
         logger.exception("Failed to get map list from Sapro: %s", exc)
@@ -840,7 +917,7 @@ def list_maps(
 @router.post("/maps/{map_name}/start", response_model=SuccessResponse)
 def start_map(
         map_name: str,
-        _current_user=Depends(require_sapro_access),
+        current_user: User = Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler)
 ) -> SuccessResponse:
     """Start a map and wait until it's running.
@@ -855,7 +932,10 @@ def start_map(
         Success response when map is running
     """
     try:
-        success, message = sapro_handler.start_map_and_wait(map_name)
+        # Get workspace from user - use "default" for super admin
+        workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
+
+        success, message = sapro_handler.start_map_and_wait(map_name, workspace=workspace)
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -875,7 +955,7 @@ def start_map(
 @router.post("/maps/{map_name}/stop", response_model=SuccessResponse)
 def stop_map(
         map_name: str,
-        _current_user=Depends(require_sapro_access),
+        current_user: User = Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler)
 ) -> SuccessResponse:
     """Stop a map and wait until terminated.
@@ -890,7 +970,10 @@ def stop_map(
         Success response when map is stopped
     """
     try:
-        success, message = sapro_handler.stop_map_and_wait(map_name)
+        # Get workspace from user - use "default" for super admin
+        workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
+
+        success, message = sapro_handler.stop_map_and_wait(map_name, workspace=workspace)
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -907,8 +990,48 @@ def stop_map(
         )
 
 
-# Note: create_map and delete_map endpoints have been removed. Map file management
-# should be performed by the administrator or other tooling outside of these APIs.
+@router.post("/maps", response_model=SuccessResponse, status_code=status.HTTP_201_CREATED)
+def create_map(
+        map_name: str,
+        current_user: User = Depends(require_sapro_access),
+        sapro_handler=Depends(get_sapro_handler)
+) -> SuccessResponse:
+    """Create a new map in the user's workspace.
+
+    Creates map file and adds it to workspace.
+
+    Args:
+        map_name: Map name (without .map extension)
+
+    Returns:
+        Success response when map is created
+    """
+    try:
+        # Validate map name (alphanumeric, hyphens, underscores only)
+        if not re.match(r'^[a-zA-Z0-9_-]+$', map_name):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid map name. Use only letters, numbers, hyphens, and underscores."
+            )
+
+        # Get workspace from user - use "default" for super admin
+        workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
+
+        success, message = sapro_handler.create_map(map_name, workspace=workspace)
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=message
+            )
+        return SuccessResponse(message=message, data={"map": map_name, "workspace": workspace})
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to create map %s: %s", map_name, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create map: {exc}"
+        )
 
 
 @router.post("/simulators/{simulator_ip}/start", response_model=SuccessResponse)
@@ -1185,7 +1308,6 @@ async def list_sapro_files(
 
     Error: 400 if invalid file_type
     """
-    from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 
     # Map file types to directories and extensions
     file_type_map = {
@@ -1257,7 +1379,6 @@ async def validate_sapro_file(
     Returns:
         Dict with exists (bool) and path (str)
     """
-    from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 
     try:
         ssh_client = get_sapro_ssh_client()
