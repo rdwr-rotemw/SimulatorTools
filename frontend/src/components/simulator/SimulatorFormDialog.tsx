@@ -13,6 +13,7 @@ import {
   Snackbar,
   Alert,
   Tooltip,
+  Typography,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import EditIcon from '@mui/icons-material/Edit';
@@ -469,6 +470,16 @@ export const SimulatorFormDialog: React.FC<SimulatorFormDialogProps> = ({ open, 
 
 
           </Box>
+
+          {/* Map Start Warning */}
+          {!isEditMode && currentMap && maps.find(m => m.name === currentMap)?.status !== 'running' && (
+            <Alert severity="info" sx={{ marginTop: 2 }}>
+              <Typography variant="body2">
+                <strong>Note:</strong> Creating a device requires the map to be running.
+                Map "{currentMap}" will be automatically started when you create the simulator.
+              </Typography>
+            </Alert>
+          )}
         </form>
       </DialogContent>
       <DialogActions>

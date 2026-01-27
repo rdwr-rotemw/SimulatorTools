@@ -67,24 +67,8 @@ export const SimulatorsPage: React.FC = () => {
     deleteSimulator,
   } = useSimulatorStore();
 
-  const [templates, setTemplates] = useState<Array<{ _id: string; name: string }>>([]);
-
   useEffect(() => {
     fetchSimulators();
-
-    // load templates for display
-    let cancelled = false;
-    const loadTemplates = async () => {
-      try {
-        const resp = await apiClient.get('/device-templates');
-        if (!cancelled) setTemplates((resp.data || []).map((t: any) => ({ _id: t._id, name: t.name })));
-      } catch (err) {
-        console.error('Failed to load templates', err);
-      }
-    };
-    loadTemplates();
-
-    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -466,7 +450,6 @@ export const SimulatorsPage: React.FC = () => {
                 <Typography variant="body2" sx={{ fontWeight: 600, marginBottom: 1 }}>Simulator Details:</Typography>
                 <Typography variant="body2">IP Address: <strong>{simulators.find(s => s.ip_address === simulatorToDelete)?.ip_address}</strong></Typography>
                 <Typography variant="body2">Map: <strong>{simulators.find(s => s.ip_address === simulatorToDelete)?.map || 'Unknown'}</strong></Typography>
-                <Typography variant="body2">Template: <strong>{templates.find(t => t._id === simulators.find(s => s.ip_address === simulatorToDelete)?.template_id)?.name || 'Unknown'}</strong></Typography>
               </Box>
             )}
 
