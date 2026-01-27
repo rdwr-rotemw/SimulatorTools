@@ -676,17 +676,14 @@ def update_simulator(
         sapro_handler=Depends(get_sapro_handler),
         mongo_db=Depends(get_mongo_db),
 ) -> SaproSimulatorResponse:
-    """Update a Sapro-managed simulator by delete → edit file → add device.
+    """Update a Sapro-managed simulator by updating its template/map configuration.
 
     Flow:
     1. Verify simulator exists in DB
     2. Validate required fields (template_id and map)
-    3. Delete device from map via SSH (deldev command)
-    4. Load template and convert to XML
-    5. Check if map is empty (first device) or has devices
-    6. If empty: Add device XML directly to map file
-    7. If not empty: Create device file and use adddev command
-    8. Update DB with new metadata
+    3. Load template and convert to XML
+    4. Call sapro_handler.update_device() to handle all Sapro operations
+    5. Update DB with new metadata
 
     Only map and template_id are updatable. IP cannot change.
     """
@@ -708,118 +705,19 @@ def update_simulator(
     # Get workspace from user - use "default" for super admin
     workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
 
-    # 3) Delete device from map using SSH deldev command
-    logger.info(f"Deleting device {simulator_ip} from map {map_name}")
-    success, message = sapro_handler.delete_device(map_name, simulator_ip, workspace=workspace)
-    if not success:
-        logger.warning(f"Delete device warning (continuing anyway): {message}")
-        # Don't fail - device might not be in map, we'll add it back
-
-    # 4) Load template and convert to XML
-    logger.info(f"Updating device file for {simulator_ip} with template {template_id}")
+    # 3) Load template and convert to XML
+    logger.info(f"Updating device {simulator_ip} with template {template_id} on map {map_name}")
     tpl_doc, xml_content = _load_template_and_convert_to_xml(mongo_db, template_id, simulator_ip)
 
-    # Get full map path from sapro handler WITH WORKSPACE
+    # 4) Call sapro_handler.update_device() to handle all Sapro operations
     try:
-        map_path = sapro_handler.get_full_map_path(map_name, workspace=workspace)
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get map path: {e}"
-        )
-
-    # Extract directory from map full path for device file
-    # Example: /opt/sapro/projects/dev/map/DP.map -> /opt/sapro/projects/dev/map/
-    map_directory = '/'.join(map_path.split('/')[:-1]) + '/'
-
-    # 5) Check if map is empty (no other devices after deletion)
-    try:
-        ssh_client = get_sapro_ssh_client()
-
-        # Read map file to check if empty
-        read_map_cmd = f"cat {map_path}"
-        success, map_content = ssh_client.execute_command(read_map_cmd, check_stderr=False)
-
+        success, message = sapro_handler.update_device(simulator_ip, xml_content, map_name, workspace=workspace)
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to read map file: {map_content}"
+                detail=message
             )
-
-        # Check if map is empty (no <Device> tags)
-        is_empty_map = '<Device>' not in map_content
-
-        logger.info(f"Map {map_name} is {'empty' if is_empty_map else 'not empty'} after device deletion")
-
-        if is_empty_map:
-            # EMPTY MAP: Add device XML directly into map file
-            logger.info(f"Adding device to empty map {map_name} by editing map file")
-
-            # Insert device XML before closing </DeviceMap> tag
-            if '</DeviceMap>' not in map_content:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Map file format invalid (no </DeviceMap> tag)"
-                )
-
-            # Extract only the <Device>...</Device> section from xml_content
-            # The template may contain full <DeviceMap> wrapper or just <Device> tags
-            device_xml = xml_content.strip()
-
-            # If the XML contains <DeviceMap> wrapper, extract only the <Device> section
-            if '<DeviceMap' in device_xml and '</DeviceMap>' in device_xml:
-                # Find the content between <DeviceMap...> and </DeviceMap>
-                start_idx = device_xml.find('>') + 1  # After first > in <DeviceMap...>
-                end_idx = device_xml.rfind('</DeviceMap>')
-                device_xml = device_xml[start_idx:end_idx].strip()
-
-            # Now insert only the Device section before </DeviceMap>
-            updated_map_content = map_content.replace('</DeviceMap>', f'\n{device_xml}\n</DeviceMap>')
-
-            # Write updated map file
-            escaped_content = updated_map_content.replace("'", "'\\''")
-            write_map_cmd = f"echo '{escaped_content}' > {map_path}"
-            success, output = ssh_client.execute_command(write_map_cmd, check_stderr=False)
-
-            if not success:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to update map file: {output}"
-                )
-
-            logger.info(f"Added device {simulator_ip} directly to map file {map_path}")
-        else:
-            # NON-EMPTY MAP: Create device file and use adddev command
-            logger.info(f"Adding device to non-empty map using adddev command")
-
-            device_file_path = f"{map_directory}{simulator_ip}.map"
-
-            # Write device file using SSH
-            escaped_content = xml_content.strip().replace("'", "'\\''")
-            write_device_file_cmd = f"echo '{escaped_content}' > {device_file_path}"
-            success, output = ssh_client.execute_command(write_device_file_cmd, check_stderr=False)
-
-            if not success:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to create device file: {output}"
-                )
-
-            logger.info(f"Created device file: {device_file_path}")
-
-            # Add device to map using SSH adddev command
-            cmd = f"/opt/sapro/bin/sapcnsl -p {sapro_handler.sapro_port} -m {map_path} -c adddev -f {device_file_path}"
-
-            success, output = ssh_client.execute_command(cmd, check_stderr=False)
-
-            if not success:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to add device to map: {output}"
-                )
-
-            logger.info(f"Device {simulator_ip} added to map successfully: {output}")
-
+        logger.info(f"Device {simulator_ip} updated successfully on Sapro")
     except HTTPException:
         raise
     except Exception as exc:
@@ -829,11 +727,11 @@ def update_simulator(
             detail=f"Failed to update device on Sapro: {exc}"
         )
 
-    # 6) Update DB with new metadata
+    # 5) Update DB with new metadata
     sim.type = tpl_doc.get("name") or sim.type
     sim.version = tpl_doc.get("description") or sim.version
     sim.map = map_name
-    sim.status = "running"  # Assume running after successful add
+    sim.status = "running"  # Assume running after successful update
 
     try:
         db.add(sim)

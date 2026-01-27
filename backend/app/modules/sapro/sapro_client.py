@@ -894,9 +894,25 @@ class SaproCommunicationHandler:
                     return False, f"Failed to update map file: {output}"
 
                 logger.info(f"Added device {device_ip} directly to map file {map_path}")
+
+                # Start map after adding device to empty map
+                if not was_map_running:
+                    logger.info(f"Map {map_name} was not running, starting it now...")
+                    start_ok, start_msg = self.start_map_and_wait(map_name, workspace=workspace)
+                    if not start_ok:
+                        return False, f"Device {device_ip} added but failed to start map: {start_msg}"
+                    logger.info(f"Map {map_name} started successfully")
             else:
                 # NON-EMPTY MAP: Use normal adddev command
                 logger.info(f"Adding device to non-empty map using adddev command")
+
+                # If map is stopped, start it first before using adddev
+                if not was_map_running:
+                    logger.info(f"Map {map_name} is stopped with existing devices, starting it first...")
+                    start_ok, start_msg = self.start_map_and_wait(map_name, workspace=workspace)
+                    if not start_ok:
+                        return False, f"Failed to start map before adding device: {start_msg}"
+                    logger.info(f"Map {map_name} started successfully")
 
                 # Create device file path
                 new_device_file_path = f"{map_directory}{device_ip}.map"
@@ -912,7 +928,7 @@ class SaproCommunicationHandler:
 
                 logger.info(f"Created device file: {new_device_file_path}")
 
-                # Add device to map using SSH adddev command
+                # Add device to map using SSH adddev command (map is now running)
                 adddev_cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_path} -c adddev -f {new_device_file_path}"
                 logger.debug(f"Adding device to map: {adddev_cmd}")
 
@@ -923,15 +939,7 @@ class SaproCommunicationHandler:
 
                 logger.info(f"Device {device_ip} added to map successfully: {output}")
 
-            # Start map if it wasn't running (works for both empty and non-empty maps)
-            if not was_map_running:
-                logger.info(f"Map {map_name} was not running, starting it now...")
-                start_ok, start_msg = self.start_map_and_wait(map_name, workspace=workspace)
-                if not start_ok:
-                    return False, f"Device {device_ip} added but failed to start map: {start_msg}"
-                logger.info(f"Map {map_name} started successfully")
-            else:
-                # Map was already running, start the device
+                # Start the newly added device (map is already running)
                 ok, msg = self.start_devices_from_map(map_path, [device_ip])
                 if not ok:
                     return False, f"Device {device_ip} added but failed to start: {msg}"
@@ -941,6 +949,140 @@ class SaproCommunicationHandler:
         except Exception as e:
             logger.error(f"Failed to create device {device_ip}: {e}", exc_info=True)
             return False, f"Failed to create device {device_ip}: {str(e)}"
+
+    def update_device(self, device_ip: str, raw_xml_content: str, map_name: str, workspace: str = "default") -> Tuple[bool, str]:
+        """Update an existing simulator device by deleting and re-adding with new configuration.
+
+        Workflow:
+        1. Check map status before deletion
+        2. Delete device from map
+        3. Check if map is empty after deletion
+        4. If empty: Add device XML directly to map file, then start map if needed
+        5. If not empty: Start map if stopped, then use adddev command
+
+        Args:
+            device_ip: Device IP address
+            raw_xml_content: New device configuration XML
+            map_name: Map name (without extension)
+            workspace: Workspace name (defaults to "default")
+
+        Returns:
+            (success, message)
+        """
+        try:
+            ssh_client = get_sapro_ssh_client()
+
+            # Step 1: Check map status BEFORE deletion
+            maps = self.get_all_maps(workspace=workspace)
+            map_info = next((m for m in maps if m['name'] == map_name), None)
+            if not map_info:
+                return False, f"Map {map_name} not found in workspace {workspace}"
+
+            was_map_running = (map_info['status'] == 'running')
+            logger.info(f"Map {map_name} status before update: {'running' if was_map_running else 'stopped'}")
+
+            # Step 2: Delete device from map
+            logger.info(f"Deleting device {device_ip} from map {map_name}")
+            success, message = self.delete_device(map_name, device_ip, workspace=workspace)
+            if not success:
+                logger.warning(f"Delete device warning (continuing anyway): {message}")
+                # Don't fail - device might not be in map, we'll add it back
+
+            # Get full map path
+            map_path = self.get_full_map_path(map_name, workspace=workspace)
+            map_directory = '/'.join(map_path.split('/')[:-1]) + '/'
+
+            # Step 3: Check if map is empty after deletion
+            read_map_cmd = f"cat {map_path}"
+            success, map_content = ssh_client.execute_command(read_map_cmd, check_stderr=False)
+
+            if not success:
+                return False, f"Failed to read map file: {map_content}"
+
+            is_empty_map = '<Device>' not in map_content
+            logger.info(f"Map {map_name} is {'empty' if is_empty_map else 'not empty'} after device deletion")
+
+            # Step 4: Add device back to map
+            if is_empty_map:
+                # EMPTY MAP: Add device XML directly into map file
+                logger.info(f"Adding device to empty map {map_name} by editing map file")
+
+                if '</DeviceMap>' not in map_content:
+                    return False, "Map file format invalid (no </DeviceMap> tag)"
+
+                # Extract only the <Device> section
+                device_xml = raw_xml_content.strip()
+                if '<DeviceMap' in device_xml and '</DeviceMap>' in device_xml:
+                    start_idx = device_xml.find('>') + 1
+                    end_idx = device_xml.rfind('</DeviceMap>')
+                    device_xml = device_xml[start_idx:end_idx].strip()
+
+                # Insert device XML before </DeviceMap>
+                updated_map_content = map_content.replace('</DeviceMap>', f'\n{device_xml}\n</DeviceMap>')
+
+                # Write updated map file
+                escaped_content = updated_map_content.replace("'", "'\\''")
+                write_map_cmd = f"echo '{escaped_content}' > {map_path}"
+                success, output = ssh_client.execute_command(write_map_cmd, check_stderr=False)
+
+                if not success:
+                    return False, f"Failed to update map file: {output}"
+
+                logger.info(f"Added device {device_ip} directly to map file {map_path}")
+
+                # Start map after adding device to empty map (if it was stopped)
+                if not was_map_running:
+                    logger.info(f"Map {map_name} was stopped, starting it now...")
+                    start_ok, start_msg = self.start_map_and_wait(map_name, workspace=workspace)
+                    if not start_ok:
+                        return False, f"Device {device_ip} updated but failed to start map: {start_msg}"
+                    logger.info(f"Map {map_name} started successfully")
+            else:
+                # NON-EMPTY MAP: Use adddev command
+                logger.info(f"Adding device to non-empty map using adddev command")
+
+                # If map is stopped, start it first before using adddev
+                if not was_map_running:
+                    logger.info(f"Map {map_name} is stopped with existing devices, starting it first...")
+                    start_ok, start_msg = self.start_map_and_wait(map_name, workspace=workspace)
+                    if not start_ok:
+                        return False, f"Failed to start map before updating device: {start_msg}"
+                    logger.info(f"Map {map_name} started successfully")
+
+                # Create device file
+                device_file_path = f"{map_directory}{device_ip}.map"
+                device_file_content = raw_xml_content.strip()
+                escaped_content = device_file_content.replace("'", "'\\''")
+                write_device_file_cmd = f"echo '{escaped_content}' > {device_file_path}"
+                success, output = ssh_client.execute_command(write_device_file_cmd, check_stderr=False)
+
+                if not success:
+                    return False, f"Failed to create device file: {output}"
+
+                logger.info(f"Created device file: {device_file_path}")
+
+                # Add device to map using adddev command (map is now running)
+                adddev_cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_path} -c adddev -f {device_file_path}"
+                logger.debug(f"Adding device to map: {adddev_cmd}")
+
+                success, output = ssh_client.execute_command(adddev_cmd, check_stderr=False)
+
+                if not success:
+                    return False, f"Failed to add device to map: {output}"
+
+                logger.info(f"Device {device_ip} added to map successfully: {output}")
+
+                # Start the newly added device (map is already running)
+                ok, msg = self.start_devices_from_map(map_path, [device_ip])
+                if not ok:
+                    logger.warning(f"Device {device_ip} updated but failed to start: {msg}")
+                    # Don't fail the whole operation if device start fails
+
+            return True, f"Device {device_ip} updated successfully on map {map_name}"
+
+        except Exception as e:
+            logger.error(f"Failed to update device {device_ip}: {e}", exc_info=True)
+            return False, f"Failed to update device {device_ip}: {str(e)}"
 
     def delete_device(self, map_name: str, device_ip: str, workspace: str = "default") -> Tuple[bool, str]:
         """Delete a device from the specified map using SSH.
