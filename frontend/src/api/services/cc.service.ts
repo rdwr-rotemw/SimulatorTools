@@ -1,5 +1,6 @@
 import apiClient from '../client';
 import { CCLoginRequest, CCLoginResponse, CCDevice, CCAddDeviceRequest, CCDeleteResponse } from '../../types/cc.types';
+import { Simulator } from '../../types/simulator.types';
 
 export interface ManagementPort {
   interface: string;
@@ -20,6 +21,11 @@ export const ccService = {
   getDevices: async (cc_ip: string): Promise<CCDevice[]> => {
     const response = await apiClient.get<{ devices: CCDevice[] }>(`/cc/${cc_ip}/simulators`);
     return response.data.devices;
+  },
+
+  getSaproSimulators: async (): Promise<Simulator[]> => {
+    const response = await apiClient.get<Simulator[]>('/simulators');
+    return response.data;
   },
 
   addDevice: async (cc_ip: string, data: CCAddDeviceRequest): Promise<CCDevice> => {

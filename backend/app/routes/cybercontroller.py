@@ -30,7 +30,6 @@ from backend.app.modules.cc.cc_client import get_cc_handler, CCHandler, CCCreden
 from backend.app.modules.mongo_models import DeviceDriverDeploy
 from backend.app.modules.reporter.irp.irp_module import convert_xml
 from backend.app.modules.sapro.sapro_client import get_sapro_handler
-from backend.app.modules.sapro.src.returnTypes.models import SaproDevice
 from backend.app.schemas.cybercontroller import (
     CCLoginPayload,
     CCLoginResponse,
@@ -198,25 +197,8 @@ async def get_cc_simulators(
                 detail=f"Failed to retrieve devices: {result}"
             )
 
-        # Query Sapro for available simulators and filter DP devices accordingly
-        sapro_sims = list[SaproDevice]
-        try:
-            sapro_handler = get_sapro_handler()
-            sapro_sims = sapro_handler.get_all_devices()
-        except Exception as e:
-            logger.error(f"failed to get sapro simulators: {str(e)}")
-
-        sapro_ips = {getattr(s, 'ip_address', None) for s in sapro_sims if
-                     getattr(s, 'ip_address', None) is not None}
-        # Create IP to version mapping from Sapro devices
-        sapro_versions = {getattr(s, 'ip_address', None): getattr(s, 'version', None) for s in sapro_sims if
-                          getattr(s, 'ip_address', None) is not None}
-        # Create IP to map mapping from Sapro devices
-        sapro_maps = {getattr(s, 'ip_address', None): getattr(s, 'map', None) for s in sapro_sims if
-                      getattr(s, 'ip_address', None) is not None}
-        filtered_devices = [d for d in result if d.management_ip in sapro_ips]
-
-        # Convert to response model
+        # Convert to response model - return ALL CC devices (no Sapro filtering)
+        # Frontend will populate version and map from cached Sapro data
         device_responses = [
             CCDeviceResponse(
                 management_ip=d.management_ip,
@@ -224,10 +206,10 @@ async def get_cc_simulators(
                 device_id=d.device_id,
                 device_type=d.device_type,
                 status=d.status,
-                version=sapro_versions.get(d.management_ip),
-                map=sapro_maps.get(d.management_ip),
+                version=None,  # Will be populated from Sapro by frontend
+                map=None,      # Will be populated from Sapro by frontend
             )
-            for d in filtered_devices
+            for d in result
         ]
 
         return CCDevicesListResponse(devices=device_responses)

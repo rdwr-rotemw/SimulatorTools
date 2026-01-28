@@ -58,11 +58,27 @@ const CCManagementPage: React.FC = () => {
   } | null>(null);
 
   const currentCC = useCCStore((state) => state.currentCC);
-  const devices = useCCStore((state) => state.devices);
+  const devices = useCCStore((state) => state.devices);  // Raw CC devices
+  const saproSimulators = useCCStore((state) => state.saproSimulators);  // All Sapro simulators
   const isLoading = useCCStore((state) => state.isLoading);
   const fetchDevices = useCCStore((state) => state.fetchDevices);
   const addDevice = useCCStore((state) => state.addDevice);
   const deleteDevice = useCCStore((state) => state.deleteDevice);
+
+  // Filter CC devices to only show those that exist in Sapro
+  const filteredDevices = devices.filter(device => {
+    return saproSimulators.some(sim => sim.ip_address === device.management_ip);
+  });
+
+  // Enrich filtered devices with Sapro data (version, map)
+  const enrichedDevices = filteredDevices.map(device => {
+    const saproSim = saproSimulators.find(sim => sim.ip_address === device.management_ip);
+    return {
+      ...device,
+      version: saproSim?.version || device.version,
+      map: saproSim?.map || device.map,
+    };
+  });
 
   useEffect(() => {
     if (!currentCC) {
@@ -211,7 +227,8 @@ const CCManagementPage: React.FC = () => {
     }
   };
 
-  const filteredDevices = devices.filter(device => {
+  // Apply search filter to enriched devices
+  const filteredSearchDevices = enrichedDevices.filter(device => {
     const search = searchTerm.toLowerCase();
     const ipMatch = device.management_ip.toLowerCase().includes(search);
     const nameMatch = device.name?.toLowerCase().includes(search) || false;
@@ -220,7 +237,7 @@ const CCManagementPage: React.FC = () => {
     return ipMatch || nameMatch || typeMatch || statusMatch;
   });
 
-  const sortedDevices = [...filteredDevices].sort((a, b) => {
+  const sortedDevices = [...filteredSearchDevices].sort((a, b) => {
     let aValue: any = a[sortBy];
     let bValue: any = b[sortBy];
 
@@ -246,7 +263,7 @@ const CCManagementPage: React.FC = () => {
             <Button
               startIcon={<RefreshIcon />}
               variant="outlined"
-              onClick={() => currentCC && fetchDevices(currentCC)}
+              onClick={() => currentCC && fetchDevices(currentCC, true)}
               disabled={isLoading}
             >
               Refresh

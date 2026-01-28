@@ -11,11 +11,14 @@ import {
   CircularProgress,
   Box,
   Tooltip,
+  Autocomplete,
+  Typography,
 } from '@mui/material';
 import { HelpOutline } from '@mui/icons-material';
-import { useForm } from 'react-hook-form';
+import { useForm, Controller } from 'react-hook-form';
 import { CCAddDeviceRequest } from '../../types/cc.types';
 import useCCStore from '../../store/ccStore';
+import { Simulator } from '../../types/simulator.types';
 
 interface CCAddDeviceDialogProps {
   open: boolean;
@@ -30,6 +33,7 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
     handleSubmit,
     formState: { errors },
     reset,
+    control,
   } = useForm<CCAddDeviceRequest>({
     defaultValues: {
       name: '',
@@ -46,14 +50,189 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
 
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [managementIPError, setManagementIPError] = useState<string | null>(null);
+  const [lastProcessedValue, setLastProcessedValue] = useState('');
 
-  // Get management ports from Zustand store
+  // Get management ports from CC store
   const managementPorts = useCCStore((state) => state.managementPorts);
+
+  // Get Sapro simulators from CC store (already loaded and cached in session storage!)
+  const saproSimulators = useCCStore((state) => state.saproSimulators);
+
+  // Helper to parse IP to numeric array for comparison
+  const parseIP = (ip: string): number[] => {
+    return ip.split('.').map(Number);
+  };
+
+  // Helper to generate all IPs in range
+  const generateIPRange = (startIP: string, endIP: string): string[] => {
+    const start = parseIP(startIP);
+    const end = parseIP(endIP);
+
+    const ips: string[] = [];
+    const current = [...start];
+
+    while (true) {
+      ips.push(current.join('.'));
+
+      // Check if reached end
+      if (current.every((val, idx) => val === end[idx])) break;
+
+      // Increment IP
+      for (let i = 3; i >= 0; i--) {
+        if (current[i] < 255) {
+          current[i]++;
+          break;
+        } else {
+          current[i] = 0;
+        }
+      }
+
+      // Safety: max 254 IPs
+      if (ips.length > 254) break;
+    }
+
+    return ips;
+  };
+
+  // Validate IP range against Sapro simulators
+  const validateIPRange = (value: string): string | true => {
+    if (!value || value.trim() === '') {
+      return 'Management IP is required';
+    }
+
+    const trimmedValue = value.trim();
+    const saproIPSet = new Set(saproSimulators.map((sim: Simulator) => sim.ip_address));
+
+    // Check if it's a range
+    if (trimmedValue.includes('-')) {
+      const [startIP, endIP] = trimmedValue.split('-').map(s => s.trim());
+
+      // Validate IP format
+      const ipv4Regex = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
+
+      if (!ipv4Regex.test(startIP) || !ipv4Regex.test(endIP)) {
+        return 'Invalid IP range format';
+      }
+
+      // Generate all IPs in range
+      const rangeIPs = generateIPRange(startIP, endIP);
+
+      if (rangeIPs.length > 254) {
+        return 'Range too large (max 254 IPs)';
+      }
+
+      // Check if all IPs exist in Sapro
+      const missingIPs = rangeIPs.filter(ip => !saproIPSet.has(ip));
+
+      if (missingIPs.length > 0) {
+        if (missingIPs.length <= 5) {
+          return `Missing simulators in Sapro: ${missingIPs.join(', ')}`;
+        } else {
+          return `${missingIPs.length} simulators in this range don't exist in Sapro`;
+        }
+      }
+
+      return true;
+    } else {
+      // Single IP
+      const ipv4Regex = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
+
+      if (!ipv4Regex.test(trimmedValue)) {
+        return 'Invalid IP format';
+      }
+
+      // Check if IP exists in Sapro
+      if (!saproIPSet.has(trimmedValue)) {
+        return 'Simulator does not exist in Sapro';
+      }
+
+      return true;
+    }
+  };
+
+  // Get filtered autocomplete options based on current input
+  const getFilteredOptions = (inputValue: string): string[] => {
+    // Check if user is typing a range
+    if (inputValue.includes('-')) {
+      const parts = inputValue.split('-');
+      const startIP = parts[0].trim();
+      const endPart = parts[1]?.trim() || '';
+
+      // Validate start IP
+      const ipv4Regex = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
+
+      if (ipv4Regex.test(startIP)) {
+        // Extract subnet and last octet from start IP
+        const startOctets = startIP.split('.').map(Number);
+        const startLastOctet = startOctets[3];
+        const subnet = startOctets.slice(0, 3).join('.');
+
+        // Filter IPs in same subnet with last octet > start
+        let filtered = saproSimulators
+          .map((sim: Simulator) => sim.ip_address)
+          .filter(ip => {
+            if (!ip.startsWith(subnet + '.')) return false;
+
+            const lastOctet = parseInt(ip.split('.')[3]);
+            return lastOctet > startLastOctet;
+          });
+
+        // Further filter by what user is typing after dash
+        if (endPart.length > 0) {
+          filtered = filtered.filter(ip => ip.startsWith(endPart));
+        }
+
+        // Sort by last octet
+        return filtered.sort((a, b) => {
+          const aLast = parseInt(a.split('.')[3]);
+          const bLast = parseInt(b.split('.')[3]);
+          return aLast - bLast;
+        });
+      }
+    }
+
+    // Normal case: show all simulators, filter by input
+    const allIPs = saproSimulators.map((sim: Simulator) => sim.ip_address);
+
+    if (inputValue.length > 0) {
+      return allIPs.filter(ip => ip.startsWith(inputValue));
+    }
+
+    return allIPs;
+  };
+
+  // Process range input for smart subnet completion
+  const processRangeInput = (value: string, previousValue: string): string => {
+    // Smart range completion: ONLY if user just added a dash (transition from no-dash to dash)
+    const hadDash = previousValue.includes('-');
+    const hasDash = value.includes('-');
+    const justAddedDash = !hadDash && hasDash;
+
+    if (justAddedDash) {
+      const parts = value.split('-');
+      const startIP = parts[0].trim();
+      const endPart = parts[1] || '';
+
+      // If start IP is valid and end part is empty, auto-complete subnet
+      const ipv4Regex = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
+
+      if (ipv4Regex.test(startIP) && endPart.length === 0) {
+        // Extract subnet (first 3 octets)
+        const subnet = startIP.split('.').slice(0, 3).join('.');
+        return `${startIP}-${subnet}.`;
+      }
+    }
+
+    return value;
+  };
 
   useEffect(() => {
     if (!open) {
       reset();
       setErrorMessage(null);
+      setManagementIPError(null);
+      setLastProcessedValue('');
     }
   }, [open, reset]);
 
@@ -107,7 +286,7 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
               size="small"
               {...register('name', { required: 'Device name is required' })}
               error={!!errors.name}
-              helperText={errors.name?.message}
+              helperText={errors.name?.message as string}
               sx={{ '& label': { fontSize: '14px' } }}
             />
 
@@ -120,67 +299,134 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
               defaultValue=""
               {...register('type', { required: 'Device type is required' })}
               error={!!errors.type}
-              helperText={errors.type?.message}
+              helperText={errors.type?.message as string}
               sx={{ '& label': { fontSize: '14px' } }}
             >
               <MenuItem value="DefensePro">DefensePro</MenuItem>
               <MenuItem value="Alteon">Alteon</MenuItem>
             </TextField>
 
-            {/* Management IP */}
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-              <TextField
-                label="Management IP"
-                fullWidth
-                size="small"
-                placeholder="Single IP or Range (e.g., 50.50.100.1-50.50.100.25)"
-                {...register('management_ip', {
-                  required: 'Management IP is required',
-                  validate: (value) => {
-                    const trimmedValue = value.trim();
+            {/* Management IP - Hybrid Autocomplete + Free Text */}
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
+              <Box sx={{ flex: 1 }}>
+                <Controller
+                  name="management_ip"
+                  control={control}
+                  rules={{
+                    required: 'Management IP is required',
+                    validate: validateIPRange
+                  }}
+                  render={({ field }) => (
+                    <Autocomplete
+                      freeSolo
+                      options={getFilteredOptions(field.value || '')}
+                      value={field.value || ''}
+                      inputValue={field.value || ''}
+                      onChange={(_, newValue) => {
+                        if (!newValue) {
+                          field.onChange('');
+                          setLastProcessedValue('');
+                          setManagementIPError(null);
+                          return;
+                        }
 
-                    // IPv4 single: 192.168.1.1
-                    const ipv4Single = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
+                        // If current value has a dash (range in progress), preserve start IP
+                        const currentValue = field.value || '';
+                        let finalValue = newValue;
 
-                    // IPv4 range: 192.168.1.1-192.168.1.25 (allows spaces around dash)
-                    const ipv4Range = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}\s*-\s*(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
+                        if (currentValue.includes('-')) {
+                          // Extract start IP from current value
+                          const startIP = currentValue.split('-')[0].trim();
 
-                    // IPv6 single: 2001:db8::1 or full format
-                    const ipv6Single = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
+                          // Check if selected value is just an IP (not a full range)
+                          const ipv4Regex = /^(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)){3}$/;
 
-                    // IPv6 range: 2001:db8::1-2001:db8::25 (allows spaces)
-                    const ipv6Range = /^([0-9a-fA-F:]+)\s*-\s*([0-9a-fA-F:]+)$/;
+                          const isValidIP = ipv4Regex.test(newValue);
+                          const hasNoDash = !newValue.includes('-');
 
-                    if (ipv4Single.test(trimmedValue) || ipv4Range.test(trimmedValue) ||
-                        ipv6Single.test(trimmedValue) || ipv6Range.test(trimmedValue)) {
-                      return true;
-                    }
+                          if (isValidIP && hasNoDash) {
+                            // User selected an end IP from dropdown - combine with start IP
+                            finalValue = `${startIP}-${newValue}`;
+                          }
+                        }
 
-                    return 'Enter a valid IP address or range (e.g., 50.50.100.1 or 50.50.100.1-50.50.100.25)';
-                  },
-                })}
-                error={!!errors.management_ip}
-                helperText={errors.management_ip?.message}
-                sx={{ '& label': { fontSize: '14px' } }}
-              />
+                        field.onChange(finalValue);
+                        setLastProcessedValue(finalValue);
+
+                        const validationResult = validateIPRange(finalValue);
+                        setManagementIPError(validationResult === true ? null : validationResult);
+                      }}
+                      onInputChange={(_, newInputValue, reason) => {
+                        // Don't process if user selected from dropdown - onChange will handle it
+                        if (reason === 'reset' || reason === 'selectOption') {
+                          return;
+                        }
+
+                        const processedValue = processRangeInput(newInputValue, lastProcessedValue);
+                        field.onChange(processedValue);
+                        setLastProcessedValue(processedValue);
+
+                        const validationResult = validateIPRange(processedValue);
+                        setManagementIPError(validationResult === true ? null : validationResult);
+                      }}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Management IP"
+                          size="small"
+                          error={!!managementIPError}
+                          helperText={
+                            managementIPError ||
+                            (field.value && validateIPRange(field.value) === true
+                              ? ''
+                              : 'Select from dropdown or type range (auto-completes subnet)')
+                          }
+                          placeholder="Select or paste IP/Range"
+                          sx={{ '& label': { fontSize: '14px' } }}
+                        />
+                      )}
+                      renderOption={(props, option) => {
+                        const simulator = saproSimulators.find((sim: Simulator) => sim.ip_address === option);
+                        return (
+                          <li {...props} key={option}>
+                            <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%' }}>
+                              <Typography variant="body2" fontWeight={500}>{option}</Typography>
+                              {simulator && (
+                                <Typography variant="caption" color="text.secondary">
+                                  {simulator.type} {simulator.version ? `(${simulator.version})` : ''} - Map: {simulator.map}
+                                </Typography>
+                              )}
+                            </Box>
+                          </li>
+                        );
+                      }}
+                      filterOptions={(options) => options}
+                      disabled={saproSimulators.length === 0}
+                      loading={saproSimulators.length === 0}
+                      sx={{ '& label': { fontSize: '14px' } }}
+                    />
+                  )}
+                />
+              </Box>
+
               <Tooltip
-                 title={
-                   <Box sx={{ whiteSpace: 'pre-line', fontSize: '12px', p: 0.5 }}>
-                     {'Supported formats:\n\nIPv4:\n• Single: 192.168.1.1\n• Range: 192.168.1.1-192.168.1.25\n\nIPv6:\n• Single: 2001:db8::1\n• Range: 2001:db8::1-2001:db8::25\n\nFor ranges:\nDevices will be named: {Name}_{IP}\nExample: Sim → Sim_50.50.100.1, Sim_50.50.100.2, ...'}
-                   </Box>
-                 }
-                 placement="right"
-                 arrow
+                title={
+                  <Box sx={{ whiteSpace: 'pre-line', fontSize: '12px', p: 0.5 }}>
+                    {'Supported formats:\n\n• Single IP: 50.50.10.1\n• IP Range: 50.50.10.1-50.50.10.50\n\nYou can:\n• Select single IP from dropdown\n• Paste range directly (e.g., 50.50.10.1-50.50.10.50)\n\nAll IPs must exist in Sapro simulators.'}
+                  </Box>
+                }
+                placement="right"
+                arrow
               >
                 <HelpOutline
-                   sx={{
-                     fontSize: 18,
-                     color: 'text.secondary',
-                     cursor: 'help',
-                     flexShrink: 0,
+                  sx={{
+                    fontSize: 18,
+                    color: 'text.secondary',
+                    cursor: 'help',
+                    flexShrink: 0,
                     mt: 0.5
-                   }}
-                 />
+                  }}
+                />
               </Tooltip>
             </Box>
 
@@ -193,7 +439,7 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
               defaultValue=""
               {...register('vision_mgt_port', { required: 'Vision management port is required' })}
               error={!!errors.vision_mgt_port}
-              helperText={errors.vision_mgt_port?.message}
+              helperText={errors.vision_mgt_port?.message as string}
               disabled={managementPorts.length === 0}
               sx={{ '& label': { fontSize: '14px' } }}
             >
@@ -215,7 +461,7 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
               size="small"
               {...register('cli_username', { required: 'CLI username is required' })}
               error={!!errors.cli_username}
-              helperText={errors.cli_username?.message}
+              helperText={errors.cli_username?.message as string}
               sx={{ '& label': { fontSize: '14px' } }}
             />
 
@@ -227,7 +473,7 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
               size="small"
               {...register('cli_password', { required: 'CLI password is required' })}
               error={!!errors.cli_password}
-              helperText={errors.cli_password?.message}
+              helperText={errors.cli_password?.message as string}
               sx={{ '& label': { fontSize: '14px' } }}
             />
 
@@ -238,7 +484,7 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
               size="small"
               {...register('http_username', { required: 'HTTP username is required' })}
               error={!!errors.http_username}
-              helperText={errors.http_username?.message}
+              helperText={errors.http_username?.message as string}
               sx={{ '& label': { fontSize: '14px' } }}
             />
 
@@ -250,7 +496,7 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
               size="small"
               {...register('https_password', { required: 'HTTPS password is required' })}
               error={!!errors.https_password}
-              helperText={errors.https_password?.message}
+              helperText={errors.https_password?.message as string}
               sx={{ '& label': { fontSize: '14px' } }}
             />
 

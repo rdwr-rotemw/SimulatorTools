@@ -1,3 +1,5 @@
+import { Simulator } from './simulator.types';
+
 export interface CCSession {
   cc_ip: string;
   jsession_id: string;
@@ -49,13 +51,15 @@ export interface ManagementPort {
 export interface CCState {
   currentCC: string | null;
   devices: CCDevice[];
+  saproSimulators: Simulator[];
   managementPorts: ManagementPort[];
   isLoading: boolean;
   error: string | null;
   login: (cc_ip: string, username: string, password: string) => Promise<boolean>;
   logout: (cc_ip: string) => Promise<void>;
-  fetchDevices: (cc_ip: string) => Promise<void>;
-  fetchManagementPorts: (cc_ip: string) => Promise<void>;
+  fetchDevices: (cc_ip: string, forceRefresh?: boolean, skipLoadingState?: boolean) => Promise<void>;
+  fetchSaproSimulators: (forceRefresh?: boolean) => Promise<void>;
+  fetchManagementPorts: (cc_ip: string, skipLoadingState?: boolean) => Promise<void>;
   addDevice: (cc_ip: string, data: CCAddDeviceRequest) => Promise<void>;
   deleteDevice: (cc_ip: string, device_id: string) => Promise<void>;
   clearError: () => void;
