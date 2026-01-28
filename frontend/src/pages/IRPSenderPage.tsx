@@ -719,12 +719,10 @@ function transformSchemaForAttackId(schema: any): any {
     }
 
     const result: any = {}
-    let hasFieldDefinitions = false
 
     Object.keys(schema).forEach(key => {
         const value = schema[key]
         if (value && typeof value === 'object' && (value.type || value.fieldType || value.fields || value.itemSchema)) {
-            hasFieldDefinitions = true
             result[key] = transformSchemaForAttackId(value)
         } else {
             result[key] = value
@@ -902,12 +900,19 @@ export const IRPSenderPage: React.FC = () => {
     const schemaId = searchParams.get('schema_id')
 
     const currentCC = useCCStore((state) => state.currentCC)
-    const devices = useCCStore((state) => state.devices)
+    const allDevices = useCCStore((state) => state.devices)
+    const saproSimulators = useCCStore((state) => state.saproSimulators)
+
+    // Filter devices: only show those that exist in Sapro
+    const saproIPs = new Set(saproSimulators.map(sim => sim.ip_address))
+    const devices = allDevices.filter(device => saproIPs.has(device.management_ip))
+
     const managementPorts = useCCStore((state) => state.managementPorts)
     const user = useAuthStore((state) => state.user)
 
     const [schemaInfo, setSchemaInfo] = useState<{ name: string; version: string } | null>(null)
     const [selectedSimulator, setSelectedSimulator] = useState<string>('')
+    const [selectedSimulatorMap, setSelectedSimulatorMap] = useState<string>('')
     const [selectedDestinationPort, setSelectedDestinationPort] = useState<string>('')
     const [messages, setMessages] = useState<Array<{
         messageType: string;
@@ -1003,7 +1008,7 @@ export const IRPSenderPage: React.FC = () => {
                 severity: 'info'
             })
         }
-    }, [])
+    }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
     // Restore loop on mount if it was running
     useEffect(() => {
@@ -1277,15 +1282,15 @@ export const IRPSenderPage: React.FC = () => {
 
     const memoizedMoveUp = React.useCallback((index: number) => {
         moveMessageUp(index)
-    }, [messages.length])
+    }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
     const memoizedMoveDown = React.useCallback((index: number) => {
         moveMessageDown(index)
-    }, [messages.length])
+    }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
     const memoizedTestMessage = React.useCallback((index: number) => {
         handleTestMessage(index)
-    }, [testingMessage])
+    }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
     const memoizedRandomize = React.useCallback((index: number, msg: any) => {
         const randomData = generateRandomData(msg.schema, msg.data)
@@ -1644,6 +1649,8 @@ export const IRPSenderPage: React.FC = () => {
 
             const payload = {
                 mongo_id: schemaId!,
+                // IRP doesn't use map folder (sends raw UDP), but include for API consistency
+                map: selectedSimulatorMap || '',
                 message_data: {
                     messages: formattedMessages,
                 },
@@ -1695,6 +1702,8 @@ export const IRPSenderPage: React.FC = () => {
 
             const payload = {
                 mongo_id: schemaId!,
+                // IRP doesn't use map folder (sends raw UDP), but include for API consistency
+                map: selectedSimulatorMap || '',
                 message_data: {
                     messages: formattedMessages,
                 },
@@ -1712,7 +1721,7 @@ export const IRPSenderPage: React.FC = () => {
     // Update ref whenever dependencies change
     useEffect(() => {
         sendMessagesOnceRef.current = sendMessagesOnce
-    }, [selectedDestinationPort, selectedSimulator, messages, schemaId])
+    }, [selectedDestinationPort, selectedSimulator, messages, schemaId])  // eslint-disable-line react-hooks/exhaustive-deps
 
     // Auto-save form state to localStorage on every change
     useEffect(() => {
@@ -1826,11 +1835,24 @@ export const IRPSenderPage: React.FC = () => {
                     <FormControl fullWidth>
                         <InputLabel>Target Simulator</InputLabel>
                         <Select value={selectedSimulator}
-                                onChange={(e) => setSelectedSimulator(e.target.value as string)}
+                                onChange={(e) => {
+                                    const selectedIp = e.target.value as string;
+                                    setSelectedSimulator(selectedIp);
+
+                                    // Get map from Sapro simulator, not from CC device
+                                    const saproSim = saproSimulators.find(sim => sim.ip_address === selectedIp);
+                                    if (saproSim && saproSim.map) {
+                                        setSelectedSimulatorMap(saproSim.map);
+                                    } else {
+                                        setSelectedSimulatorMap('');
+                                        console.warn(`No map found for simulator ${selectedIp}`);
+                                    }
+                                }}
                                 label="Target Simulator">
                             {compatibleSimulators.map((device) => (
                                 <MenuItem key={device.management_ip} value={device.management_ip}>
                                     {device.name || device.management_ip} ({device.management_ip})
+                                    {device.map && ` - Map: ${device.map}`}
                                 </MenuItem>
                             ))}
                         </Select>

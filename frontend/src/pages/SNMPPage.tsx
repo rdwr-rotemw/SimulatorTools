@@ -58,7 +58,13 @@ import apiClient from '../api/client';
 export const SNMPPage: React.FC = () => {
     const navigate = useNavigate();
     const currentCC = useCCStore((state) => state.currentCC);
-    const devicesList = useCCStore((state) => state.devices);
+    const devices = useCCStore((state) => state.devices);
+    const saproSimulators = useCCStore((state) => state.saproSimulators);
+
+    // Filter devices: only show those that exist in Sapro
+    const saproIPs = new Set(saproSimulators.map(sim => sim.ip_address));
+    const devicesList = devices.filter(device => saproIPs.has(device.management_ip));
+
     const managementPorts = useCCStore((state) => state.managementPorts);
     const user = useAuthStore((state) => state.user);
 
@@ -467,10 +473,6 @@ export const SNMPPage: React.FC = () => {
         }
     };
 
-    const handleCloseSnackbar = (_?: React.SyntheticEvent | Event, reason?: string) => {
-        if (reason === 'clickaway') return;
-        setSnackbar((s) => ({...s, open: false}));
-    };
 
     const validateAll = (): boolean => {
         const newErrors: { [key: number]: SNMPFormErrors } = {};
@@ -636,10 +638,10 @@ export const SNMPPage: React.FC = () => {
                                 const selectedIp = e.target.value as string;
                                 setSelectedSimulator(selectedIp);
 
-                                // Find the selected device and get its map
-                                const device = devicesList.find(d => d.management_ip === selectedIp);
-                                if (device && device.map) {
-                                    setSelectedSimulatorMap(device.map);
+                                // Get map from Sapro simulator, not from CC device
+                                const saproSim = saproSimulators.find(sim => sim.ip_address === selectedIp);
+                                if (saproSim && saproSim.map) {
+                                    setSelectedSimulatorMap(saproSim.map);
                                 } else {
                                     setSelectedSimulatorMap('');
                                     console.warn(`No map found for simulator ${selectedIp}`);
