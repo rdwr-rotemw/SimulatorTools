@@ -16,7 +16,7 @@ export const generateAttackId = (): string => {
   const part1 = Math.floor(Math.random() * 900) + 100; // 100-999
   const currentEpoch = Math.floor(Date.now() / 1000); // Current epoch timestamp in seconds
   const part2 = Math.floor(Math.random() * (currentEpoch + 1)); // 0 to current epoch
-  return `${part1}-${String(part2).padStart(10, '0')}`;
+  return `${part1}-${part2}`;
 };
 
 export const validateIPAddress = (ip: string): boolean => {
