@@ -40,7 +40,7 @@ import UploadFileIcon from '@mui/icons-material/UploadFile'
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward'
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward'
 import DragIndicatorIcon from '@mui/icons-material/DragIndicator'
-import { IRPPcapAnalysisResponse } from '../api/services/irpSchema.service'
+import {IRPPcapAnalysisResponse} from '../api/services/irpSchema.service'
 import Checkbox from '@mui/material/Checkbox'
 import {
     DndContext,
@@ -57,8 +57,8 @@ import {
     sortableKeyboardCoordinates,
     verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
-import { useSortable } from '@dnd-kit/sortable'
-import { CSS } from '@dnd-kit/utilities'
+import {useSortable} from '@dnd-kit/sortable'
+import {CSS} from '@dnd-kit/utilities'
 
 import Layout from '../components/common/Layout'
 import useCCStore from '../store/ccStore'
@@ -588,8 +588,8 @@ function transformFromAttackId(data: any, originalSchema: any): any {
                 if (innerData && typeof innerData === 'object' && 'attack-id' in innerData) {
                     // Find schema for wrapper - try multiple paths
                     let innerSchema = itemSchema?.[wrapperKey] ||
-                                      itemSchema?.fields?.[wrapperKey] ||
-                                      itemSchema?.itemSchema?.[wrapperKey]
+                        itemSchema?.fields?.[wrapperKey] ||
+                        itemSchema?.itemSchema?.[wrapperKey]
                     if (innerSchema) {
                         // Recursively transform with inner schema
                         const transformed = transformFromAttackId(innerData, innerSchema)
@@ -764,25 +764,25 @@ interface SortableMessageProps {
 }
 
 const SortableMessage: React.FC<SortableMessageProps> = React.memo(({
-    id,
-    index,
-    msg,
-    isExpanded,
-    isFirst,
-    isLast,
-    onToggle,
-    onDelete,
-    onUpdate,
-    onMoveUp,
-    onMoveDown,
-    onTestMessage,
-    onRandomize,
-    onValidationChange,
-    isTestingMessage,
-    isValid,
-    messages,
-    setMessages
-}) => {
+                                                                        id,
+                                                                        index,
+                                                                        msg,
+                                                                        isExpanded,
+                                                                        isFirst,
+                                                                        isLast,
+                                                                        onToggle,
+                                                                        onDelete,
+                                                                        onUpdate,
+                                                                        onMoveUp,
+                                                                        onMoveDown,
+                                                                        onTestMessage,
+                                                                        onRandomize,
+                                                                        onValidationChange,
+                                                                        isTestingMessage,
+                                                                        isValid,
+                                                                        messages,
+                                                                        setMessages
+                                                                    }) => {
     const {
         attributes,
         listeners,
@@ -790,7 +790,7 @@ const SortableMessage: React.FC<SortableMessageProps> = React.memo(({
         transform,
         transition,
         isDragging,
-    } = useSortable({ id })
+    } = useSortable({id})
 
     const style = {
         transform: CSS.Transform.toString(transform),
@@ -799,17 +799,17 @@ const SortableMessage: React.FC<SortableMessageProps> = React.memo(({
     }
 
     return (
-        <Paper ref={setNodeRef} style={style} sx={{ marginBottom: 2, padding: 2 }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+        <Paper ref={setNodeRef} style={style} sx={{marginBottom: 2, padding: 2}}>
+            <Box sx={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2}}>
                 {/* Left side: Drag handle + Up/Down arrows */}
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                <Box sx={{display: 'flex', alignItems: 'center', gap: 0.5}}>
                     <IconButton
                         {...attributes}
                         {...listeners}
                         size="small"
-                        sx={{ cursor: 'grab', '&:active': { cursor: 'grabbing' } }}
+                        sx={{cursor: 'grab', '&:active': {cursor: 'grabbing'}}}
                     >
-                        <DragIndicatorIcon />
+                        <DragIndicatorIcon/>
                     </IconButton>
                     <IconButton
                         size="small"
@@ -817,7 +817,7 @@ const SortableMessage: React.FC<SortableMessageProps> = React.memo(({
                         disabled={isFirst}
                         color="primary"
                     >
-                        <ArrowUpwardIcon fontSize="small" />
+                        <ArrowUpwardIcon fontSize="small"/>
                     </IconButton>
                     <IconButton
                         size="small"
@@ -825,19 +825,19 @@ const SortableMessage: React.FC<SortableMessageProps> = React.memo(({
                         disabled={isLast}
                         color="primary"
                     >
-                        <ArrowDownwardIcon fontSize="small" />
+                        <ArrowDownwardIcon fontSize="small"/>
                     </IconButton>
-                    <Typography variant="h6" sx={{ marginLeft: 1 }}>{msg.messageName}</Typography>
+                    <Typography variant="h6" sx={{marginLeft: 1}}>{msg.messageName}</Typography>
                 </Box>
 
                 {/* Right side: Action buttons */}
                 <Box>
                     <IconButton onClick={onToggle}>
-                        {isExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                        {isExpanded ? <ExpandLessIcon/> : <ExpandMoreIcon/>}
                     </IconButton>
                     <Tooltip title="Generate random values (preserves iterations)">
                         <IconButton onClick={onRandomize} size="small">
-                            <CasinoIcon fontSize="small" />
+                            <CasinoIcon fontSize="small"/>
                         </IconButton>
                     </Tooltip>
                     <Tooltip title="Test message parsing">
@@ -847,11 +847,11 @@ const SortableMessage: React.FC<SortableMessageProps> = React.memo(({
                             color="primary"
                             disabled={!isValid || isTestingMessage}
                         >
-                            <ScienceIcon fontSize="small" />
+                            <ScienceIcon fontSize="small"/>
                         </IconButton>
                     </Tooltip>
                     <IconButton onClick={onDelete} color="error">
-                        <DeleteIcon />
+                        <DeleteIcon/>
                     </IconButton>
                 </Box>
             </Box>
@@ -873,9 +873,9 @@ const SortableMessage: React.FC<SortableMessageProps> = React.memo(({
                         newMessages[index].pause = e.target.value ? parseInt(e.target.value) : undefined
                         setMessages(newMessages)
                     }}
-                    inputProps={{ min: 0, max: 60, step: 1 }}
+                    inputProps={{min: 0, max: 60, step: 1}}
                     helperText="Optional: Wait before sending next message (max 60s)"
-                    sx={{ marginTop: 2 }}
+                    sx={{marginTop: 2}}
                 />
             </Collapse>
         </Paper>
@@ -1062,7 +1062,10 @@ export const IRPSenderPage: React.FC = () => {
         }
     }, [])
 
-    const compatibleSimulators = devices.filter((d) => d.version === schemaInfo?.version)
+    const compatibleSimulators = devices.filter((d) => {
+        const saproSim = saproSimulators.find(sim => sim.ip_address === d.management_ip)
+        return saproSim?.version === schemaInfo?.version
+    })
 
     // Fetch schema info and available messages
     useEffect(() => {
@@ -1221,7 +1224,7 @@ export const IRPSenderPage: React.FC = () => {
 
     // Handle drag end - OPTIMIZED with React.startTransition
     const handleDragEnd = (event: DragEndEvent) => {
-        const { active, over } = event
+        const {active, over} = event
 
         if (!over || active.id === over.id) return
 
@@ -1666,9 +1669,17 @@ export const IRPSenderPage: React.FC = () => {
                 },
                 (successCount, failedCount, totalCount) => {
                     if (failedCount === 0) {
-                        setSnackbar({open: true, message: `Successfully sent all ${successCount} message(s)`, severity: 'success'})
+                        setSnackbar({
+                            open: true,
+                            message: `Successfully sent all ${successCount} message(s)`,
+                            severity: 'success'
+                        })
                     } else {
-                        setSnackbar({open: true, message: `Partially successful: ${successCount} succeeded, ${failedCount} failed`, severity: 'warning'})
+                        setSnackbar({
+                            open: true,
+                            message: `Partially successful: ${successCount} succeeded, ${failedCount} failed`,
+                            severity: 'warning'
+                        })
                     }
                 },
                 (error) => {
@@ -1960,7 +1971,7 @@ export const IRPSenderPage: React.FC = () => {
                     <Button
                         variant="contained"
                         color="secondary"
-                        startIcon={<UploadFileIcon />}
+                        startIcon={<UploadFileIcon/>}
                         onClick={handleOpenPcapDialog}
                     >
                         Import from PCAP
@@ -2119,26 +2130,26 @@ export const IRPSenderPage: React.FC = () => {
 
             {/* Sending Progress Dialog */}
             <Dialog
-              open={isSending}
-              maxWidth="sm"
-              fullWidth
-              disableEscapeKeyDown
+                open={isSending}
+                maxWidth="sm"
+                fullWidth
+                disableEscapeKeyDown
             >
-              <DialogContent>
-                <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3 }}>
-                  <CircularProgress size={60} />
-                  <Typography variant="h6">Sending Messages...</Typography>
-                  {currentMessage > 0 && (
-                    <Typography variant="h5" fontWeight="bold" color="primary">
-                      {currentMessage}/{totalMessages}
-                    </Typography>
-                  )}
-                  <Typography variant="body2" color="textSecondary">
-                    This may take several minutes with pause delays.
-                    Please wait...
-                  </Typography>
-                </Box>
-              </DialogContent>
+                <DialogContent>
+                    <Box sx={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3}}>
+                        <CircularProgress size={60}/>
+                        <Typography variant="h6">Sending Messages...</Typography>
+                        {currentMessage > 0 && (
+                            <Typography variant="h5" fontWeight="bold" color="primary">
+                                {currentMessage}/{totalMessages}
+                            </Typography>
+                        )}
+                        <Typography variant="body2" color="textSecondary">
+                            This may take several minutes with pause delays.
+                            Please wait...
+                        </Typography>
+                    </Box>
+                </DialogContent>
             </Dialog>
 
             <Snackbar
@@ -2267,11 +2278,11 @@ export const IRPSenderPage: React.FC = () => {
             >
                 <DialogTitle>Import Messages from PCAP</DialogTitle>
                 <DialogContent>
-                    <Box sx={{ marginTop: 2 }}>
+                    <Box sx={{marginTop: 2}}>
                         {/* File Upload */}
                         <input
                             accept=".pcap,.pcapng"
-                            style={{ display: 'none' }}
+                            style={{display: 'none'}}
                             id="pcap-file-input"
                             type="file"
                             onChange={handlePcapFileChange}
@@ -2280,7 +2291,7 @@ export const IRPSenderPage: React.FC = () => {
                             <Button
                                 variant="outlined"
                                 component="span"
-                                startIcon={<UploadFileIcon />}
+                                startIcon={<UploadFileIcon/>}
                                 fullWidth
                                 disabled={analyzingPcap}
                             >
@@ -2290,22 +2301,23 @@ export const IRPSenderPage: React.FC = () => {
 
                         {/* Loading */}
                         {analyzingPcap && (
-                            <Box sx={{ display: 'flex', justifyContent: 'center', padding: 3 }}>
-                                <CircularProgress />
-                                <Typography sx={{ marginLeft: 2 }}>Analyzing PCAP...</Typography>
+                            <Box sx={{display: 'flex', justifyContent: 'center', padding: 3}}>
+                                <CircularProgress/>
+                                <Typography sx={{marginLeft: 2}}>Analyzing PCAP...</Typography>
                             </Box>
                         )}
 
                         {/* Results */}
                         {pcapResults && pcapResults.messages.length > 0 && (
-                            <Box sx={{ marginTop: 3 }}>
+                            <Box sx={{marginTop: 3}}>
                                 {/* Summary */}
-                                <Alert severity="info" sx={{ marginBottom: 2 }}>
-                                    Found {pcapResults.irp_packets} IRP packets with {pcapResults.messages.length} unique message types
+                                <Alert severity="info" sx={{marginBottom: 2}}>
+                                    Found {pcapResults.irp_packets} IRP packets
+                                    with {pcapResults.messages.length} unique message types
                                 </Alert>
 
                                 {/* Select All Checkbox */}
-                                <Box sx={{ display: 'flex', alignItems: 'center', marginBottom: 1, paddingLeft: 1 }}>
+                                <Box sx={{display: 'flex', alignItems: 'center', marginBottom: 1, paddingLeft: 1}}>
                                     <Checkbox
                                         checked={
                                             pcapResults.messages.filter(msg =>
@@ -2326,7 +2338,7 @@ export const IRPSenderPage: React.FC = () => {
                                         }
                                         onChange={handleSelectAll}
                                     />
-                                    <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                                    <Typography variant="subtitle1" sx={{fontWeight: 'bold'}}>
                                         Select All / Deselect All
                                     </Typography>
                                 </Box>
@@ -2336,7 +2348,7 @@ export const IRPSenderPage: React.FC = () => {
                                     {pcapResults.messages.map((msg) => {
                                         // Only disable truly unknown messages (not in schema), not "No schema loaded"
                                         const isUnknown = msg.message_name.includes('Unknown') &&
-                                                          !msg.message_name.includes('No schema loaded')
+                                            !msg.message_name.includes('No schema loaded')
 
                                         return (
                                             <ListItem key={msg.message_id} disablePadding>
@@ -2380,7 +2392,7 @@ export const IRPSenderPage: React.FC = () => {
 
                         {/* No messages found */}
                         {pcapResults && pcapResults.messages.length === 0 && (
-                            <Alert severity="warning" sx={{ marginTop: 3 }}>
+                            <Alert severity="warning" sx={{marginTop: 3}}>
                                 No IRP messages found in PCAP file
                             </Alert>
                         )}
