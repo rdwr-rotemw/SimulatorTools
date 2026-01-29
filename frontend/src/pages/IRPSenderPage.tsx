@@ -2035,6 +2035,9 @@ export const IRPSenderPage: React.FC = () => {
                             helperText="Loop will automatically stop after this duration (required, minimum 1 second)"
                             inputProps={{min: 1, step: 1}}
                         />
+                        <Alert severity="info" sx={{ marginTop: 2 }}>
+                            Note: Logging out will automatically stop the loop.
+                        </Alert>
                     </DialogContent>
                     <DialogActions>
                         <Button onClick={() => setLoopDialogOpen(false)}>Cancel</Button>

@@ -6,6 +6,7 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import { useAuthStore } from '../../store/authStore';
 import { useCCStore } from '../../store/ccStore';
 import { CCLogoutWarningDialog } from '../cc/CCLogoutWarningDialog';
+import useLoopStore from '../../store/useLoopStore';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -30,6 +31,15 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const handleCCLogout = async () => {
     if (!currentCC) return;
 
+    // Cancel any active loops before CC logout
+    const loopStore = useLoopStore.getState();
+    if (loopStore.snmp.isLooping) {
+      loopStore.clearSnmpLoop();
+    }
+    if (loopStore.irp.isLooping) {
+      loopStore.clearIrpLoop();
+    }
+
     try {
       await ccLogout(currentCC);
       clearState();
@@ -50,6 +60,15 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   };
 
   const handleLogoutAndLeave = async () => {
+    // Cancel any active loops before CC logout
+    const loopStore = useLoopStore.getState();
+    if (loopStore.snmp.isLooping) {
+      loopStore.clearSnmpLoop();
+    }
+    if (loopStore.irp.isLooping) {
+      loopStore.clearIrpLoop();
+    }
+
     if (currentCC) {
       await ccLogout(currentCC);
       clearState();

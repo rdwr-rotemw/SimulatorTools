@@ -4,6 +4,7 @@ import { AuthState } from '../types/auth';
 import useFormStore from './useFormStore';
 import activityTracker from '../utils/activityTracker';
 import useCCStore from './ccStore';
+import useLoopStore from './useLoopStore';
 
 export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
@@ -34,6 +35,15 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: async () => {
+    // Cancel any active loops before logout
+    const loopStore = useLoopStore.getState();
+    if (loopStore.snmp.isLooping) {
+      loopStore.clearSnmpLoop();
+    }
+    if (loopStore.irp.isLooping) {
+      loopStore.clearIrpLoop();
+    }
+
     try {
       // First, logout from CC if there's an active CC session
       const ccStore = useCCStore.getState();
@@ -92,7 +102,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const { isAuthenticated, logout } = get();
     if (isAuthenticated) {
       activityTracker.startTracking(async () => {
-        // User inactive for 15 minutes
+        // Check if any loop is active before logging out due to inactivity
+        const loopStore = useLoopStore.getState();
+        if (loopStore.snmp.isLooping || loopStore.irp.isLooping) {
+          // Skip logout while loop is running, continue tracking
+          console.log('Inactivity timeout skipped: Loop is active');
+          return;
+        }
+        // User inactive for 15 minutes and no loop running
         alert('Session expired due to inactivity');
         await logout();
       });
