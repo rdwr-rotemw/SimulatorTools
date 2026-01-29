@@ -13,7 +13,7 @@ import copy
 import json
 import re
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any, Union, Optional
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -1053,13 +1053,26 @@ async def create_device_template(
 
 @router.get("/device-templates", response_model=List[Dict[str, Any]])
 async def list_device_templates(
-        current_user=Depends(require_sapro_access),
+        name: Optional[str] = None,
+        _current_user=Depends(require_sapro_access),
         mongo_db=Depends(get_mongo_db),
 ):
-    """List all device templates (lightweight listing without full template body)."""
+    """
+    List all device templates (lightweight listing without full template body).
+
+    Args:
+        name: Optional filter for template name (case-insensitive partial match)
+        :param mongo_db:
+        :param _current_user:
+    """
     collection = mongo_db["device_templates"]
 
-    cursor = collection.find({}, {"template": 0})
+    # Build query filter
+    query_filter = {}
+    if name:
+        query_filter["name"] = {"$regex": name, "$options": "i"}
+
+    cursor = collection.find(query_filter, {"template": 0})
 
     result: List[Dict[str, Any]] = []
     for d in cursor:
