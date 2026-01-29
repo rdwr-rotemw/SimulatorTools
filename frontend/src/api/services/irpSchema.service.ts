@@ -138,16 +138,19 @@ class IRPSchemaService {
     return response.data
   }
 
-  async sendMessages(ccIp: string, simulatorIp: string, payload: IRPSendPayload): Promise<void> {
+  async sendMessages(ccIp: string, simulatorIps: string[], payload: IRPSendPayload): Promise<void> {
+    // Send messages to multiple simulators using comma-separated IPs
+    const simulatorIpsParam = simulatorIps.join(',');
+
     await apiClient.post(
-      `/cc/${ccIp}/simulators/${simulatorIp}/reporter/irp`,
+      `/cc/${ccIp}/simulators/${simulatorIpsParam}/reporter/irp`,
       payload
-    )
+    );
   }
 
   async sendMessagesWithProgress(
     destinationPortIp: string,
-    simulatorIp: string,
+    simulatorIps: string[],
     payload: any,
     onProgress: (current: number, total: number, messageName: string, status: string) => void,
     onComplete: (successCount: number, failedCount: number, totalCount: number) => void,
@@ -155,11 +158,14 @@ class IRPSchemaService {
   ): Promise<void> {
     return new Promise<void>(async (resolve, reject) => {
       try {
+        // Use comma-separated IPs for multi-simulator support
+        const simulatorIpsParam = simulatorIps.join(',');
+
         // 1. Get baseURL from apiClient
         const baseURL = apiClient.defaults.baseURL || 'http://localhost:8000/api';
 
-        // 2. Build full URL
-        const url = `${baseURL}/cc/${destinationPortIp}/simulators/${simulatorIp}/reporter/irp/stream`;
+        // 2. Build full URL with comma-separated IPs
+        const url = `${baseURL}/cc/${destinationPortIp}/simulators/${simulatorIpsParam}/reporter/irp/stream`;
 
         // 3. Get token
         const token = localStorage.getItem('access_token') || localStorage.getItem('token');
@@ -191,7 +197,16 @@ class IRPSchemaService {
         const decoder = new TextDecoder();
         let buffer = '';
 
-        // 6-11. Read stream
+        // Track progress per simulator
+        const simulatorProgress = new Map<string, {success: number, failed: number}>();
+        simulatorIps.forEach(ip => {
+          simulatorProgress.set(ip, {success: 0, failed: 0});
+        });
+
+        // 6-11. Read stream for all simulators
+        let totalSuccessCount = 0;
+        let totalFailedCount = 0;
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -205,13 +220,40 @@ class IRPSchemaService {
               const dataStr = message.slice(6);
               try {
                 const data = JSON.parse(dataStr);
+
                 if (data.type === 'progress') {
                   onProgress(data.current, data.total, data.message_name, data.status);
                 } else if (data.type === 'complete') {
-                  onComplete(data.success_count, data.failed_count, data.total_count);
-                  reader.releaseLock();
-                  resolve();
-                  return;
+                  // Aggregate completion events from all simulators
+                  const simIp = data.simulator_ip;
+                  if (simIp && simulatorProgress.has(simIp)) {
+                    const progress = simulatorProgress.get(simIp)!;
+                    progress.success = data.success_count || 0;
+                    progress.failed = data.failed_count || 0;
+                  }
+
+                  // Check if all simulators completed
+                  let allCompleted = true;
+                  let newSuccessCount = 0;
+                  let newFailedCount = 0;
+
+                  simulatorProgress.forEach((progress, ip) => {
+                    if (progress.success === 0 && progress.failed === 0) {
+                      allCompleted = false;
+                    }
+                    newSuccessCount += progress.success;
+                    newFailedCount += progress.failed;
+                  });
+
+                  totalSuccessCount = newSuccessCount;
+                  totalFailedCount = newFailedCount;
+
+                  if (allCompleted) {
+                    onComplete(totalSuccessCount, totalFailedCount, totalSuccessCount + totalFailedCount);
+                    reader.releaseLock();
+                    resolve();
+                    return;
+                  }
                 } else if (data.type === 'error') {
                   onError(data.message);
                   reader.releaseLock();
@@ -228,8 +270,10 @@ class IRPSchemaService {
           }
         }
 
-        // If stream ends without complete, resolve anyway
+        // All simulators processed
+        onComplete(totalSuccessCount, totalFailedCount, totalSuccessCount + totalFailedCount);
         resolve();
+
       } catch (err) {
         onError('Connection error');
         reject(err);

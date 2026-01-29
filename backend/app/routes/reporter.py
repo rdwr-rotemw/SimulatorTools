@@ -57,14 +57,14 @@ async def send_snmp_trap_endpoint(
         payload: ReporterSNMPPayload,
         _current_user: User = Depends(require_cc_access),
 ) -> ReporterResponse:
-    """Send SNMP trap to simulator via CyberController.
+    """Send SNMP trap to simulator(s) via CyberController.
 
     Requires cc_admin or admin role.
 
     Args:
         cc_ip: CyberController IP address
-        simulator_ip: Target simulator IP address
-        payload: SNMP trap configuration (with 'traps' array)
+        simulator_ip: Target simulator IP address(es) - single IP or comma-separated list
+        payload: SNMP trap configuration (with 'traps' array and 'map')
         _current_user: Authenticated user with cc_admin or admin role
 
     Returns:
@@ -91,31 +91,107 @@ async def send_snmp_trap_endpoint(
                 detail="Invalid trap data: 'traps' must be a non-empty list"
             )
 
-        # Call attack_traps module directly
-        logger.info(f"Sending {len(trap_data['traps'])} trap(s) from {simulator_ip} to {cc_ip}")
-        success_count, failed_count, total_count = attack_traps.send_attack_traps(
-            cc_ip, simulator_ip, trap_data
-        )
+        # Check if multiple simulators (comma-separated)
+        if ',' in simulator_ip:
+            simulator_ips = [ip.strip() for ip in simulator_ip.split(',')]
+            logger.info(f"Processing multiple simulators: {simulator_ips}")
 
-        # Report accurate results
-        if success_count > 0 and failed_count == 0:
-            message = f"Successfully sent all {success_count} trap(s)"
-            logger.info(message)
-            return ReporterResponse(success=True, message=message)
-        elif success_count > 0 and failed_count > 0:
-            message = f"Partially successful: {success_count} succeeded, {failed_count} failed"
-            logger.warning(message)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=message
-            )
+            # Handle map field - convert to dict if needed
+            map_dict = {}
+            if isinstance(trap_data['map'], dict):
+                map_dict = trap_data['map']
+            else:
+                # Single map string - use for all simulators
+                for sim_ip in simulator_ips:
+                    map_dict[sim_ip] = trap_data['map']
+
+            # Process all simulators in parallel
+            async def send_to_simulator(sim_ip: str):
+                sim_trap_data = trap_data.copy()
+                sim_trap_data['map'] = map_dict.get(sim_ip, trap_data['map'] if isinstance(trap_data['map'], str) else '')
+                return attack_traps.send_attack_traps(cc_ip, sim_ip, sim_trap_data)
+
+            # Execute in parallel
+            results = await asyncio.gather(*[send_to_simulator(sim_ip) for sim_ip in simulator_ips], return_exceptions=True)
+
+            # Aggregate results
+            total_success = 0
+            total_failed = 0
+            total_count = 0
+            errors = []
+
+            for idx, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"Simulator {simulator_ips[idx]} failed: {result}")
+                    errors.append(f"{simulator_ips[idx]}: {str(result)}")
+                    total_failed += len(trap_data['traps'])
+                    total_count += len(trap_data['traps'])
+                else:
+                    success_count, failed_count, count = result
+                    total_success += success_count
+                    total_failed += failed_count
+                    total_count += count
+
+            # Report aggregated results
+            if total_success > 0 and total_failed == 0:
+                message = f"Successfully sent all {total_success} trap(s) to {len(simulator_ips)} simulator(s)"
+                logger.info(message)
+                return ReporterResponse(success=True, message=message)
+            elif total_success > 0 and total_failed > 0:
+                message = f"Partially successful: {total_success} succeeded, {total_failed} failed across {len(simulator_ips)} simulator(s)"
+                if errors:
+                    message += f". Errors: {'; '.join(errors)}"
+                logger.warning(message)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=message
+                )
+            else:
+                message = f"Failed to send all {total_count} trap(s) to {len(simulator_ips)} simulator(s)"
+                if errors:
+                    message += f". Errors: {'; '.join(errors)}"
+                logger.error(message)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=message
+                )
         else:
-            message = f"Failed to send all {total_count} trap(s)"
-            logger.error(message)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=message
+            # Single simulator (backward compatible)
+            # Handle map field
+            if isinstance(trap_data['map'], dict):
+                # Dict provided but only one simulator - extract map for this simulator
+                trap_data['map'] = trap_data['map'].get(simulator_ip, '')
+                if not trap_data['map']:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Map not found for simulator {simulator_ip}"
+                    )
+
+            # Call attack_traps module directly
+            logger.info(f"Sending {len(trap_data['traps'])} trap(s) from {simulator_ip} to {cc_ip}")
+            success_count, failed_count, total_count = attack_traps.send_attack_traps(
+                cc_ip, simulator_ip, trap_data
             )
+
+            # Report accurate results
+            if success_count > 0 and failed_count == 0:
+                message = f"Successfully sent all {success_count} trap(s)"
+                logger.info(message)
+                return ReporterResponse(success=True, message=message)
+            elif success_count > 0 and failed_count > 0:
+                message = f"Partially successful: {success_count} succeeded, {failed_count} failed"
+                logger.warning(message)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=message
+                )
+            else:
+                message = f"Failed to send all {total_count} trap(s)"
+                logger.error(message)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=message
+                )
 
     except HTTPException:
         raise
@@ -182,6 +258,8 @@ async def send_irp_messages_endpoint(
     """Send an IRP message based on a stored IdsDataFormat schema in MongoDB.
 
     Body fields: mongo_id, message_id, message_data, from_ip, to_ip
+
+    Supports multiple simulators via comma-separated IPs in simulator_ip parameter.
     """
     try:
         schema_obj = load_schema_from_mongo(mongo_db, payload.mongo_id)
@@ -193,37 +271,114 @@ async def send_irp_messages_endpoint(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to load schema: {exc!s}")
 
     try:
-        results = send_irp_messages(schema_obj, payload.message_data, simulator_ip, cc_ip)
-        if isinstance(results, dict):
-            # The results dict contains per-message tuples/lists like: { name: [bool_success, message_or_error] }
+        # Check if multiple simulators (comma-separated)
+        if ',' in simulator_ip:
+            simulator_ips = [ip.strip() for ip in simulator_ip.split(',')]
+            logger.info(f"Processing multiple simulators for IRP: {simulator_ips}")
+
+            # Process all simulators in parallel (IRP doesn't need different maps)
+            async def send_to_simulator(sim_ip: str):
+                try:
+                    return send_irp_messages(schema_obj, payload.message_data, sim_ip, cc_ip)
+                except Exception as e:
+                    logger.error(f"Error sending to {sim_ip}: {e}")
+                    return {"error": f"Failed to send to {sim_ip}: {str(e)}"}
+
+            # Execute in parallel
+            results_list = await asyncio.gather(*[send_to_simulator(sim_ip) for sim_ip in simulator_ips], return_exceptions=True)
+
+            # Aggregate results
             all_success = True
             any_success = False
-            for k, v in results.items():
-                try:
-                    ok = bool(v[0])
-                except Exception:
-                    ok = False
-                if ok:
-                    any_success = True
-                else:
+            aggregated_results = {}
+            errors = []
+
+            for idx, result in enumerate(results_list):
+                sim_ip = simulator_ips[idx]
+                if isinstance(result, Exception):
+                    logger.error(f"Simulator {sim_ip} failed: {result}")
+                    errors.append(f"{sim_ip}: {str(result)}")
                     all_success = False
+                    aggregated_results[sim_ip] = {"error": str(result)}
+                elif isinstance(result, dict):
+                    # Check if this is an error dict or results dict
+                    if "error" in result:
+                        all_success = False
+                        errors.append(f"{sim_ip}: {result['error']}")
+                        aggregated_results[sim_ip] = result
+                    else:
+                        # Regular results dict: { message_name: [bool_success, message_or_error] }
+                        sim_all_success = True
+                        sim_any_success = False
+                        for k, v in result.items():
+                            try:
+                                ok = bool(v[0])
+                            except Exception:
+                                ok = False
+                            if ok:
+                                sim_any_success = True
+                                any_success = True
+                            else:
+                                sim_all_success = False
+                                all_success = False
+                        aggregated_results[sim_ip] = result
+                else:
+                    # Unexpected format
+                    all_success = False
+                    aggregated_results[sim_ip] = {"error": "Unexpected result format"}
 
+            # Report aggregated results
             if all_success:
-                logger.info("All IRP messages succeeded")
-                return ReporterResponse(success=True, message="All IRP messages sent successfully", messages=results)
-            if not any_success:
+                message = f"All IRP messages sent successfully to {len(simulator_ips)} simulator(s)"
+                logger.info(message)
+                return ReporterResponse(success=True, message=message, messages=aggregated_results)
+            elif not any_success:
                 # All failed - treat as server error
-                logger.error(f"All IRP messages failed: {results}")
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                    detail=f"All IRP messages failed: {results}")
-
-            # Mixed results - partial success
-            logger.warning(f"Partial IRP results: {results}")
-            return ReporterResponse(success=False, message="Partial failure sending IRP messages", messages=results)
+                message = f"All IRP messages failed for {len(simulator_ips)} simulator(s)"
+                if errors:
+                    message += f". Errors: {'; '.join(errors)}"
+                logger.error(message)
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
+            else:
+                # Mixed results - partial success
+                message = f"Partial IRP results across {len(simulator_ips)} simulator(s)"
+                if errors:
+                    message += f". Errors: {'; '.join(errors)}"
+                logger.warning(message)
+                return ReporterResponse(success=False, message=message, messages=aggregated_results)
         else:
-            # Overall failure
-            success, error_msg = results
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg)
+            # Single simulator (backward compatible)
+            results = send_irp_messages(schema_obj, payload.message_data, simulator_ip, cc_ip)
+            if isinstance(results, dict):
+                # The results dict contains per-message tuples/lists like: { name: [bool_success, message_or_error] }
+                all_success = True
+                any_success = False
+                for k, v in results.items():
+                    try:
+                        ok = bool(v[0])
+                    except Exception:
+                        ok = False
+                    if ok:
+                        any_success = True
+                    else:
+                        all_success = False
+
+                if all_success:
+                    logger.info("All IRP messages succeeded")
+                    return ReporterResponse(success=True, message="All IRP messages sent successfully", messages=results)
+                if not any_success:
+                    # All failed - treat as server error
+                    logger.error(f"All IRP messages failed: {results}")
+                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                        detail=f"All IRP messages failed: {results}")
+
+                # Mixed results - partial success
+                logger.warning(f"Partial IRP results: {results}")
+                return ReporterResponse(success=False, message="Partial failure sending IRP messages", messages=results)
+            else:
+                # Overall failure
+                success, error_msg = results
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg)
     except HTTPException:
         raise
     except Exception as exc:
@@ -241,7 +396,10 @@ async def send_irp_messages_stream_endpoint(
         _current_user: User = Depends(require_cc_access),
         mongo_db=Depends(get_mongo_db),
 ):
-    """Send IRP messages with real-time progress via Server-Sent Events."""
+    """Send IRP messages with real-time progress via Server-Sent Events.
+
+    Supports multiple simulators via comma-separated IPs. Progress events include simulator_ip field.
+    """
     try:
         schema_obj = load_schema_from_mongo(mongo_db, payload.mongo_id)
     except ValueError as ve:
@@ -254,20 +412,83 @@ async def send_irp_messages_stream_endpoint(
     try:
         message_data = payload.message_data
 
-        async def event_generator():
-            try:
-                for progress in send_irp_messages_with_progress(schema_obj, message_data, simulator_ip, cc_ip):
-                    yield f"data: {json.dumps(progress)}\n\n"
-            except Exception as exc:
-                logger.exception(f"Error during IRP message streaming: {exc}")
-                error_event = {"type": "error", "message": str(exc)}
-                yield f"data: {json.dumps(error_event)}\n\n"
+        # Check if multiple simulators (comma-separated)
+        if ',' in simulator_ip:
+            simulator_ips = [ip.strip() for ip in simulator_ip.split(',')]
+            logger.info(f"Streaming IRP messages to multiple simulators: {simulator_ips}")
 
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-        )
+            async def event_generator():
+                try:
+                    # Create async generators for each simulator
+                    async def simulator_generator(sim_ip: str):
+                        try:
+                            for progress in send_irp_messages_with_progress(schema_obj, message_data, sim_ip, cc_ip):
+                                # Add simulator_ip to progress event
+                                progress['simulator_ip'] = sim_ip
+                                yield progress
+                        except Exception as exc:
+                            logger.exception(f"Error streaming to {sim_ip}: {exc}")
+                            yield {"type": "error", "simulator_ip": sim_ip, "message": str(exc)}
+
+                    # Interleave events from all simulators
+                    import queue
+                    event_queue = queue.Queue()
+                    completed_simulators = set()
+
+                    # Run all generators in parallel
+                    async def run_generator(sim_ip: str):
+                        async for event in simulator_generator(sim_ip):
+                            event_queue.put(event)
+                        completed_simulators.add(sim_ip)
+
+                    # Start all tasks
+                    tasks = [asyncio.create_task(run_generator(sim_ip)) for sim_ip in simulator_ips]
+
+                    # Yield events as they arrive
+                    while len(completed_simulators) < len(simulator_ips):
+                        try:
+                            event = event_queue.get(timeout=0.1)
+                            yield f"data: {json.dumps(event)}\n\n"
+                        except queue.Empty:
+                            await asyncio.sleep(0.1)
+                            continue
+
+                    # Wait for all tasks to complete
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+                    # Drain remaining events
+                    while not event_queue.empty():
+                        event = event_queue.get()
+                        yield f"data: {json.dumps(event)}\n\n"
+
+                except Exception as exc:
+                    logger.exception(f"Error during IRP message streaming: {exc}")
+                    error_event = {"type": "error", "message": str(exc)}
+                    yield f"data: {json.dumps(error_event)}\n\n"
+
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+            )
+        else:
+            # Single simulator (backward compatible)
+            async def event_generator():
+                try:
+                    for progress in send_irp_messages_with_progress(schema_obj, message_data, simulator_ip, cc_ip):
+                        # Add simulator_ip for consistency
+                        progress['simulator_ip'] = simulator_ip
+                        yield f"data: {json.dumps(progress)}\n\n"
+                except Exception as exc:
+                    logger.exception(f"Error during IRP message streaming: {exc}")
+                    error_event = {"type": "error", "simulator_ip": simulator_ip, "message": str(exc)}
+                    yield f"data: {json.dumps(error_event)}\n\n"
+
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+            )
 
     except HTTPException:
         raise
@@ -777,7 +998,10 @@ async def send_snmp_trap_stream_endpoint(
         payload: ReporterSNMPPayload,
         _current_user: User = Depends(require_cc_access),
 ):
-    """Send SNMP traps with real-time progress via Server-Sent Events."""
+    """Send SNMP traps with real-time progress via Server-Sent Events.
+
+    Supports multiple simulators via comma-separated IPs. Progress events include simulator_ip field.
+    """
     try:
         # Convert Pydantic model to dict
         # exclude_none=True ensures only provided fields are included,
@@ -799,20 +1023,105 @@ async def send_snmp_trap_stream_endpoint(
                 detail="Invalid trap data: 'traps' must be a non-empty list"
             )
 
-        async def event_generator():
-            try:
-                for progress in send_attack_traps_with_progress(cc_ip, simulator_ip, trap_data):
-                    yield f"data: {json.dumps(progress)}\n\n"
-            except Exception as exc:
-                logger.exception(f"Error during SNMP trap streaming: {exc}")
-                error_event = {"type": "error", "message": str(exc)}
-                yield f"data: {json.dumps(error_event)}\n\n"
+        # Check if multiple simulators (comma-separated)
+        if ',' in simulator_ip:
+            simulator_ips = [ip.strip() for ip in simulator_ip.split(',')]
+            logger.info(f"Streaming SNMP traps to multiple simulators: {simulator_ips}")
 
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-        )
+            # Handle map field - convert to dict if needed
+            map_dict = {}
+            if isinstance(trap_data['map'], dict):
+                map_dict = trap_data['map']
+            else:
+                # Single map string - use for all simulators
+                for sim_ip in simulator_ips:
+                    map_dict[sim_ip] = trap_data['map']
+
+            async def event_generator():
+                try:
+                    # Create async generators for each simulator
+                    async def simulator_generator(sim_ip: str):
+                        try:
+                            sim_trap_data = trap_data.copy()
+                            sim_trap_data['map'] = map_dict.get(sim_ip, trap_data['map'] if isinstance(trap_data['map'], str) else '')
+
+                            for progress in send_attack_traps_with_progress(cc_ip, sim_ip, sim_trap_data):
+                                # Add simulator_ip to progress event
+                                progress['simulator_ip'] = sim_ip
+                                yield progress
+                        except Exception as exc:
+                            logger.exception(f"Error streaming to {sim_ip}: {exc}")
+                            yield {"type": "error", "simulator_ip": sim_ip, "message": str(exc)}
+
+                    # Interleave events from all simulators
+                    import queue
+                    event_queue = queue.Queue()
+                    completed_simulators = set()
+
+                    # Run all generators in parallel
+                    async def run_generator(sim_ip: str):
+                        async for event in simulator_generator(sim_ip):
+                            event_queue.put(event)
+                        completed_simulators.add(sim_ip)
+
+                    # Start all tasks
+                    tasks = [asyncio.create_task(run_generator(sim_ip)) for sim_ip in simulator_ips]
+
+                    # Yield events as they arrive
+                    while len(completed_simulators) < len(simulator_ips):
+                        try:
+                            event = event_queue.get(timeout=0.1)
+                            yield f"data: {json.dumps(event)}\n\n"
+                        except queue.Empty:
+                            await asyncio.sleep(0.1)
+                            continue
+
+                    # Wait for all tasks to complete
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+                    # Drain remaining events
+                    while not event_queue.empty():
+                        event = event_queue.get()
+                        yield f"data: {json.dumps(event)}\n\n"
+
+                except Exception as exc:
+                    logger.exception(f"Error during SNMP trap streaming: {exc}")
+                    error_event = {"type": "error", "message": str(exc)}
+                    yield f"data: {json.dumps(error_event)}\n\n"
+
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+            )
+        else:
+            # Single simulator (backward compatible)
+            # Handle map field
+            if isinstance(trap_data['map'], dict):
+                # Dict provided but only one simulator - extract map for this simulator
+                trap_data['map'] = trap_data['map'].get(simulator_ip, '')
+                if not trap_data['map']:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Map not found for simulator {simulator_ip}"
+                    )
+
+            async def event_generator():
+                try:
+                    for progress in send_attack_traps_with_progress(cc_ip, simulator_ip, trap_data):
+                        # Add simulator_ip for consistency
+                        progress['simulator_ip'] = simulator_ip
+                        yield f"data: {json.dumps(progress)}\n\n"
+                except Exception as exc:
+                    logger.exception(f"Error during SNMP trap streaming: {exc}")
+                    error_event = {"type": "error", "simulator_ip": simulator_ip, "message": str(exc)}
+                    yield f"data: {json.dumps(error_event)}\n\n"
+
+            return StreamingResponse(
+                event_generator(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+            )
 
     except HTTPException:
         raise

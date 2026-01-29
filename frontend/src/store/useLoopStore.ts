@@ -7,7 +7,7 @@ interface LoopConfig {
   loopTimeout: number;
   startTime: number | null;
   batchesSent: number;
-  simulator: string;
+  simulator: string[];
   destinationPort: string;
 }
 
@@ -44,7 +44,7 @@ const defaultLoopConfig: LoopConfig = {
   loopTimeout: 600,
   startTime: null,
   batchesSent: 0,
-  simulator: '',
+  simulator: [],
   destinationPort: '',
 };
 

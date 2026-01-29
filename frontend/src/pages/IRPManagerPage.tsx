@@ -16,7 +16,6 @@ import {
     TableRow,
     TableCell,
     IconButton,
-    Divider,
     Snackbar,
     Alert,
     Dialog,
@@ -39,7 +38,6 @@ import {irpSchemaService, IRPSchema} from '../api/services/irpSchema.service'
 export const IRPManagerPage: React.FC = () => {
     const navigate = useNavigate()
     const currentCC = useCCStore((state) => state.currentCC)
-    const devices = useCCStore((state) => state.devices)
 
     const [selectedVersion, setSelectedVersion] = useState<string | ''>('')
     const [existingSchemas, setExistingSchemas] = useState<IRPSchema[]>([])

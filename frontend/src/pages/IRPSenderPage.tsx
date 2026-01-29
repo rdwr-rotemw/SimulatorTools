@@ -4,6 +4,7 @@ import {
     Alert,
     Box,
     Button,
+    Chip,
     CircularProgress,
     Collapse,
     Dialog,
@@ -67,6 +68,7 @@ import useFormStore from '../store/useFormStore'
 import useAuthStore from '../store/authStore'
 import {irpSchemaService, SchemaMessage} from '../api/services/irpSchema.service'
 import IRPMessageForm from '../components/irp/IRPMessageForm'
+import Autocomplete from '@mui/material/Autocomplete'
 
 // ============================================================================
 // CONSOLIDATED METADATA & RANDOMIZATION HELPERS
@@ -911,8 +913,7 @@ export const IRPSenderPage: React.FC = () => {
     const user = useAuthStore((state) => state.user)
 
     const [schemaInfo, setSchemaInfo] = useState<{ name: string; version: string } | null>(null)
-    const [selectedSimulator, setSelectedSimulator] = useState<string>('')
-    const [selectedSimulatorMap, setSelectedSimulatorMap] = useState<string>('')
+    const [selectedSimulators, setSelectedSimulators] = useState<string[]>([])
     const [selectedDestinationPort, setSelectedDestinationPort] = useState<string>('')
     const [messages, setMessages] = useState<Array<{
         messageType: string;
@@ -1018,10 +1019,9 @@ export const IRPSenderPage: React.FC = () => {
             const remaining = useLoopStore.getState().getRemainingTime('irp')
 
             if (remaining > 0) {
-                setSelectedSimulator(loopState.simulator)
-                setSelectedDestinationPort(loopState.destinationPort)
                 setLoopDelay(loopState.loopDelay)
                 setLoopTimeout(loopState.loopTimeout)
+                setSelectedSimulators(loopState.simulator)
 
                 setSnackbar({
                     open: true,
@@ -1630,8 +1630,13 @@ export const IRPSenderPage: React.FC = () => {
 
     // Send Messages
     const handleSendMessages = async () => {
-        if (!selectedSimulator || !selectedDestinationPort || messages.length === 0) {
-            setSnackbar({open: true, message: 'Please select simulator, port, and add messages', severity: 'error'})
+        if (selectedSimulators.length === 0) {
+            setSnackbar({open: true, message: 'Please select at least one simulator', severity: 'error'})
+            return
+        }
+
+        if (!selectedDestinationPort || messages.length === 0) {
+            setSnackbar({open: true, message: 'Please select port, and add messages', severity: 'error'})
             return
         }
 
@@ -1653,7 +1658,7 @@ export const IRPSenderPage: React.FC = () => {
             const payload = {
                 mongo_id: schemaId!,
                 // IRP doesn't use map folder (sends raw UDP), but include for API consistency
-                map: selectedSimulatorMap || '',
+                map: '',
                 message_data: {
                     messages: formattedMessages,
                 },
@@ -1661,7 +1666,7 @@ export const IRPSenderPage: React.FC = () => {
 
             await irpSchemaService.sendMessagesWithProgress(
                 selectedDestinationPort,
-                selectedSimulator,
+                selectedSimulators,
                 payload,
                 (current, total, messageName, status) => {
                     setCurrentMessage(current);
@@ -1698,7 +1703,7 @@ export const IRPSenderPage: React.FC = () => {
 
     // Send messages once (used by loop)
     const sendMessagesOnce = async () => {
-        if (!selectedSimulator || !selectedDestinationPort || messages.length === 0) {
+        if (selectedSimulators.length === 0 || !selectedDestinationPort || messages.length === 0) {
             return false
         }
 
@@ -1714,13 +1719,13 @@ export const IRPSenderPage: React.FC = () => {
             const payload = {
                 mongo_id: schemaId!,
                 // IRP doesn't use map folder (sends raw UDP), but include for API consistency
-                map: selectedSimulatorMap || '',
+                map: '',
                 message_data: {
                     messages: formattedMessages,
                 },
             }
 
-            await irpSchemaService.sendMessages(selectedDestinationPort, selectedSimulator, payload)
+            await irpSchemaService.sendMessages(selectedDestinationPort, selectedSimulators, payload)
             return true
         } catch (error: any) {
             const errorMsg = error?.response?.data?.detail || error?.message || 'Failed to send messages'
@@ -1732,7 +1737,7 @@ export const IRPSenderPage: React.FC = () => {
     // Update ref whenever dependencies change
     useEffect(() => {
         sendMessagesOnceRef.current = sendMessagesOnce
-    }, [selectedDestinationPort, selectedSimulator, messages, schemaId])  // eslint-disable-line react-hooks/exhaustive-deps
+    }, [selectedDestinationPort, selectedSimulators, messages, schemaId])  // eslint-disable-line react-hooks/exhaustive-deps
 
     // Auto-save form state to localStorage on every change
     useEffect(() => {
@@ -1742,7 +1747,7 @@ export const IRPSenderPage: React.FC = () => {
     }, [messages, expandedMessages])
 
     const handleStartLoop = () => {
-        if (!selectedSimulator) {
+        if (!selectedSimulators.length) {
             setSnackbar({open: true, message: 'Please select a simulator', severity: 'error'})
             return
         }
@@ -1777,7 +1782,7 @@ export const IRPSenderPage: React.FC = () => {
             loopTimeout: loopTimeout,
             startTime: startTime,
             batchesSent: 0,
-            simulator: selectedSimulator,
+            simulator: selectedSimulators,
             destinationPort: selectedDestinationPort,
         })
 
@@ -1844,26 +1849,69 @@ export const IRPSenderPage: React.FC = () => {
                     )}
 
                     <FormControl fullWidth>
-                        <InputLabel>Target Simulator</InputLabel>
-                        <Select value={selectedSimulator}
-                                onChange={(e) => {
-                                    const selectedIp = e.target.value as string;
-                                    setSelectedSimulator(selectedIp);
-
-                                    // Get map from Sapro simulator, not from CC device
-                                    const saproSim = saproSimulators.find(sim => sim.ip_address === selectedIp);
-                                    if (saproSim && saproSim.map) {
-                                        setSelectedSimulatorMap(saproSim.map);
+                        <InputLabel id="target-simulator-label">Target Simulator</InputLabel>
+                        <Select
+                            labelId="target-simulator-label"
+                            multiple
+                            value={selectedSimulators}
+                            onChange={(e) => {
+                                const value = e.target.value;
+                                setSelectedSimulators(typeof value === 'string' ? value.split(',') : value);
+                            }}
+                            label="Target Simulator"
+                            renderValue={(selected) => (
+                                <Box sx={{
+                                    display: 'flex',
+                                    flexWrap: 'wrap',
+                                    gap: 0.5,
+                                    maxWidth: 'calc(100% - 40px)', // Leave space for dropdown arrow (Select has no clear button)
+                                    overflow: 'hidden'
+                                }}>
+                                    <Chip
+                                        label={`${(selected as string[]).length} simulator(s) selected`}
+                                        size="small"
+                                        sx={{
+                                            backgroundColor: 'primary.main',
+                                            color: 'white',
+                                            maxWidth: '100%',
+                                            '& .MuiChip-label': {
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap'
+                                            }
+                                        }}
+                                    />
+                                </Box>
+                            )}
+                        >
+                            {/* Select All / Deselect All Option */}
+                            <MenuItem
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (selectedSimulators.length === compatibleSimulators.length) {
+                                        setSelectedSimulators([]);
                                     } else {
-                                        setSelectedSimulatorMap('');
-                                        console.warn(`No map found for simulator ${selectedIp}`);
+                                        setSelectedSimulators(compatibleSimulators.map(d => d.management_ip));
                                     }
                                 }}
-                                label="Target Simulator">
+                                sx={{ fontWeight: 'bold', borderBottom: '1px solid #e0e0e0' }}
+                            >
+                                <ListItemText
+                                    primary={selectedSimulators.length === compatibleSimulators.length ? 'Deselect All' : 'Select All'}
+                                />
+                            </MenuItem>
+
+                            {/* Device Options */}
                             {compatibleSimulators.map((device) => (
                                 <MenuItem key={device.management_ip} value={device.management_ip}>
-                                    {device.name || device.management_ip} ({device.management_ip})
-                                    {device.map && ` - Map: ${device.map}`}
+                                    <Checkbox
+                                        checked={selectedSimulators.includes(device.management_ip)}
+                                        sx={{ marginRight: 1 }}
+                                    />
+                                    <ListItemText
+                                        primary={`${device.name || device.management_ip} (${device.management_ip})`}
+                                        secondary={device.map ? `Map: ${device.map}` : undefined}
+                                    />
                                 </MenuItem>
                             ))}
                         </Select>
@@ -1981,7 +2029,7 @@ export const IRPSenderPage: React.FC = () => {
                         variant="contained"
                         color="primary"
                         startIcon={<SendIcon/>}
-                        disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isSending || isLooping || hasValidationErrors}
+                        disabled={!selectedSimulators.length || !selectedDestinationPort || messages.length === 0 || isSending || isLooping || hasValidationErrors}
                         onClick={handleSendMessages}
                     >
                         {isSending ? 'Sending...' : `Send Messages (${messages.length})`}
@@ -1993,7 +2041,7 @@ export const IRPSenderPage: React.FC = () => {
                             color="secondary"
                             startIcon={<LoopIcon/>}
                             onClick={handleOpenLoopDialog}
-                            disabled={!selectedSimulator || !selectedDestinationPort || messages.length === 0 || isSending || hasValidationErrors}
+                            disabled={!selectedSimulators.length || !selectedDestinationPort || messages.length === 0 || isSending || hasValidationErrors}
                         >
                             Send Loop
                         </Button>

@@ -22,6 +22,11 @@ import {
     ListItemText,
     ListItemButton,
     CircularProgress,
+    Autocomplete,
+    Checkbox,
+    Chip,
+    Tooltip,
+    FormControlLabel,
 } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import AddIcon from '@mui/icons-material/Add';
@@ -43,6 +48,7 @@ import useLoopStore from '../store/useLoopStore';
 import useFormStore from '../store/useFormStore';
 import useAuthStore from '../store/authStore';
 import {SNMPTrapForm} from '../components/snmp/SNMPTrapForm';
+import AttackIdConfigDialog from '../components/snmp/AttackIdConfigDialog';
 import {SNMPTrap, SNMPFormErrors} from '../types/snmp.types';
 import {SNMP_FIELD_DEFAULTS} from '../constants/snmp.constants';
 import {
@@ -68,8 +74,7 @@ export const SNMPPage: React.FC = () => {
     const managementPorts = useCCStore((state) => state.managementPorts);
     const user = useAuthStore((state) => state.user);
 
-    const [selectedSimulator, setSelectedSimulator] = useState<string>('');
-    const [selectedSimulatorMap, setSelectedSimulatorMap] = useState<string>('');
+    const [selectedSimulators, setSelectedSimulators] = useState<string[]>([]);
     const [selectedDestinationPort, setSelectedDestinationPort] = useState<string>('');
     const [traps, setTraps] = useState<SNMPTrap[]>([{
         attackName: '',
@@ -93,9 +98,15 @@ export const SNMPPage: React.FC = () => {
     const [loopDialogOpen, setLoopDialogOpen] = useState(false);
     const [loopDelay, setLoopDelay] = useState<number>(15); // seconds - default 15s
     const [loopTimeout, setLoopTimeout] = useState<number>(600); // seconds - default 10 minutes, mandatory
+    const [regenerateAttackId, setRegenerateAttackId] = useState<boolean>(false); // New: regenerate attack-ID each iteration
     const isLooping = useLoopStore((state) => state.snmp.isLooping);
     const loopIntervalRef = useRef<NodeJS.Timeout | null>(null);
     const loopTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+    // Attack-ID configuration dialog state
+    const [attackIdDialogOpen, setAttackIdDialogOpen] = useState(false);
+    const [pendingAction, setPendingAction] = useState<'send' | 'loop' | null>(null);
+    const [configuredAttackIds, setConfiguredAttackIds] = useState<Record<string, string[]> | null>(null);
 
     // Ref to hold current send function to prevent stale closures
     const sendTrapsOnceRef = useRef<() => Promise<boolean>>(async () => false);
@@ -157,7 +168,7 @@ export const SNMPPage: React.FC = () => {
 
             if (remaining > 0) {
                 // Restore state to local
-                setSelectedSimulator(loopState.simulator);
+                setSelectedSimulators(loopState.simulator);
                 setSelectedDestinationPort(loopState.destinationPort);
                 setLoopDelay(loopState.loopDelay);
                 setLoopTimeout(loopState.loopTimeout);
@@ -229,6 +240,13 @@ export const SNMPPage: React.FC = () => {
         } else {
             setExpandedTraps(traps.map((_, i) => i));
         }
+    };
+
+    // Generate a random attack-ID
+    const generateRandomAttackId = (): string => {
+        const prefix = Math.floor(Math.random() * 9000) + 100; // 100-9999
+        const suffix = Math.floor(Math.random() * 9000000000) + 1000000000; // 10 digits
+        return `${prefix}-${suffix}`;
     };
 
     const deleteTrap = (index: number) => {
@@ -408,8 +426,8 @@ export const SNMPPage: React.FC = () => {
     };
 
     const handleSend = async () => {
-        if (!selectedSimulator) {
-            setSnackbar({open: true, message: 'Please select a simulator', severity: 'error'});
+        if (selectedSimulators.length === 0) {
+            setSnackbar({open: true, message: 'Please select at least one simulator', severity: 'error'});
             return;
         }
 
@@ -418,13 +436,20 @@ export const SNMPPage: React.FC = () => {
             return;
         }
 
-        if (!selectedSimulatorMap) {
-            setSnackbar({open: true, message: 'Selected simulator does not have a map configured', severity: 'error'});
+        if (selectedSimulators.some(sim => !sim)) {
+            setSnackbar({open: true, message: 'One or more selected simulators do not have a map configured', severity: 'error'});
             return;
         }
 
         if (!validateAll()) {
             setSnackbar({open: true, message: 'Please fix validation errors', severity: 'error'});
+            return;
+        }
+
+        // If multiple simulators selected, show attack-ID configuration dialog
+        if (selectedSimulators.length > 1) {
+            setPendingAction('send');
+            setAttackIdDialogOpen(true);
             return;
         }
 
@@ -437,8 +462,7 @@ export const SNMPPage: React.FC = () => {
             setSnackbar({open: true, message: 'Sending traps...', severity: 'info'});
             await snmpTemplateService.sendTrapsWithProgress(
                 selectedDestinationPort,
-                selectedSimulator,
-                selectedSimulatorMap,
+                selectedSimulators,
                 traps,
                 (current, total, trapName, status) => {
                     setCurrentTrap(current);
@@ -495,13 +519,18 @@ export const SNMPPage: React.FC = () => {
     };
 
     const sendTrapsOnce = async () => {
-        if (!selectedSimulatorMap) {
-            setSnackbar({open: true, message: 'Simulator map not configured', severity: 'error'});
+        if (selectedSimulators.length === 0) {
+            setSnackbar({open: true, message: 'No simulators selected', severity: 'error'});
+            return false;
+        }
+
+        if (selectedSimulators.some(sim => !sim)) {
+            setSnackbar({open: true, message: 'One or more selected simulators do not have a map configured', severity: 'error'});
             return false;
         }
 
         try {
-            await snmpTemplateService.sendTraps(selectedDestinationPort, selectedSimulator, selectedSimulatorMap, traps);
+            await snmpTemplateService.sendTraps(selectedDestinationPort, selectedSimulators, traps);
             return true;
         } catch (error: any) {
             const errorMsg = error.response?.data?.detail || error.message || 'Failed to send traps';
@@ -513,7 +542,7 @@ export const SNMPPage: React.FC = () => {
     // Update ref whenever dependencies change to prevent stale closures
     useEffect(() => {
         sendTrapsOnceRef.current = sendTrapsOnce;
-    }, [selectedDestinationPort, selectedSimulator, selectedSimulatorMap, traps]); // eslint-disable-line react-hooks/exhaustive-deps
+    }, [selectedDestinationPort, selectedSimulators, traps]); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Auto-save form state to localStorage on every change
     useEffect(() => {
@@ -523,26 +552,7 @@ export const SNMPPage: React.FC = () => {
     }, [traps, expandedTraps]);
 
     const handleStartLoop = () => {
-        if (!selectedSimulator) {
-            setSnackbar({open: true, message: 'Please select a simulator', severity: 'error'});
-            return;
-        }
-
-        if (!selectedDestinationPort) {
-            setSnackbar({open: true, message: 'Please select a destination port', severity: 'error'});
-            return;
-        }
-
-        if (!selectedSimulatorMap) {
-            setSnackbar({open: true, message: 'Selected simulator does not have a map configured', severity: 'error'});
-            return;
-        }
-
-        if (!validateAll()) {
-            setSnackbar({open: true, message: 'Please fix validation errors', severity: 'error'});
-            return;
-        }
-
+        // Validation for loop parameters only (other validations done in handleOpenLoopDialog)
         if (loopDelay < 1) {
             setSnackbar({open: true, message: 'Loop delay must be at least 1 second', severity: 'error'});
             return;
@@ -564,40 +574,212 @@ export const SNMPPage: React.FC = () => {
             loopTimeout: loopTimeout,
             startTime: startTime,
             batchesSent: 0,
-            simulator: selectedSimulator,
+            simulator: selectedSimulators,
             destinationPort: selectedDestinationPort,
         });
 
-        // Send first trap immediately
-        sendTrapsOnce().then(success => {
-            if (success) {
-                useLoopStore.getState().incrementSnmpBatches();
-                const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
-                setSnackbar({open: true, message: `Loop started - Sent batch #${currentBatches}`, severity: 'info'});
-            }
-        });
+        // Check if we have configured attack-IDs (multi-simulator case)
+        if (configuredAttackIds && selectedSimulators.length > 1) {
+            // Create a wrapper function that sends with modified attack-IDs
+            const sendWithModifiedIds = async () => {
+                try {
+                    for (const simulatorIp of selectedSimulators) {
+                        const modifiedTraps = traps.map((trap, index) => {
+                            // If regenerateAttackId is enabled, generate new random attack-ID each iteration
+                            const attackId = regenerateAttackId
+                                ? generateRandomAttackId()
+                                : configuredAttackIds[simulatorIp][index];
 
-        // Set up interval for subsequent sends (convert seconds to milliseconds)
-        loopIntervalRef.current = setInterval(async () => {
-            const success = await sendTrapsOnceRef.current();
-            if (success) {
-                useLoopStore.getState().incrementSnmpBatches();
-                const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
-                setSnackbar({open: true, message: `Loop running - Sent batch #${currentBatches}`, severity: 'info'});
-            }
-        }, loopDelay * 1000);
+                            return {
+                                ...trap,
+                                attackId: attackId
+                            };
+                        });
 
-        // Set up timeout - always runs since timeout is mandatory
-        loopTimeoutRef.current = setTimeout(() => {
-            handleStopLoop();
-            const elapsedSeconds = useLoopStore.getState().getElapsedTime('snmp');
-            const finalBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
-            setSnackbar({
-                open: true,
-                message: `Loop stopped after ${elapsedSeconds}s - Sent ${finalBatches} batch(es)`,
-                severity: 'success'
+                        await snmpTemplateService.sendTraps(
+                            selectedDestinationPort,
+                            [simulatorIp],
+                            modifiedTraps
+                        );
+                    }
+                    return true;
+                } catch (error: any) {
+                    const errorMsg = error.response?.data?.detail || error.message || 'Failed to send traps';
+                    setSnackbar({open: true, message: errorMsg, severity: 'error'});
+                    return false;
+                }
+            };
+
+            // Send first batch immediately
+            sendWithModifiedIds().then(success => {
+                if (success) {
+                    useLoopStore.getState().incrementSnmpBatches();
+                    const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
+                    setSnackbar({open: true, message: `Loop started - Sent batch #${currentBatches}`, severity: 'info'});
+                }
             });
-        }, loopTimeout * 1000);
+
+            // Set up interval for subsequent sends
+            loopIntervalRef.current = setInterval(async () => {
+                const success = await sendWithModifiedIds();
+                if (success) {
+                    useLoopStore.getState().incrementSnmpBatches();
+                    const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
+                    setSnackbar({open: true, message: `Loop running - Sent batch #${currentBatches}`, severity: 'info'});
+                }
+            }, loopDelay * 1000);
+
+            // Set up timeout
+            loopTimeoutRef.current = setTimeout(() => {
+                handleStopLoop();
+                const elapsedSeconds = useLoopStore.getState().getElapsedTime('snmp');
+                const finalBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
+                setSnackbar({
+                    open: true,
+                    message: `Loop stopped after ${elapsedSeconds}s - Sent ${finalBatches} batch(es)`,
+                    severity: 'success'
+                });
+            }, loopTimeout * 1000);
+
+            // Clear configured attack-IDs and pending action
+            setConfiguredAttackIds(null);
+            setPendingAction(null);
+        } else {
+            // Single simulator: use normal flow
+
+            // Create send function that handles regenerate attack-ID if enabled
+            const sendWithPossibleRegeneration = async () => {
+                if (regenerateAttackId) {
+                    // Generate new attack-IDs for each trap
+                    const trapsWithNewIds = traps.map(trap => ({
+                        ...trap,
+                        attackId: generateRandomAttackId()
+                    }));
+
+                    try {
+                        await snmpTemplateService.sendTraps(
+                            selectedDestinationPort,
+                            selectedSimulators,
+                            trapsWithNewIds
+                        );
+                        return true;
+                    } catch (error: any) {
+                        const errorMsg = error.response?.data?.detail || error.message || 'Failed to send traps';
+                        setSnackbar({open: true, message: errorMsg, severity: 'error'});
+                        return false;
+                    }
+                } else {
+                    // Use normal sendTrapsOnce
+                    return await sendTrapsOnceRef.current();
+                }
+            };
+
+            // Send first trap immediately
+            sendWithPossibleRegeneration().then(success => {
+                if (success) {
+                    useLoopStore.getState().incrementSnmpBatches();
+                    const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
+                    setSnackbar({open: true, message: `Loop started - Sent batch #${currentBatches}`, severity: 'info'});
+                }
+            });
+
+            // Set up interval for subsequent sends (convert seconds to milliseconds)
+            loopIntervalRef.current = setInterval(async () => {
+                const success = await sendWithPossibleRegeneration();
+                if (success) {
+                    useLoopStore.getState().incrementSnmpBatches();
+                    const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
+                    setSnackbar({open: true, message: `Loop running - Sent batch #${currentBatches}`, severity: 'info'});
+                }
+            }, loopDelay * 1000);
+
+            // Set up timeout - always runs since timeout is mandatory
+            loopTimeoutRef.current = setTimeout(() => {
+                handleStopLoop();
+                const elapsedSeconds = useLoopStore.getState().getElapsedTime('snmp');
+                const finalBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
+                setSnackbar({
+                    open: true,
+                    message: `Loop stopped after ${elapsedSeconds}s - Sent ${finalBatches} batch(es)`,
+                    severity: 'success'
+                });
+            }, loopTimeout * 1000);
+        }
+    };
+
+    const handleAttackIdConfirm = async (attackIdConfig: Record<string, string[]>) => {
+        setAttackIdDialogOpen(false);
+
+        if (pendingAction === 'send') {
+            // Create modified traps with attack-IDs for each simulator
+            // For now, we'll send to each simulator sequentially with modified attack-IDs
+            setIsSending(true);
+            setCurrentTrap(0);
+            setTotalTraps(traps.length * selectedSimulators.length);
+
+            try {
+                let successCount = 0;
+                let failedCount = 0;
+
+                for (const simulatorIp of selectedSimulators) {
+                    const modifiedTraps = traps.map((trap, index) => ({
+                        ...trap,
+                        attackId: attackIdConfig[simulatorIp][index]
+                    }));
+
+                    try {
+                        await snmpTemplateService.sendTrapsWithProgress(
+                            selectedDestinationPort,
+                            [simulatorIp],
+                            modifiedTraps,
+                            (current, total, trapName, status) => {
+                                setCurrentTrap(successCount + failedCount + current);
+                            },
+                            (simSuccessCount, simFailedCount, totalCount) => {
+                                successCount += simSuccessCount;
+                                failedCount += simFailedCount;
+                            },
+                            (error) => {
+                                // Error for this simulator
+                                failedCount += modifiedTraps.length;
+                            }
+                        );
+                    } catch (error) {
+                        failedCount += modifiedTraps.length;
+                    }
+                }
+
+                if (failedCount === 0) {
+                    setSnackbar({
+                        open: true,
+                        message: `Successfully sent all ${successCount} trap(s) to ${selectedSimulators.length} simulator(s)`,
+                        severity: 'success'
+                    });
+                } else {
+                    setSnackbar({
+                        open: true,
+                        message: `Partially successful: ${successCount} succeeded, ${failedCount} failed`,
+                        severity: 'error'
+                    });
+                }
+            } catch (error: any) {
+                setSnackbar({
+                    open: true,
+                    message: error.message || 'Failed to send traps',
+                    severity: 'error'
+                });
+            } finally {
+                setIsSending(false);
+                setCurrentTrap(0);
+                setTotalTraps(0);
+            }
+            setPendingAction(null);
+        } else if (pendingAction === 'loop') {
+            // Save the configured attack-IDs and open loop dialog
+            setConfiguredAttackIds(attackIdConfig);
+            setLoopDialogOpen(true);
+            // Don't reset pendingAction yet - we need it in handleStartLoop
+        }
     };
 
     const handleStopLoop = () => {
@@ -617,6 +799,35 @@ export const SNMPPage: React.FC = () => {
     };
 
     const handleOpenLoopDialog = () => {
+        // Check validations first
+        if (selectedSimulators.length === 0) {
+            setSnackbar({open: true, message: 'Please select at least one simulator', severity: 'error'});
+            return;
+        }
+
+        if (!selectedDestinationPort) {
+            setSnackbar({open: true, message: 'Please select a destination port', severity: 'error'});
+            return;
+        }
+
+        if (selectedSimulators.some(sim => !sim)) {
+            setSnackbar({open: true, message: 'One or more selected simulators do not have a map configured', severity: 'error'});
+            return;
+        }
+
+        if (!validateAll()) {
+            setSnackbar({open: true, message: 'Please fix validation errors', severity: 'error'});
+            return;
+        }
+
+        // If multiple simulators, show attack-ID dialog first
+        if (selectedSimulators.length > 1) {
+            setPendingAction('loop');
+            setAttackIdDialogOpen(true);
+            return;
+        }
+
+        // Single simulator: open loop dialog directly
         setLoopDialogOpen(true);
     };
 
@@ -631,28 +842,91 @@ export const SNMPPage: React.FC = () => {
                     </Typography>
 
                     <FormControl fullWidth>
-                        <InputLabel>Target Simulator</InputLabel>
+                        <InputLabel id="target-simulator-label">Target Simulator</InputLabel>
                         <Select
-                            value={selectedSimulator}
+                            labelId="target-simulator-label"
+                            multiple
+                            value={selectedSimulators}
                             onChange={(e) => {
-                                const selectedIp = e.target.value as string;
-                                setSelectedSimulator(selectedIp);
+                                const value = e.target.value;
+                                const newValue = typeof value === 'string' ? value.split(',') : value;
 
-                                // Get map from Sapro simulator, not from CC device
-                                const saproSim = saproSimulators.find(sim => sim.ip_address === selectedIp);
-                                if (saproSim && saproSim.map) {
-                                    setSelectedSimulatorMap(saproSim.map);
-                                } else {
-                                    setSelectedSimulatorMap('');
-                                    console.warn(`No map found for simulator ${selectedIp}`);
+                                // Check if the special "__SELECT_ALL__" marker is present (from Select All button)
+                                if (newValue.includes('__SELECT_ALL__')) {
+                                    // Select All was clicked - ignore this onChange and let onClick handle it
+                                    return;
                                 }
+
+                                // Normal selection change
+                                setSelectedSimulators(newValue);
                             }}
                             label="Target Simulator"
+                            renderValue={(selected) => (
+                                <Box sx={{
+                                    display: 'flex',
+                                    flexWrap: 'wrap',
+                                    gap: 0.5,
+                                    maxWidth: 'calc(100% - 40px)', // Leave space for dropdown arrow (Select has no clear button)
+                                    overflow: 'hidden'
+                                }}>
+                                    <Chip
+                                        label={`${(selected as string[]).length} simulator(s) selected`}
+                                        size="small"
+                                        sx={{
+                                            backgroundColor: 'primary.main',
+                                            color: 'white',
+                                            maxWidth: '100%',
+                                            '& .MuiChip-label': {
+                                                overflow: 'hidden',
+                                                textOverflow: 'ellipsis',
+                                                whiteSpace: 'nowrap'
+                                            }
+                                        }}
+                                    />
+                                </Box>
+                            )}
                         >
+                            {/* Select All / Deselect All Option */}
+                            <MenuItem
+                                value="__SELECT_ALL__"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    if (selectedSimulators.length === devicesList.length) {
+                                        setSelectedSimulators([]);
+                                    } else {
+                                        setSelectedSimulators(devicesList.map(d => d.management_ip));
+                                    }
+                                }}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                        e.stopPropagation();
+                                        e.preventDefault();
+                                        if (selectedSimulators.length === devicesList.length) {
+                                            setSelectedSimulators([]);
+                                        } else {
+                                            setSelectedSimulators(devicesList.map(d => d.management_ip));
+                                        }
+                                    }
+                                }}
+                                sx={{ fontWeight: 'bold', borderBottom: '1px solid #e0e0e0' }}
+                            >
+                                <ListItemText
+                                    primary={selectedSimulators.length === devicesList.length ? 'Deselect All' : 'Select All'}
+                                />
+                            </MenuItem>
+
+                            {/* Device Options */}
                             {devicesList.map((device) => (
                                 <MenuItem key={device.management_ip} value={device.management_ip}>
-                                    {device.name || device.management_ip} ({device.management_ip})
-                                    {device.map && ` - Map: ${device.map}`}
+                                    <Checkbox
+                                        checked={selectedSimulators.includes(device.management_ip)}
+                                        sx={{ marginRight: 1 }}
+                                    />
+                                    <ListItemText
+                                        primary={`${device.name || device.management_ip} (${device.management_ip})`}
+                                        secondary={device.map ? `Map: ${device.map}` : undefined}
+                                    />
                                 </MenuItem>
                             ))}
                         </Select>
@@ -770,7 +1044,7 @@ export const SNMPPage: React.FC = () => {
                         color="primary"
                         startIcon={<SendIcon/>}
                         onClick={handleSend}
-                        disabled={!selectedSimulator || !selectedDestinationPort || isLooping || isSending}
+                        disabled={isLooping || isSending}
                     >
                         {isSending ? 'Sending...' : `Send Traps (${traps.length})`}
                     </Button>
@@ -781,7 +1055,7 @@ export const SNMPPage: React.FC = () => {
                             color="secondary"
                             startIcon={<LoopIcon/>}
                             onClick={handleOpenLoopDialog}
-                            disabled={!selectedSimulator || !selectedDestinationPort || isSending}
+                            disabled={isSending}
                         >
                             Send Loop
                         </Button>
@@ -824,6 +1098,25 @@ export const SNMPPage: React.FC = () => {
                         helperText="Loop will automatically stop after this duration (required, minimum 1 second)"
                         inputProps={{min: 1, step: 1}}
                     />
+
+                    <Tooltip
+                        title="When enabled, a new random Attack-ID will be generated for each trap on every iteration of the loop. This ensures unique Attack-IDs are sent to CyberController with each batch, which can be useful for testing or avoiding duplicate attack detection."
+                        arrow
+                        placement="top"
+                    >
+                        <FormControlLabel
+                            control={
+                                <Checkbox
+                                    checked={regenerateAttackId}
+                                    onChange={(e) => setRegenerateAttackId(e.target.checked)}
+                                    color="primary"
+                                />
+                            }
+                            label="Regenerate Attack-ID Each Iteration"
+                            sx={{ marginTop: 2 }}
+                        />
+                    </Tooltip>
+
                     <Alert severity="info" sx={{ marginTop: 2 }}>
                         Note: Logging out will automatically stop the loop.
                     </Alert>
@@ -906,6 +1199,18 @@ export const SNMPPage: React.FC = () => {
                     </Box>
                 </DialogContent>
             </Dialog>
+
+            {/* Attack-ID Configuration Dialog */}
+            <AttackIdConfigDialog
+                open={attackIdDialogOpen}
+                onClose={() => {
+                    setAttackIdDialogOpen(false);
+                    setPendingAction(null);
+                }}
+                simulators={selectedSimulators}
+                traps={traps}
+                onConfirm={handleAttackIdConfirm}
+            />
 
             <Snackbar
                 open={snackbar.open}

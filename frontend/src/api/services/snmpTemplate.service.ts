@@ -1,5 +1,6 @@
 import apiClient from '../client';
 import { SNMPTrap } from '../../types/snmp.types';
+import useCCStore from '../../store/ccStore';
 
 export interface SNMPTemplateListItem {
   name: string;
@@ -42,10 +43,26 @@ class SNMPTemplateService {
     await apiClient.delete(url);
   }
 
-  async sendTraps(destinationPortIp: string, simulatorIp: string, simulatorMap: string, traps: SNMPTrap[]): Promise<void> {
-    const url = `/cc/${destinationPortIp}/simulators/${simulatorIp}/reporter/snmp`;
+  async sendTraps(destinationPortIp: string, simulatorIps: string[], traps: SNMPTrap[]): Promise<void> {
+    // Send traps to multiple simulators using comma-separated IPs and map dict
+    const saproSimulators = useCCStore.getState().saproSimulators;
+
+    // Build map dict for all simulators
+    const mapDict: Record<string, string> = {};
+    for (const simulatorIp of simulatorIps) {
+      const saproSim = saproSimulators.find(sim => sim.ip_address === simulatorIp);
+      if (!saproSim || !saproSim.map) {
+        throw new Error(`No map found for simulator ${simulatorIp}`);
+      }
+      mapDict[simulatorIp] = saproSim.map;
+    }
+
+    // Use comma-separated IPs in URL
+    const simulatorIpsParam = simulatorIps.join(',');
+    const url = `/cc/${destinationPortIp}/simulators/${simulatorIpsParam}/reporter/snmp`;
+
     await apiClient.post(url, {
-      map: simulatorMap,
+      map: mapDict, // Send as dict for multi-simulator
       traps
     }, {
       timeout: 600000, // 10 minutes - allows for pause delays and multiple traps
@@ -54,8 +71,7 @@ class SNMPTemplateService {
 
   async sendTrapsWithProgress(
     destinationPortIp: string,
-    simulatorIp: string,
-    simulatorMap: string,
+    simulatorIps: string[],
     traps: SNMPTrap[],
     onProgress: (current: number, total: number, trapName: string, status: string) => void,
     onComplete: (successCount: number, failedCount: number, totalCount: number) => void,
@@ -63,11 +79,28 @@ class SNMPTemplateService {
   ): Promise<void> {
     return new Promise<void>(async (resolve, reject) => {
       try {
+        const saproSimulators = useCCStore.getState().saproSimulators;
+
+        // Build map dict for all simulators
+        const mapDict: Record<string, string> = {};
+        for (const simulatorIp of simulatorIps) {
+          const saproSim = saproSimulators.find(sim => sim.ip_address === simulatorIp);
+          if (!saproSim || !saproSim.map) {
+            onError(`No map found for simulator ${simulatorIp}`);
+            reject(new Error(`No map found for simulator ${simulatorIp}`));
+            return;
+          }
+          mapDict[simulatorIp] = saproSim.map;
+        }
+
+        // Use comma-separated IPs for multi-simulator support
+        const simulatorIpsParam = simulatorIps.join(',');
+
         // 1. Get baseURL from apiClient
         const baseURL = apiClient.defaults.baseURL || 'http://localhost:8000/api';
 
-        // 2. Build full URL
-        const url = `${baseURL}/cc/${destinationPortIp}/simulators/${simulatorIp}/reporter/snmp/stream`;
+        // 2. Build full URL with comma-separated IPs
+        const url = `${baseURL}/cc/${destinationPortIp}/simulators/${simulatorIpsParam}/reporter/snmp/stream`;
 
         // 3. Get token
         const token = localStorage.getItem('access_token') || localStorage.getItem('token');
@@ -85,7 +118,7 @@ class SNMPTemplateService {
             'Authorization': `Bearer ${token}`
           },
           body: JSON.stringify({
-            map: simulatorMap,
+            map: mapDict, // Send as dict for multi-simulator
             traps
           })
         });
@@ -102,7 +135,16 @@ class SNMPTemplateService {
         const decoder = new TextDecoder();
         let buffer = '';
 
-        // 6-11. Read stream
+        // Track progress per simulator
+        const simulatorProgress = new Map<string, {success: number, failed: number}>();
+        simulatorIps.forEach(ip => {
+          simulatorProgress.set(ip, {success: 0, failed: 0});
+        });
+
+        // 6-11. Read stream for all simulators
+        let totalSuccessCount = 0;
+        let totalFailedCount = 0;
+
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -116,13 +158,40 @@ class SNMPTemplateService {
               const dataStr = message.slice(6);
               try {
                 const data = JSON.parse(dataStr);
+
                 if (data.type === 'progress') {
                   onProgress(data.current, data.total, data.trap_name, data.status);
                 } else if (data.type === 'complete') {
-                  onComplete(data.success_count, data.failed_count, data.total_count);
-                  reader.releaseLock();
-                  resolve();
-                  return;
+                  // Aggregate completion events from all simulators
+                  const simIp = data.simulator_ip;
+                  if (simIp && simulatorProgress.has(simIp)) {
+                    const progress = simulatorProgress.get(simIp)!;
+                    progress.success = data.success_count || 0;
+                    progress.failed = data.failed_count || 0;
+                  }
+
+                  // Check if all simulators completed
+                  let allCompleted = true;
+                  let newSuccessCount = 0;
+                  let newFailedCount = 0;
+
+                  simulatorProgress.forEach((progress, ip) => {
+                    if (progress.success === 0 && progress.failed === 0) {
+                      allCompleted = false;
+                    }
+                    newSuccessCount += progress.success;
+                    newFailedCount += progress.failed;
+                  });
+
+                  totalSuccessCount = newSuccessCount;
+                  totalFailedCount = newFailedCount;
+
+                  if (allCompleted) {
+                    onComplete(totalSuccessCount, totalFailedCount, totalSuccessCount + totalFailedCount);
+                    reader.releaseLock();
+                    resolve();
+                    return;
+                  }
                 } else if (data.type === 'error') {
                   onError(data.message);
                   reader.releaseLock();
@@ -139,8 +208,10 @@ class SNMPTemplateService {
           }
         }
 
-        // If stream ends without complete, resolve anyway
+        // All simulators processed
+        onComplete(totalSuccessCount, totalFailedCount, totalSuccessCount + totalFailedCount);
         resolve();
+
       } catch (err) {
         onError('Connection error');
         reject(err);

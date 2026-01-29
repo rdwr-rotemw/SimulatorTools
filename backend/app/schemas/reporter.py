@@ -43,8 +43,13 @@ class TrapConfig(BaseModel):
 
 
 class ReporterSNMPPayload(BaseModel):
-    """SNMP trap configuration payload matching attack_traps structure."""
-    map: str
+    """SNMP trap configuration payload matching attack_traps structure.
+
+    map can be:
+    - str: single map name used for all simulators (backward compatible)
+    - Dict[str, str]: map of simulator_ip -> map_name for multi-simulator support
+    """
+    map: Union[str, Dict[str, str]]
     traps: List[TrapConfig]
 
 
