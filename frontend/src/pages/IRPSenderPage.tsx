@@ -43,6 +43,7 @@ import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward'
 import DragIndicatorIcon from '@mui/icons-material/DragIndicator'
 import {IRPPcapAnalysisResponse} from '../api/services/irpSchema.service'
 import Checkbox from '@mui/material/Checkbox'
+import IRPAttackIdConfigDialog from '../components/irp/IRPAttackIdConfigDialog'
 import {
     DndContext,
     closestCenter,
@@ -964,6 +965,11 @@ export const IRPSenderPage: React.FC = () => {
 
     const sendMessagesOnceRef = React.useRef<() => Promise<boolean>>(async () => false)
 
+    // Attack-ID configuration dialog state
+    const [attackIdDialogOpen, setAttackIdDialogOpen] = useState(false)
+    const [pendingAction, setPendingAction] = useState<'send' | 'loop' | null>(null)
+    const [configuredMessages, setConfiguredMessages] = useState<Record<string, any[]> | null>(null)
+
     // PCAP Import state
     const [pcapDialogOpen, setPcapDialogOpen] = useState(false)
 
@@ -1640,6 +1646,13 @@ export const IRPSenderPage: React.FC = () => {
             return
         }
 
+        // If multiple simulators selected, show attack-ID configuration dialog
+        if (selectedSimulators.length > 1) {
+            setPendingAction('send');
+            setAttackIdDialogOpen(true);
+            return;
+        }
+
         // Before sending
         setIsSending(true);
         setCurrentMessage(0);
@@ -1786,33 +1799,103 @@ export const IRPSenderPage: React.FC = () => {
             destinationPort: selectedDestinationPort,
         })
 
-        sendMessagesOnce().then(success => {
-            if (success) {
-                useLoopStore.getState().incrementIrpBatches()
-                const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
-                setSnackbar({open: true, message: `Loop started - Sent batch #${currentBatches}`, severity: 'info'})
-            }
-        })
+        // Check if we have configured messages (multi-simulator case)
+        if (configuredMessages && selectedSimulators.length > 1) {
+            // Create send function that uses configured messages for each simulator
+            const sendWithConfiguredMessages = async () => {
+                try {
+                    for (const simulatorIp of selectedSimulators) {
+                        const simMessages = configuredMessages[simulatorIp];
 
-        loopIntervalRef.current = setInterval(async () => {
-            const success = await sendMessagesOnceRef.current()
-            if (success) {
-                useLoopStore.getState().incrementIrpBatches()
-                const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
-                setSnackbar({open: true, message: `Loop running - Sent batch #${currentBatches}`, severity: 'info'})
-            }
-        }, loopDelay * 1000)
+                        const formattedMessages = simMessages.map((msg: any) => {
+                            const backendData = transformFromAttackId(msg.data, msg.originalSchema)
+                            return {
+                                message: msg.messageName,
+                                pause: msg.pause,
+                                ...backendData,
+                            }
+                        })
 
-        loopTimeoutRef.current = setTimeout(() => {
-            handleStopLoop()
-            const elapsedSeconds = useLoopStore.getState().getElapsedTime('irp')
-            const finalBatches = useLoopStore.getState().getIrpLoopState().batchesSent
-            setSnackbar({
-                open: true,
-                message: `Loop stopped after ${elapsedSeconds}s - Sent ${finalBatches} batch(es)`,
-                severity: 'success'
+                        const payload = {
+                            mongo_id: schemaId!,
+                            map: '',
+                            message_data: {
+                                messages: formattedMessages,
+                            },
+                        }
+
+                        await irpSchemaService.sendMessages(selectedDestinationPort, [simulatorIp], payload)
+                    }
+                    return true
+                } catch (error: any) {
+                    const errorMsg = error?.response?.data?.detail || error?.message || 'Failed to send messages'
+                    setSnackbar({open: true, message: errorMsg, severity: 'error'})
+                    return false
+                }
+            }
+
+            // Send first batch
+            sendWithConfiguredMessages().then(success => {
+                if (success) {
+                    useLoopStore.getState().incrementIrpBatches()
+                    const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
+                    setSnackbar({open: true, message: `Loop started - Sent batch #${currentBatches}`, severity: 'info'})
+                }
             })
-        }, loopTimeout * 1000)
+
+            loopIntervalRef.current = setInterval(async () => {
+                const success = await sendWithConfiguredMessages()
+                if (success) {
+                    useLoopStore.getState().incrementIrpBatches()
+                    const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
+                    setSnackbar({open: true, message: `Loop running - Sent batch #${currentBatches}`, severity: 'info'})
+                }
+            }, loopDelay * 1000)
+
+            loopTimeoutRef.current = setTimeout(() => {
+                handleStopLoop()
+                const elapsedSeconds = useLoopStore.getState().getElapsedTime('irp')
+                const finalBatches = useLoopStore.getState().getIrpLoopState().batchesSent
+                setSnackbar({
+                    open: true,
+                    message: `Loop stopped after ${elapsedSeconds}s - Sent ${finalBatches} batch(es)`,
+                    severity: 'success'
+                })
+            }, loopTimeout * 1000)
+
+            // Clear configured messages and pending action
+            setConfiguredMessages(null);
+            setPendingAction(null);
+        } else {
+            // Single simulator: use normal flow
+            sendMessagesOnce().then(success => {
+                if (success) {
+                    useLoopStore.getState().incrementIrpBatches()
+                    const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
+                    setSnackbar({open: true, message: `Loop started - Sent batch #${currentBatches}`, severity: 'info'})
+                }
+            })
+
+            loopIntervalRef.current = setInterval(async () => {
+                const success = await sendMessagesOnceRef.current()
+                if (success) {
+                    useLoopStore.getState().incrementIrpBatches()
+                    const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
+                    setSnackbar({open: true, message: `Loop running - Sent batch #${currentBatches}`, severity: 'info'})
+                }
+            }, loopDelay * 1000)
+
+            loopTimeoutRef.current = setTimeout(() => {
+                handleStopLoop()
+                const elapsedSeconds = useLoopStore.getState().getElapsedTime('irp')
+                const finalBatches = useLoopStore.getState().getIrpLoopState().batchesSent
+                setSnackbar({
+                    open: true,
+                    message: `Loop stopped after ${elapsedSeconds}s - Sent ${finalBatches} batch(es)`,
+                    severity: 'success'
+                })
+            }, loopTimeout * 1000)
+        }
     }
 
     const handleStopLoop = () => {
@@ -1831,7 +1914,118 @@ export const IRPSenderPage: React.FC = () => {
     }
 
     const handleOpenLoopDialog = () => {
+        // Check validations first
+        if (!selectedSimulators.length) {
+            setSnackbar({open: true, message: 'Please select a simulator', severity: 'error'})
+            return
+        }
+
+        if (!selectedDestinationPort) {
+            setSnackbar({open: true, message: 'Please select a destination port', severity: 'error'})
+            return
+        }
+
+        if (messages.length === 0) {
+            setSnackbar({open: true, message: 'Please add at least one message', severity: 'error'})
+            return
+        }
+
+        // If multiple simulators, show attack-ID dialog first
+        if (selectedSimulators.length > 1) {
+            setPendingAction('loop');
+            setAttackIdDialogOpen(true);
+            return;
+        }
+
+        // Single simulator: open loop dialog directly
         setLoopDialogOpen(true)
+    }
+
+    const handleAttackIdConfirm = async (attackIdConfig: Record<string, any[]>) => {
+        setAttackIdDialogOpen(false);
+
+        if (pendingAction === 'send') {
+            // Send to each simulator with configured attack-IDs
+            setIsSending(true);
+            setCurrentMessage(0);
+            setTotalMessages(messages.length * selectedSimulators.length);
+
+            try {
+                let successCount = 0;
+                let failedCount = 0;
+
+                for (const simulatorIp of selectedSimulators) {
+                    const simMessages = attackIdConfig[simulatorIp];
+
+                    const formattedMessages = simMessages.map((msg: any) => {
+                        const backendData = transformFromAttackId(msg.data, msg.originalSchema)
+                        return {
+                            message: msg.messageName,
+                            pause: msg.pause,
+                            ...backendData,
+                        }
+                    })
+
+                    const payload = {
+                        mongo_id: schemaId!,
+                        map: '',
+                        message_data: {
+                            messages: formattedMessages,
+                        },
+                    }
+
+                    try {
+                        await irpSchemaService.sendMessagesWithProgress(
+                            selectedDestinationPort,
+                            [simulatorIp],
+                            payload,
+                            (current, total, messageName, status) => {
+                                setCurrentMessage(successCount + failedCount + current);
+                            },
+                            (simSuccessCount, simFailedCount, totalCount) => {
+                                successCount += simSuccessCount;
+                                failedCount += simFailedCount;
+                            },
+                            (error) => {
+                                failedCount += simMessages.length;
+                            }
+                        );
+                    } catch (error) {
+                        failedCount += simMessages.length;
+                    }
+                }
+
+                if (failedCount === 0) {
+                    setSnackbar({
+                        open: true,
+                        message: `Successfully sent all ${successCount} message(s) to ${selectedSimulators.length} simulator(s)`,
+                        severity: 'success'
+                    });
+                } else {
+                    setSnackbar({
+                        open: true,
+                        message: `Partially successful: ${successCount} succeeded, ${failedCount} failed`,
+                        severity: 'warning'
+                    });
+                }
+            } catch (error: any) {
+                setSnackbar({
+                    open: true,
+                    message: error.message || 'Failed to send messages',
+                    severity: 'error'
+                });
+            } finally {
+                setIsSending(false);
+                setCurrentMessage(0);
+                setTotalMessages(0);
+            }
+            setPendingAction(null);
+        } else if (pendingAction === 'loop') {
+            // Save configured messages and open loop dialog
+            setConfiguredMessages(attackIdConfig);
+            setLoopDialogOpen(true);
+            // Don't reset pendingAction yet - we need it in handleStartLoop
+        }
     }
 
     return (
@@ -1856,7 +2050,16 @@ export const IRPSenderPage: React.FC = () => {
                             value={selectedSimulators}
                             onChange={(e) => {
                                 const value = e.target.value;
-                                setSelectedSimulators(typeof value === 'string' ? value.split(',') : value);
+                                const newValue = typeof value === 'string' ? value.split(',') : value;
+
+                                // Check if the special "__SELECT_ALL__" marker is present (from Select All button)
+                                if (newValue.includes('__SELECT_ALL__')) {
+                                    // Select All was clicked - ignore this onChange and let onClick handle it
+                                    return;
+                                }
+
+                                // Normal selection change
+                                setSelectedSimulators(newValue);
                             }}
                             label="Target Simulator"
                             renderValue={(selected) => (
@@ -1886,12 +2089,25 @@ export const IRPSenderPage: React.FC = () => {
                         >
                             {/* Select All / Deselect All Option */}
                             <MenuItem
+                                value="__SELECT_ALL__"
                                 onClick={(e) => {
                                     e.stopPropagation();
+                                    e.preventDefault();
                                     if (selectedSimulators.length === compatibleSimulators.length) {
                                         setSelectedSimulators([]);
                                     } else {
                                         setSelectedSimulators(compatibleSimulators.map(d => d.management_ip));
+                                    }
+                                }}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' || e.key === ' ') {
+                                        e.stopPropagation();
+                                        e.preventDefault();
+                                        if (selectedSimulators.length === compatibleSimulators.length) {
+                                            setSelectedSimulators([]);
+                                        } else {
+                                            setSelectedSimulators(compatibleSimulators.map(d => d.management_ip));
+                                        }
                                     }
                                 }}
                                 sx={{ fontWeight: 'bold', borderBottom: '1px solid #e0e0e0' }}
@@ -2094,6 +2310,18 @@ export const IRPSenderPage: React.FC = () => {
                         </Button>
                     </DialogActions>
                 </Dialog>
+
+                {/* Attack-ID Configuration Dialog */}
+                <IRPAttackIdConfigDialog
+                    open={attackIdDialogOpen}
+                    onClose={() => {
+                        setAttackIdDialogOpen(false);
+                        setPendingAction(null);
+                    }}
+                    simulators={selectedSimulators}
+                    messages={messages}
+                    onConfirm={handleAttackIdConfirm}
+                />
 
                 {/* Save Template Dialog */}
                 <Dialog open={saveDialogOpen} onClose={() => setSaveDialogOpen(false)}>
