@@ -1062,8 +1062,8 @@ async def list_device_templates(
 
     Args:
         name: Optional filter for template name (case-insensitive partial match)
-        :param mongo_db:
-        :param _current_user:
+        mongo_db: DB dependency
+        _current_user: User dependency
     """
     collection = mongo_db["device_templates"]
 
