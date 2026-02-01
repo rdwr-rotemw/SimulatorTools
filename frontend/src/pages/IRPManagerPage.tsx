@@ -74,9 +74,23 @@ export const IRPManagerPage: React.FC = () => {
         }
     }, [currentCC, navigate])
 
+    const devices = useCCStore((state) => state.devices)
     const saproSimulators = useCCStore((state) => state.saproSimulators)
+
+    // Filter devices: only show those that exist in Sapro
+    const saproIPs = new Set(saproSimulators.map(sim => sim.ip_address))
+    const filteredDevices = devices.filter(device => saproIPs.has(device.management_ip))
+
+    // Get versions from Sapro simulators that match the filtered CC devices
     const availableVersions: string[] = Array.from(
-        new Set(saproSimulators.map((s) => s.version).filter(Boolean) as string[])
+        new Set(
+            filteredDevices
+                .map(device => {
+                    const saproSim = saproSimulators.find(sim => sim.ip_address === device.management_ip)
+                    return saproSim?.version
+                })
+                .filter(Boolean) as string[]
+        )
     )
 
     const fetchSchemas = async () => {
