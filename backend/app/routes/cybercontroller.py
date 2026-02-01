@@ -979,22 +979,8 @@ async def download_ids_data_format(
     from datetime import datetime, timezone
 
     try:
-        cc_session = db.query(CCSession).filter(
-            CCSession.cc_ip == cc_ip,
-            CCSession.user_id == current_user.user_id
-        ).first()
-
-        if not cc_session:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="No active session for this CC"
-            )
 
         handler = CCHandler(cc_ip, "", "")
-        try:
-            handler._session.cookies.set("JSESSIONID", str(cc_session.jsession_id))
-        except Exception:
-            pass
 
         # Get SSH client
         ssh_client = get_cc_ssh_client(cc_ip=cc_ip, username=payload.username, password=payload.password)
