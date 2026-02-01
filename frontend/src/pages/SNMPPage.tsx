@@ -22,7 +22,6 @@ import {
     ListItemText,
     ListItemButton,
     CircularProgress,
-    Autocomplete,
     Checkbox,
     Chip,
     Tooltip,
@@ -728,12 +727,17 @@ export const SNMPPage: React.FC = () => {
                     }));
 
                     try {
+                        // Capture current counts to avoid no-loop-func warnings
+                        const currentSuccessCount = successCount;
+                        const currentFailedCount = failedCount;
+                        const trapCount = modifiedTraps.length;
+
                         await snmpTemplateService.sendTrapsWithProgress(
                             selectedDestinationPort,
                             [simulatorIp],
                             modifiedTraps,
                             (current, total, trapName, status) => {
-                                setCurrentTrap(successCount + failedCount + current);
+                                setCurrentTrap(currentSuccessCount + currentFailedCount + current);
                             },
                             (simSuccessCount, simFailedCount, totalCount) => {
                                 successCount += simSuccessCount;
@@ -741,7 +745,7 @@ export const SNMPPage: React.FC = () => {
                             },
                             (error) => {
                                 // Error for this simulator
-                                failedCount += modifiedTraps.length;
+                                failedCount += trapCount;
                             }
                         );
                     } catch (error) {

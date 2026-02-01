@@ -38,6 +38,7 @@ import ScienceIcon from '@mui/icons-material/Science'
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore'
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
+import UploadIcon from '@mui/icons-material/Upload'
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward'
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward'
 import DragIndicatorIcon from '@mui/icons-material/DragIndicator'
@@ -69,7 +70,6 @@ import useFormStore from '../store/useFormStore'
 import useAuthStore from '../store/authStore'
 import {irpSchemaService, SchemaMessage} from '../api/services/irpSchema.service'
 import IRPMessageForm from '../components/irp/IRPMessageForm'
-import Autocomplete from '@mui/material/Autocomplete'
 
 // ============================================================================
 // CONSOLIDATED METADATA & RANDOMIZATION HELPERS
@@ -973,6 +973,11 @@ export const IRPSenderPage: React.FC = () => {
     // PCAP Import state
     const [pcapDialogOpen, setPcapDialogOpen] = useState(false)
 
+    // JSON Import state
+    const [importProgress, setImportProgress] = useState<number>(0)
+    const [isImporting, setIsImporting] = useState<boolean>(false)
+    const jsonFileInputRef = React.useRef<HTMLInputElement>(null)
+
     // ========================================================================
     // DRAG AND DROP SENSORS
     // ========================================================================
@@ -1581,6 +1586,246 @@ export const IRPSenderPage: React.FC = () => {
         URL.revokeObjectURL(url)
     }
 
+    // Helper function: Merge imported data with template (fills missing fields)
+    function mergeWithTemplate(
+        importedData: Record<string, any>,
+        templateData: Record<string, any>,
+        schema: Record<string, any>
+    ): Record<string, any> {
+        const result: Record<string, any> = {...templateData}
+
+        Object.keys(importedData).forEach(key => {
+            if (key in schema || key in result) {
+                result[key] = importedData[key]
+            }
+            // Ignore extra fields not in schema
+        })
+
+        return result
+    }
+
+    // Import JSON with values
+    const handleImportJSON = async (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0]
+        if (!file) return
+
+        // Validate file type
+        if (!file.name.toLowerCase().endsWith('.json')) {
+            setSnackbar({open: true, message: 'Please select a .json file', severity: 'error'})
+            return
+        }
+
+        setIsImporting(true)
+        setImportProgress(0)
+
+        try {
+            // 1. Parse JSON file
+            const fileContent = await file.text()
+            const imported = JSON.parse(fileContent)
+
+            if (!imported.messages || !Array.isArray(imported.messages)) {
+                throw new Error('Invalid JSON format: missing messages array')
+            }
+
+            const messagesToImport = imported.messages
+
+            if (messagesToImport.length === 0) {
+                throw new Error('No messages found in JSON file')
+            }
+
+            // 2. Get list of available messages for name→type mapping
+            const availableMessages = await irpSchemaService.listMessages(currentCC!, schemaId!)
+            const messageNameToType = new Map(availableMessages.map(m => [m.name, m.id]))
+
+            // 3. PARALLEL: Fetch ALL templates at once
+            setImportProgress(20)
+            const templatePromises = messagesToImport.map((msg: any) => {
+                // Resolve message name → message type
+                const messageType = msg.messageType || messageNameToType.get(msg.message)
+
+                if (!messageType) {
+                    return Promise.resolve({
+                        error: true,
+                        messageName: msg.message,
+                        reason: 'Message type not found in current schema'
+                    })
+                }
+
+                return irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageType)
+                    .then(template => ({...template, messageType, originalMessage: msg}))
+                    .catch(err => ({
+                        error: true,
+                        messageName: msg.message,
+                        messageType,
+                        reason: err.message
+                    }))
+            })
+
+            const templates = await Promise.all(templatePromises)
+            setImportProgress(50)
+
+            // 4. Process each message (all in memory, no more API calls)
+            const results: Array<{
+                success: boolean
+                messageName: string
+                messageType?: string
+                error?: string
+                warnings?: string[]
+            }> = []
+
+            const successfulMessages: Array<{
+                messageType: string
+                messageName: string
+                data: Record<string, any>
+                schema: Record<string, any>
+                originalSchema: Record<string, any>
+                pause?: number
+            }> = []
+
+            for (let i = 0; i < templates.length; i++) {
+                const templateResult = templates[i]
+
+                if (templateResult.error) {
+                    results.push({
+                        success: false,
+                        messageName: templateResult.messageName,
+                        error: templateResult.reason
+                    })
+                    continue
+                }
+
+                const {template, schema, name, messageType, originalMessage} = templateResult
+                const {message: _, messageType: __, pause: importedPause, ...importedData} = originalMessage
+
+                try {
+                    // Check if SCHEMA has attack-id related fields (not data!)
+                    const schemaHasTimeCnt = 'time' in schema && 'cnt' in schema
+                    const schemaHasAttackId = 'attack-id' in schema
+                    const isMessage1 = messageType === '1'
+
+                    let finalData: Record<string, any>
+                    let warnings: string[] = []
+
+                    // If schema has no attack-id related fields, just merge and we're done
+                    if (!schemaHasTimeCnt && !schemaHasAttackId) {
+                        finalData = mergeWithTemplate(importedData, template, schema)
+                    } else {
+                        // Schema has attack-id fields - apply transformation logic
+                        const hasAttackId = 'attack-id' in importedData
+                        const hasTime = 'time' in importedData
+                        const hasCnt = 'cnt' in importedData
+
+                        if (isMessage1) {
+                            // Message 1: Keep attack-id and time separate (no transformation)
+                            if (hasAttackId && hasTime) {
+                                // Already in correct format for message 1
+                                finalData = mergeWithTemplate(importedData, template, schema)
+                            } else {
+                                warnings.push('Message 1 requires both attack-id and time fields')
+                                finalData = template // Use template defaults
+                            }
+                        } else {
+                            // Other messages: Need cnt+time or merged attack-id
+                            if (hasAttackId && !hasCnt && !hasTime) {
+                                // UI format: has merged attack-id, need to split to backend then transform
+                                const [cnt, time] = (importedData['attack-id'] as string).split('-')
+                                const backendData = {...importedData, cnt: parseInt(cnt), time: parseInt(time)}
+                                delete backendData['attack-id']
+
+                                // Merge with template, then transform to UI
+                                const merged = mergeWithTemplate(backendData, template, schema)
+                                finalData = transformToAttackId(merged, schema)
+                            } else if (hasCnt && hasTime) {
+                                // Backend format: transform to UI
+                                const merged = mergeWithTemplate(importedData, template, schema)
+                                finalData = transformToAttackId(merged, schema)
+                            } else {
+                                warnings.push('Missing required fields (cnt+time or attack-id)')
+                                finalData = transformToAttackId(template, schema) // Use template defaults
+                            }
+                        }
+                    }
+
+                    // Transform schema for UI
+                    const transformedSchema = transformSchemaForAttackId(schema)
+
+                    successfulMessages.push({
+                        messageType,
+                        messageName: name,
+                        data: finalData,
+                        schema: transformedSchema,
+                        originalSchema: schema,
+                        pause: importedPause
+                    })
+
+                    results.push({
+                        success: true,
+                        messageName: name,
+                        messageType,
+                        warnings: warnings.length > 0 ? warnings : undefined
+                    })
+
+                } catch (err: any) {
+                    results.push({
+                        success: false,
+                        messageName: name,
+                        messageType,
+                        error: err.message
+                    })
+                }
+
+                // Update progress
+                setImportProgress(50 + ((i + 1) / templates.length) * 50)
+            }
+
+            // 5. Single state update (prevents multiple re-renders)
+            setMessages(prev => [...prev, ...successfulMessages])
+            setExpandedMessages(prev => [
+                ...prev,
+                ...successfulMessages.map((_, idx) => messages.length + idx)
+            ])
+
+            // 6. Show detailed summary
+            const successful = results.filter(r => r.success).length
+            const failed = results.filter(r => !r.success).length
+            const withWarnings = results.filter(r => r.success && r.warnings?.length).length
+
+            let message = `Imported ${successful}/${results.length} messages`
+            if (withWarnings > 0) message += ` (${withWarnings} with warnings)`
+            if (failed > 0) message += ` - ${failed} failed`
+
+            setSnackbar({
+                open: true,
+                message,
+                severity: failed > 0 ? 'warning' : 'success'
+            })
+
+            // Log details to console
+            if (failed > 0 || withWarnings > 0) {
+                console.group('Import Details')
+                results.forEach(r => {
+                    if (!r.success) {
+                        console.error(`❌ ${r.messageName}: ${r.error}`)
+                    } else if (r.warnings?.length) {
+                        console.warn(`⚠️ ${r.messageName}:`, r.warnings.join(', '))
+                    }
+                })
+                console.groupEnd()
+            }
+
+        } catch (error: any) {
+            const errorMessage = error instanceof Error ? error.message : 'Failed to import JSON'
+            setSnackbar({open: true, message: errorMessage, severity: 'error'})
+            console.error('JSON import error:', error)
+        } finally {
+            setIsImporting(false)
+            setImportProgress(0)
+            if (jsonFileInputRef.current) {
+                jsonFileInputRef.current.value = ''
+            }
+        }
+    }
+
     // Test single message with e2e workflow
     const handleTestMessage = async (messageIndex: number) => {
         if (!schemaId) {
@@ -1975,19 +2220,24 @@ export const IRPSenderPage: React.FC = () => {
                     }
 
                     try {
+                        // Capture current counts to avoid no-loop-func warnings
+                        const currentSuccessCount = successCount;
+                        const currentFailedCount = failedCount;
+                        const messageCount = simMessages.length;
+
                         await irpSchemaService.sendMessagesWithProgress(
                             selectedDestinationPort,
                             [simulatorIp],
                             payload,
                             (current, total, messageName, status) => {
-                                setCurrentMessage(successCount + failedCount + current);
+                                setCurrentMessage(currentSuccessCount + currentFailedCount + current);
                             },
                             (simSuccessCount, simFailedCount, totalCount) => {
                                 successCount += simSuccessCount;
                                 failedCount += simFailedCount;
                             },
                             (error) => {
-                                failedCount += simMessages.length;
+                                failedCount += messageCount;
                             }
                         );
                     } catch (error) {
@@ -2110,7 +2360,7 @@ export const IRPSenderPage: React.FC = () => {
                                         }
                                     }
                                 }}
-                                sx={{ fontWeight: 'bold', borderBottom: '1px solid #e0e0e0' }}
+                                sx={{fontWeight: 'bold', borderBottom: '1px solid #e0e0e0'}}
                             >
                                 <ListItemText
                                     primary={selectedSimulators.length === compatibleSimulators.length ? 'Deselect All' : 'Select All'}
@@ -2122,7 +2372,7 @@ export const IRPSenderPage: React.FC = () => {
                                 <MenuItem key={device.management_ip} value={device.management_ip}>
                                     <Checkbox
                                         checked={selectedSimulators.includes(device.management_ip)}
-                                        sx={{ marginRight: 1 }}
+                                        sx={{marginRight: 1}}
                                     />
                                     <ListItemText
                                         primary={`${device.name || device.management_ip} (${device.management_ip})`}
@@ -2226,6 +2476,14 @@ export const IRPSenderPage: React.FC = () => {
                         Download JSON
                     </Button>
                     <Button
+                        variant="outlined"
+                        startIcon={isImporting ? <CircularProgress size={20}/> : <UploadIcon/>}
+                        onClick={() => jsonFileInputRef.current?.click()}
+                        disabled={isImporting || !schemaId}
+                    >
+                        {isImporting ? `Importing... ${Math.round(importProgress)}%` : 'Import JSON'}
+                    </Button>
+                    <Button
                         variant="contained"
                         color="secondary"
                         onClick={handleOpenLoadDialog}
@@ -2299,7 +2557,7 @@ export const IRPSenderPage: React.FC = () => {
                             helperText="Loop will automatically stop after this duration (required, minimum 1 second)"
                             inputProps={{min: 1, step: 1}}
                         />
-                        <Alert severity="info" sx={{ marginTop: 2 }}>
+                        <Alert severity="info" sx={{marginTop: 2}}>
                             Note: Logging out will automatically stop the loop.
                         </Alert>
                     </DialogContent>
@@ -2689,6 +2947,15 @@ export const IRPSenderPage: React.FC = () => {
                     </Button>
                 </DialogActions>
             </Dialog>
+
+            {/* Hidden JSON File Input - Must be outside dialogs to always be available */}
+            <input
+                ref={jsonFileInputRef}
+                type="file"
+                accept=".json"
+                style={{display: 'none'}}
+                onChange={handleImportJSON}
+            />
         </Layout>
     )
 }
