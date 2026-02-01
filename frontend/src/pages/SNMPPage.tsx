@@ -1002,6 +1002,14 @@ export const SNMPPage: React.FC = () => {
                         Download JSON
                     </Button>
 
+                    <Button
+                        variant="outlined"
+                        startIcon={<UploadIcon/>}
+                        onClick={() => fileInputRef.current?.click()}
+                    >
+                        Import JSON
+                    </Button>
+
                     <Button variant="outlined" startIcon={<UploadIcon/>} onClick={handleLoadClick}>
                         Load Template
                     </Button>
