@@ -38,6 +38,12 @@ import {irpSchemaService, IRPSchema} from '../api/services/irpSchema.service'
 export const IRPManagerPage: React.FC = () => {
     const navigate = useNavigate()
     const currentCC = useCCStore((state) => state.currentCC)
+    const allDevices = useCCStore((state) => state.devices)
+    const saproSimulators = useCCStore((state) => state.saproSimulators)
+
+    // Filter devices: only show those that exist in Sapro
+    const saproIPs = new Set(saproSimulators.map(sim => sim.ip_address))
+    const devices = allDevices.filter(device => saproIPs.has(device.management_ip))
 
     const [selectedVersion, setSelectedVersion] = useState<string | ''>('')
     const [existingSchemas, setExistingSchemas] = useState<IRPSchema[]>([])
@@ -74,17 +80,10 @@ export const IRPManagerPage: React.FC = () => {
         }
     }, [currentCC, navigate])
 
-    const devices = useCCStore((state) => state.devices)
-    const saproSimulators = useCCStore((state) => state.saproSimulators)
-
-    // Filter devices: only show those that exist in Sapro
-    const saproIPs = new Set(saproSimulators.map(sim => sim.ip_address))
-    const filteredDevices = devices.filter(device => saproIPs.has(device.management_ip))
-
     // Get versions from Sapro simulators that match the filtered CC devices
     const availableVersions: string[] = Array.from(
         new Set(
-            filteredDevices
+            devices
                 .map(device => {
                     const saproSim = saproSimulators.find(sim => sim.ip_address === device.management_ip)
                     return saproSim?.version
