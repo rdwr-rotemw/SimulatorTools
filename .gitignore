@@ -15,6 +15,9 @@ env/
 dist/
 build/
 
+# Node modules
+**/node_modules/
+
 # IDE files
 .idea/
 .vscode/
@@ -45,4 +48,3 @@ docker/nginx/ssl/*.crt
 tmp/
 *.tmp
 *.temp
-
