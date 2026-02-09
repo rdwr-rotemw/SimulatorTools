@@ -291,7 +291,7 @@ class SaproCommunicationHandler:
             - workspace: Workspace name (added when querying all workspaces)
         """
 
-        # Special case: aggregate all workspaces for super user
+        # Special case: aggregate all workspaces for superuser
         if workspace == "*":
             return self._get_all_maps_aggregated()
 
@@ -453,6 +453,56 @@ class SaproCommunicationHandler:
             raise Exception(f"Map {map_name} not found in workspace {workspace}")
         return map_info['full_path']
 
+    def _get_local_map_dir(self, workspace: str = "default") -> str:
+        """Extract LocalMappedDir from workspace file.
+
+        Reads the workspace .wsp file and extracts the LocalMappedDir attribute,
+        which defines where maps are stored for this workspace.
+
+        Args:
+            workspace: Workspace name (without .wsp extension)
+
+        Returns:
+            Full path to map directory from workspace file (ends with /)
+
+        Raises:
+            Exception: If workspace file not found or LocalMappedDir not set
+        """
+        try:
+            ssh_client = get_sapro_ssh_client()
+            workspace_path = f"/opt/sapro/wsp/{workspace}.wsp"
+
+            # Read workspace file
+            read_cmd = f"cat {workspace_path}"
+            success, workspace_content = ssh_client.execute_command(read_cmd, check_stderr=False)
+
+            if not success:
+                raise Exception(f"Failed to read workspace file: {workspace_content}")
+
+            # Extract LocalMappedDir using regex
+            # Match: LocalMappedDir = "/opt/sapro/projects/scale/map/"
+            match = re.search(r'LocalMappedDir\s*=\s*"([^"]*)"', workspace_content)
+
+            if not match:
+                # Default workspace may not have LocalMappedDir explicitly set
+                if workspace == "default":
+                    logger.info(f"Workspace '{workspace}' has no LocalMappedDir, using default /opt/sapro/map/")
+                    return "/opt/sapro/map/"
+                raise Exception(f"LocalMappedDir not found in workspace {workspace}")
+
+            local_dir = match.group(1)
+
+            # Ensure it ends with /
+            if not local_dir.endswith('/'):
+                local_dir += '/'
+
+            logger.info(f"LocalMappedDir for workspace '{workspace}': {local_dir}")
+            return local_dir
+
+        except Exception as e:
+            logger.error(f"Failed to get LocalMappedDir for workspace '{workspace}': {e}", exc_info=True)
+            raise
+
     def start_map_and_wait(self, map_name: str, workspace: str = "default") -> Tuple[bool, str]:
         """Start a map and wait until it's running.
 
@@ -582,7 +632,9 @@ class SaproCommunicationHandler:
     def create_map(self, map_name: str, workspace: str = "default") -> Tuple[bool, str]:
         """Create a new map file and add it to workspace using SSH.
 
-        Default workspace uses relative map names, others use full paths.
+        Gets map directory from workspace's LocalMappedDir setting.
+        Default workspace: uses relative map names
+        Other workspaces: uses full paths
 
         Args:
             map_name: Map name (without .map extension)
@@ -595,46 +647,41 @@ class SaproCommunicationHandler:
             ssh_client = get_sapro_ssh_client()
             workspace_path = f"/opt/sapro/wsp/{workspace}.wsp"
 
-            # Step 1: Read workspace file to determine map directory
+            # Step 1: Get map directory from LocalMappedDir
+            try:
+                map_directory = self._get_local_map_dir(workspace=workspace)
+            except Exception as e:
+                return False, f"Failed to get map directory: {e}"
+
+            logger.info(f"Creating map in directory: {map_directory}")
+
+            # Step 2: Read workspace file to check if map exists and determine reference format
             read_cmd = f"cat {workspace_path}"
             success, workspace_content = ssh_client.execute_command(read_cmd, check_stderr=False)
 
             if not success:
                 return False, f"Failed to read workspace file: {workspace_content}"
 
-            # Parse workspace file to find existing map paths
+            # Parse existing maps to check if already exists
             map_paths = re.findall(r'Name\s*=\s*"([^"]+\.map)"', workspace_content)
-
-            if not map_paths:
-                return False, f"Workspace {workspace} has no existing maps - cannot determine map directory. Please add at least one map manually first."
-
-            # Determine if this workspace uses relative or full paths
-            first_map = map_paths[0]
-
-            if workspace == "default":
-                # Default workspace: relative names, maps in /opt/sapro/map/
-                map_directory = "/opt/sapro/map/"
-                use_full_path_reference = False
-            elif first_map.startswith('/'):
-                # Non-default workspace with full paths
-                map_directory = '/'.join(first_map.split('/')[:-1]) + '/'
-                use_full_path_reference = True
-            else:
-                # Non-default workspace but has relative paths (unusual, but handle it)
-                map_directory = "/opt/sapro/map/"
-                use_full_path_reference = False
-
-            logger.info(f"Map directory for workspace '{workspace}': {map_directory}")
-
-            # Step 2: Create physical map file path
-            map_file_path = f"{map_directory}{map_name}.map"
-
-            # Check if map already exists (check just the name, not full path)
             existing_names = [p.split('/')[-1].replace('.map', '') for p in map_paths]
+
             if map_name in existing_names:
                 return False, f"Map {map_name} already exists in workspace {workspace}"
 
-            # Step 3: Create PHYSICAL .map file with DeviceMap XML structure
+            # Determine reference format (relative or full path)
+            # Default workspace: use relative names
+            # Others: use full paths
+            if workspace == "default":
+                use_full_path_reference = False
+            elif map_paths and map_paths[0].startswith('/'):
+                use_full_path_reference = True
+            else:
+                use_full_path_reference = False
+
+            # Step 3: Create physical map file
+            map_file_path = f"{map_directory}{map_name}.map"
+
             map_file_content = '''<DeviceMap
         Release = "11.0"
         Description = ""
@@ -657,12 +704,10 @@ class SaproCommunicationHandler:
             logger.info(f"Created physical map file: {map_file_path}")
 
             # Step 4: Add map reference to workspace file
-            # Default workspace: use relative name
-            # Other workspaces: use full path
             if use_full_path_reference:
-                map_reference = map_file_path  # Full path: /opt/sapro/projects/dev/map/NewMap.map
+                map_reference = map_file_path  # Full path
             else:
-                map_reference = f"{map_name}.map"  # Relative: NewMap.map
+                map_reference = f"{map_name}.map"  # Relative name
 
             new_map_entry = f'''                <Map
                         Name = "{map_reference}"
@@ -672,7 +717,7 @@ class SaproCommunicationHandler:
             if '</Server>' not in workspace_content:
                 return False, "Workspace file format invalid (no </Server> tag)"
 
-            # Insert new map entry before </Server>, preserving indentation
+            # Insert new map entry before </Server>
             updated_content = workspace_content.replace('</Server>', f'{new_map_entry}\n        </Server>')
 
             # Write updated workspace file
@@ -848,8 +893,12 @@ class SaproCommunicationHandler:
                 # Device doesn't exist - need to add it
             logger.info(f"Device {device_ip} doesn't exist, adding to map {map_name}")
 
-            # Extract directory from map full path
-            map_directory = '/'.join(map_path.split('/')[:-1]) + '/'
+            # Get map directory from LocalMappedDir (not by parsing map path)
+            try:
+                map_directory = self._get_local_map_dir(workspace=workspace)
+            except Exception as e:
+                logger.error(f"Failed to get map directory: {e}")
+                return False, f"Failed to get map directory: {e}"
 
             # Step 1: Read map file to check if it's empty
             read_map_cmd = f"cat {map_path}"
@@ -990,7 +1039,13 @@ class SaproCommunicationHandler:
 
             # Get full map path
             map_path = self.get_full_map_path(map_name, workspace=workspace)
-            map_directory = '/'.join(map_path.split('/')[:-1]) + '/'
+
+            # Get map directory from LocalMappedDir (not by parsing map path)
+            try:
+                map_directory = self._get_local_map_dir(workspace=workspace)
+            except Exception as e:
+                logger.error(f"Failed to get map directory: {e}")
+                return False, f"Failed to get map directory: {e}"
 
             # Step 3: Check if map is empty after deletion
             read_map_cmd = f"cat {map_path}"
