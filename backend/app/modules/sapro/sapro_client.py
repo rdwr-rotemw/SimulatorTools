@@ -1,13 +1,12 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict
 from typing import Optional, Tuple
 
 # removed devices_templates import (DB-only templates now)
 from backend.app.modules.sapro.src import (
     saproCommunication,
-    saproDeviceFunctions,
-    saproFileFunctions,
 )
 from backend.app.modules.sapro.src.returnTypes.enums import DeviceStatus
 from backend.app.modules.sapro.src.returnTypes.models import SaproDevice
@@ -92,23 +91,28 @@ class SaproCommunicationHandler:
     def get_all_devices(self, workspace: str) -> List[SaproDevice]:
         """Get all devices from all running maps using SSH commands.
 
+        Returns empty list if workspace has no maps.
+
         New flow:
         1. Get all maps and their status via wspstats
         2. For each running map, execute devlist command to get devices
         3. Query device type/version via SNMP (parallelized)
 
         Returns:
-            List of SaproDevice objects with IP, map, status, type, version
+            List of SaproDevice objects, or empty list if no maps/devices
         """
-        import time
 
         start_time = time.time()
 
-        # Step 1: Get all maps with status
+        # FIRST: Get all maps and check if empty
         try:
             all_maps = self.get_all_maps(workspace=workspace)
         except Exception as e:
             logger.error(f"Failed to get map list: {e}")
+            return []
+
+        if not all_maps:
+            logger.warning(f"Workspace '{workspace}' has no maps defined. No devices to retrieve.")
             return []
 
         # Filter only running maps
@@ -277,33 +281,43 @@ class SaproCommunicationHandler:
     def get_all_maps(self, workspace: str = "default") -> List[Dict[str, str]]:
         """Get list of all available maps from specified Sapro workspace with their status.
 
+        IMPORTANT: Check if workspace has any maps BEFORE running wspstats command,
+        because wspstats HANGS if workspace file has no <Map> tags.
+
         Args:
             workspace: Workspace name (without .wsp extension). Defaults to "default".
                         Use "*" to query all workspaces and aggregate results.
-
-        Executes SSH command: /opt/sapro/bin/sapcnsl -w /opt/sapro/wsp/{workspace}.wsp -c wspstats
-
-        The wspstats output contains full map paths as stored in the workspace file.
-        Example output:
-            R         60589     /opt/sapro/projects/scale/map/dp_scale.map
-                                /opt/sapro/map/DefensePros.map
 
         Returns:
             List of dicts with:
             - name: Map name (without .map extension and path)
             - status: "running" if R, "" if stopped, "error" otherwise
-            - full_path: Full path to map file (exactly as stored in workspace file)
-            - workspace: Workspace name (only when aggregating all workspaces)
+            - full_path: Full path to map file (from workspace file)
         """
 
         # Special case: aggregate all workspaces for superuser
         if workspace == "*":
             return self._get_all_maps_aggregated()
 
-        cmd = f"/opt/sapro/bin/sapcnsl -w /opt/sapro/wsp/{workspace}.wsp -c wspstats"
-
         try:
             ssh_client = get_sapro_ssh_client()
+            workspace_path = f"/opt/sapro/wsp/{workspace}.wsp"
+
+            # STEP 1: Read workspace file to check if it has any <Map> tags
+            logger.debug(f"Reading workspace file: {workspace_path}")
+            read_cmd = f"cat {workspace_path}"
+            success, workspace_content = ssh_client.execute_command(read_cmd, check_stderr=False)
+
+            if not success:
+                raise Exception(f"Failed to read workspace file: {workspace_content}")
+
+            # Check if workspace has any <Map> tags
+            if '<Map' not in workspace_content:
+                logger.info(f"Workspace '{workspace}' has no maps defined (no <Map> tags in file)")
+                return []
+
+            # STEP 2: Only run wspstats if workspace has maps
+            cmd = f"/opt/sapro/bin/sapcnsl -w {workspace_path} -c wspstats"
             logger.debug(f"Executing wspstats command for workspace '{workspace}': {cmd}")
 
             success, output = ssh_client.execute_command(cmd, check_stderr=False)
@@ -311,7 +325,7 @@ class SaproCommunicationHandler:
             if not success:
                 raise Exception(f"SSH command failed: {output}")
 
-            # Parse the table output
+            # STEP 3: Parse the table output
             result: List[Dict[str, str]] = []
             lines = output.split('\n')
 
@@ -527,16 +541,23 @@ class SaproCommunicationHandler:
         """
         import time
 
-        # Get map info to find full path
+        # FIRST: Check if workspace has any maps
         try:
-            maps = self.get_all_maps(workspace=workspace)
-            map_info = next((m for m in maps if m['name'] == map_name), None)
-            if not map_info:
-                return False, f"Map {map_name} not found"
-            map_path = map_info['full_path']
+            all_maps = self.get_all_maps(workspace=workspace)
         except Exception as e:
-            logger.error(f"Failed to get map info for {map_name}: {e}")
-            return False, f"Failed to get map info: {e}"
+            logger.error(f"Failed to get maps from workspace '{workspace}': {e}")
+            return False, f"Cannot access workspace '{workspace}': {e}"
+
+        if not all_maps:
+            logger.warning(f"Workspace '{workspace}' has no maps defined.")
+            return False, f"Workspace '{workspace}' has no maps. Cannot start map '{map_name}'."
+
+        # THEN: Find the map to start
+        map_info = next((m for m in all_maps if m['name'] == map_name), None)
+        if not map_info:
+            return False, f"Map '{map_name}' not found in workspace '{workspace}'"
+
+        map_path = map_info['full_path']
 
         cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c start"
 
@@ -594,19 +615,25 @@ class SaproCommunicationHandler:
             workspace: Workspace name (defaults to "default")
 
         Returns:
-
-        (success, message)
+            (success, message)
         """
-        # Get map info to find full path
+        # FIRST: Check if workspace has any maps
         try:
-            maps = self.get_all_maps(workspace=workspace)
-            map_info = next((m for m in maps if m['name'] == map_name), None)
-            if not map_info:
-                return False, f"Map {map_name} not found"
-            map_path = map_info['full_path']
+            all_maps = self.get_all_maps(workspace=workspace)
         except Exception as e:
-            logger.error(f"Failed to get map info for {map_name}: {e}")
-            return False, f"Failed to get map info: {e}"
+            logger.error(f"Failed to get maps from workspace '{workspace}': {e}")
+            return False, f"Cannot access workspace '{workspace}': {e}"
+
+        if not all_maps:
+            logger.warning(f"Workspace '{workspace}' has no maps defined.")
+            return False, f"Workspace '{workspace}' has no maps. Cannot stop map '{map_name}'."
+
+        # THEN: Find the map to stop
+        map_info = next((m for m in all_maps if m['name'] == map_name), None)
+        if not map_info:
+            return False, f"Map '{map_name}' not found in workspace '{workspace}'"
+
+        map_path = map_info['full_path']
 
         cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c stop"
 
@@ -825,16 +852,23 @@ class SaproCommunicationHandler:
         try:
             ssh_client = get_sapro_ssh_client()
 
-            # Get full map path from workspace
-            map_path = self.get_full_map_path(map_name, workspace=workspace)
+            # FIRST: Check if workspace has any maps
+            try:
+                all_maps = self.get_all_maps(workspace=workspace)
+            except Exception as e:
+                logger.error(f"Failed to get maps from workspace '{workspace}': {e}")
+                return False, f"Cannot access workspace '{workspace}': {e}"
 
-            # Check map status
-            maps = self.get_all_maps(workspace=workspace)
-            map_info = next((m for m in maps if m['name'] == map_name), None)
+            if not all_maps:
+                logger.warning(f"Workspace '{workspace}' has no maps defined.")
+                return False, f"Workspace '{workspace}' has no maps. Cannot add device '{device_ip}'."
 
+            # THEN: Find the map
+            map_info = next((m for m in all_maps if m['name'] == map_name), None)
             if not map_info:
-                return False, f"Map {map_name} not found in workspace {workspace}"
+                return False, f"Map '{map_name}' not found in workspace '{workspace}'"
 
+            map_path = map_info['full_path']
             was_map_running = (map_info['status'] == 'running')
 
             # Check if device already exists using SSH devlist command
@@ -1014,11 +1048,21 @@ class SaproCommunicationHandler:
         try:
             ssh_client = get_sapro_ssh_client()
 
-            # Step 1: Check map status BEFORE deletion
-            maps = self.get_all_maps(workspace=workspace)
-            map_info = next((m for m in maps if m['name'] == map_name), None)
+            # FIRST: Check if workspace has any maps
+            try:
+                all_maps = self.get_all_maps(workspace=workspace)
+            except Exception as e:
+                logger.error(f"Failed to get maps from workspace '{workspace}': {e}")
+                return False, f"Cannot access workspace '{workspace}': {e}"
+
+            if not all_maps:
+                logger.warning(f"Workspace '{workspace}' has no maps defined.")
+                return False, f"Workspace '{workspace}' has no maps. Cannot update device '{device_ip}'."
+
+            # THEN: Find the map
+            map_info = next((m for m in all_maps if m['name'] == map_name), None)
             if not map_info:
-                return False, f"Map {map_name} not found in workspace {workspace}"
+                return False, f"Map '{map_name}' not found in workspace '{workspace}'"
 
             was_map_running = (map_info['status'] == 'running')
             logger.info(f"Map {map_name} status before update: {'running' if was_map_running else 'stopped'}")
@@ -1145,7 +1189,18 @@ class SaproCommunicationHandler:
         """
 
         try:
-            # Get full map path from workspace (consistent with other methods)
+            # FIRST: Check if workspace has any maps
+            try:
+                all_maps = self.get_all_maps(workspace=workspace)
+            except Exception as e:
+                logger.error(f"Failed to get maps from workspace '{workspace}': {e}")
+                return False, f"Cannot access workspace '{workspace}': {e}"
+
+            if not all_maps:
+                logger.warning(f"Workspace '{workspace}' has no maps defined.")
+                return False, f"Workspace '{workspace}' has no maps. Cannot delete device from map '{map_name}'."
+
+            # THEN: Get full map path (consistent with other methods)
             map_path = self.get_full_map_path(map_name, workspace=workspace)
 
             ssh_client = get_sapro_ssh_client()
