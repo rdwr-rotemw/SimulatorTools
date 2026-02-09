@@ -282,19 +282,18 @@ class SaproCommunicationHandler:
                         Use "*" to query all workspaces and aggregate results.
 
         Executes SSH command: /opt/sapro/bin/sapcnsl -w /opt/sapro/wsp/{workspace}.wsp -c wspstats
-        Parses the table output to extract map names and running status.
 
-        Then constructs full paths by:
-        1. Getting map names from wspstats output
-        2. Reading LocalMappedDir from workspace file
-        3. Combining them: LocalMappedDir + map_name
+        The wspstats output contains full map paths as stored in the workspace file.
+        Example output:
+            R         60589     /opt/sapro/projects/scale/map/dp_scale.map
+                                /opt/sapro/map/DefensePros.map
 
         Returns:
             List of dicts with:
-            - name: Map name (without .map extension)
-            - status: "running" if R in Status column, "" (empty) if stopped, "error" otherwise
-            - full_path: Full path to map file using LocalMappedDir
-            - workspace: Workspace name (added when querying all workspaces)
+            - name: Map name (without .map extension and path)
+            - status: "running" if R, "" if stopped, "error" otherwise
+            - full_path: Full path to map file (exactly as stored in workspace file)
+            - workspace: Workspace name (only when aggregating all workspaces)
         """
 
         # Special case: aggregate all workspaces for superuser
@@ -311,15 +310,6 @@ class SaproCommunicationHandler:
 
             if not success:
                 raise Exception(f"SSH command failed: {output}")
-
-            # Get LocalMappedDir for this workspace
-            try:
-                local_map_dir = self._get_local_map_dir(workspace=workspace)
-            except Exception as e:
-                logger.error(f"Failed to get LocalMappedDir for workspace '{workspace}': {e}")
-                raise Exception(f"Failed to get LocalMappedDir: {e}")
-
-            logger.info(f"Using LocalMappedDir for workspace '{workspace}': {local_map_dir}")
 
             # Parse the table output
             result: List[Dict[str, str]] = []
@@ -342,8 +332,8 @@ class SaproCommunicationHandler:
                     continue
 
                 # Parse table row: "Status    Port #    Map Name"
-                # Status is first column (1 char: R or empty)
-                # Map name is last part (usually just the filename like "dp_scale.map")
+                # Status is first column (1 char: R, space, or other)
+                # Map Name is the full path like /opt/sapro/map/Alteons.map
 
                 parts = line.split()
                 if not parts:
@@ -352,28 +342,22 @@ class SaproCommunicationHandler:
                 # Determine status from first column
                 status_char = line[0] if len(line) > 0 else ' '
 
-                # Find map name (last element)
-                # It might be a full path or just a filename depending on workspace
-                map_part = None
+                # Find map path (must contain /opt/sapro/ and end with .map)
+                # It's typically the last part of the line
+                map_path = None
                 for part in reversed(parts):
-                    if '.map' in part:
-                        map_part = part
+                    if '/opt/sapro/' in part and part.endswith('.map'):
+                        map_path = part
                         break
 
-                if not map_part:
+                if not map_path:
+                    logger.debug(f"Could not parse map path from line: {line}")
                     continue
 
-                # Extract map name (handle both full paths and filenames)
-                # Example: "dp_scale.map" or "/opt/sapro/map/dp_scale.map"
-                if '/' in map_part:
-                    # It's a full path - extract just the filename
-                    map_filename = map_part.split('/')[-1]
-                else:
-                    # It's just a filename
-                    map_filename = map_part
-
-                # Remove .map extension to get map name
-                map_name = map_filename.replace('.map', '')
+                # Extract map name (just the filename without path and extension)
+                map_name = map_path.split('/')[-1]  # Get filename
+                if map_name.endswith('.map'):
+                    map_name = map_name[:-4]  # Remove .map extension
 
                 # Determine status
                 if status_char == 'R':
@@ -383,16 +367,13 @@ class SaproCommunicationHandler:
                 else:
                     status = "error"
 
-                # Construct full path using LocalMappedDir + map filename
-                full_path = f"{local_map_dir}{map_filename}"
-
                 result.append({
                     'name': map_name,
                     'status': status,
-                    'full_path': full_path
+                    'full_path': map_path
                 })
 
-                logger.debug(f"Map found: {map_name} -> {full_path} (status: {status})")
+                logger.debug(f"Map found: {map_name} -> {map_path} (status: {status})")
 
             logger.info(f"Retrieved {len(result)} maps from workspace '{workspace}'")
             return result
@@ -660,9 +641,8 @@ class SaproCommunicationHandler:
     def create_map(self, map_name: str, workspace: str = "default") -> Tuple[bool, str]:
         """Create a new map file and add it to workspace using SSH.
 
-        Gets map directory from workspace's LocalMappedDir setting.
-        Default workspace: uses relative map names
-        Other workspaces: uses full paths
+        Creates the physical map file in the location specified by LocalMappedDir,
+        then adds a reference to the workspace file with the FULL PATH.
 
         Args:
             map_name: Map name (without .map extension)
@@ -683,7 +663,7 @@ class SaproCommunicationHandler:
 
             logger.info(f"Creating map in directory: {map_directory}")
 
-            # Step 2: Read workspace file to check if map exists and determine reference format
+            # Step 2: Read workspace file to check if map already exists
             read_cmd = f"cat {workspace_path}"
             success, workspace_content = ssh_client.execute_command(read_cmd, check_stderr=False)
 
@@ -696,16 +676,6 @@ class SaproCommunicationHandler:
 
             if map_name in existing_names:
                 return False, f"Map {map_name} already exists in workspace {workspace}"
-
-            # Determine reference format (relative or full path)
-            # Default workspace: use relative names
-            # Others: use full paths
-            if workspace == "default":
-                use_full_path_reference = False
-            elif map_paths and map_paths[0].startswith('/'):
-                use_full_path_reference = True
-            else:
-                use_full_path_reference = False
 
             # Step 3: Create physical map file
             map_file_path = f"{map_directory}{map_name}.map"
@@ -731,14 +701,9 @@ class SaproCommunicationHandler:
 
             logger.info(f"Created physical map file: {map_file_path}")
 
-            # Step 4: Add map reference to workspace file
-            if use_full_path_reference:
-                map_reference = map_file_path  # Full path
-            else:
-                map_reference = f"{map_name}.map"  # Relative name
-
+            # Step 4: Add map reference to workspace file with FULL PATH
             new_map_entry = f'''                <Map
-                        Name = "{map_reference}"
+                        Name = "{map_file_path}"
                 />'''
 
             # Find position to insert (before </Server> closing tag)
@@ -756,7 +721,7 @@ class SaproCommunicationHandler:
             if not success:
                 return False, f"Failed to update workspace file: {output}"
 
-            logger.info(f"Added map reference to workspace: {map_reference}")
+            logger.info(f"Added map reference to workspace with full path: {map_file_path}")
             return True, f"Map {map_name} created successfully in workspace {workspace}"
 
         except Exception as e:
