@@ -284,10 +284,16 @@ class SaproCommunicationHandler:
         Executes SSH command: /opt/sapro/bin/sapcnsl -w /opt/sapro/wsp/{workspace}.wsp -c wspstats
         Parses the table output to extract map names and running status.
 
+        Then constructs full paths by:
+        1. Getting map names from wspstats output
+        2. Reading LocalMappedDir from workspace file
+        3. Combining them: LocalMappedDir + map_name
+
         Returns:
             List of dicts with:
-            - name: Map name (without .map extension and /opt/sapro/map/ prefix)
+            - name: Map name (without .map extension)
             - status: "running" if R in Status column, "" (empty) if stopped, "error" otherwise
+            - full_path: Full path to map file using LocalMappedDir
             - workspace: Workspace name (added when querying all workspaces)
         """
 
@@ -305,6 +311,15 @@ class SaproCommunicationHandler:
 
             if not success:
                 raise Exception(f"SSH command failed: {output}")
+
+            # Get LocalMappedDir for this workspace
+            try:
+                local_map_dir = self._get_local_map_dir(workspace=workspace)
+            except Exception as e:
+                logger.error(f"Failed to get LocalMappedDir for workspace '{workspace}': {e}")
+                raise Exception(f"Failed to get LocalMappedDir: {e}")
+
+            logger.info(f"Using LocalMappedDir for workspace '{workspace}': {local_map_dir}")
 
             # Parse the table output
             result: List[Dict[str, str]] = []
@@ -328,7 +343,7 @@ class SaproCommunicationHandler:
 
                 # Parse table row: "Status    Port #    Map Name"
                 # Status is first column (1 char: R or empty)
-                # Map name is last part after port number
+                # Map name is last part (usually just the filename like "dp_scale.map")
 
                 parts = line.split()
                 if not parts:
@@ -337,20 +352,28 @@ class SaproCommunicationHandler:
                 # Determine status from first column
                 status_char = line[0] if len(line) > 0 else ' '
 
-                # Find map name (last element, should contain /opt/sapro/map/)
-                map_path = None
+                # Find map name (last element)
+                # It might be a full path or just a filename depending on workspace
+                map_part = None
                 for part in reversed(parts):
-                    if '/opt/sapro/' in part:
-                        map_path = part
+                    if '.map' in part:
+                        map_part = part
                         break
 
-                if not map_path:
+                if not map_part:
                     continue
 
-                # Extract map name (remove path and extension)
-                map_name = map_path.split('/')[-1]
-                if map_name.endswith('.map'):
-                    map_name = map_name[:-4]
+                # Extract map name (handle both full paths and filenames)
+                # Example: "dp_scale.map" or "/opt/sapro/map/dp_scale.map"
+                if '/' in map_part:
+                    # It's a full path - extract just the filename
+                    map_filename = map_part.split('/')[-1]
+                else:
+                    # It's just a filename
+                    map_filename = map_part
+
+                # Remove .map extension to get map name
+                map_name = map_filename.replace('.map', '')
 
                 # Determine status
                 if status_char == 'R':
@@ -360,11 +383,16 @@ class SaproCommunicationHandler:
                 else:
                     status = "error"
 
+                # Construct full path using LocalMappedDir + map filename
+                full_path = f"{local_map_dir}{map_filename}"
+
                 result.append({
                     'name': map_name,
                     'status': status,
-                    'full_path': map_path
+                    'full_path': full_path
                 })
+
+                logger.debug(f"Map found: {map_name} -> {full_path} (status: {status})")
 
             logger.info(f"Retrieved {len(result)} maps from workspace '{workspace}'")
             return result
