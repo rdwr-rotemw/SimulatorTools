@@ -112,7 +112,7 @@ def get_user(user_id: int, db: Session = Depends(get_db),
 
 
 @router.get("/users", response_model=list[UserWithRolesResponse], status_code=status.HTTP_200_OK)
-def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[
+def get_all_users(db: Session = Depends(get_db), current_user_data: dict = Depends(get_current_user)) -> list[
     UserWithRolesResponse]:
     """Retrieve users (protected).
 
@@ -122,6 +122,12 @@ def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(ge
     - Super admin (username='admin') sees all users
     - Regular users see only users from their workspace
     """
+    # Fetch the actual User object from the database
+    user_id = int(current_user_data["sub"])
+    current_user = db.get(User, user_id)
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+
     # Super admin sees all users
     if current_user.username == 'admin':
         users = db.query(User).all()
