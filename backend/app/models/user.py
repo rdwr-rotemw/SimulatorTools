@@ -15,7 +15,7 @@ class User(Base):
     username = Column(String(150), unique=True, nullable=False, index=True)
     password_hash = Column(String(512), nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
-    workspace = Column(String(255), nullable=True)  # Workspace name (e.g., "default", "Alteons") or "*" for all
+    workspace = Column(String(255), nullable=False, server_default='default')  # Workspace name (e.g., "default", "Alteons") or "*" for all
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, onupdate=datetime.utcnow)

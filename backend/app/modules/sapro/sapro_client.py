@@ -438,12 +438,42 @@ class SaproCommunicationHandler:
             )
             raise Exception(f"Failed to aggregate maps: {e}")
 
+    def find_map_workspace(self, map_name: str) -> Optional[str]:
+        """Find which workspace contains the given map by searching all workspaces.
+
+        Args:
+            map_name: The logical map name (without extension).
+
+        Returns:
+            Workspace name containing the map, or None if not found.
+        """
+        # Get all maps from all workspaces
+        all_maps = self.get_all_maps(workspace="*")
+        map_info = next((m for m in all_maps if m["name"] == map_name), None)
+        if not map_info:
+            return None
+
+        # Extract workspace from full_path
+        # Path format: /opt/sapro/<workspace>/<map_name>.map OR /opt/sapro/<map_name>.map (default)
+        full_path = map_info["full_path"]
+        # Remove /opt/sapro/ prefix
+        if full_path.startswith("/opt/sapro/"):
+            path_suffix = full_path[len("/opt/sapro/"):]
+            # If there's a directory before the map file, that's the workspace
+            if "/" in path_suffix:
+                workspace_candidate = path_suffix.split("/")[0]
+                # Verify it's not the map file itself
+                if not workspace_candidate.endswith(".map"):
+                    return workspace_candidate
+        # Default workspace if no subdirectory
+        return "default"
+
     def get_full_map_path(self, map_name: str, workspace: str = "default") -> str:
         """Return the full path to a map file on the sapro server.
 
         Args:
             map_name: The logical map name (without extension).
-            workspace: Workspace to search in (defaults to "default")
+            workspace: Workspace to search in. Use "*" to auto-detect workspace.
 
         Returns:
             Full path string from get_all_maps().
@@ -451,10 +481,17 @@ class SaproCommunicationHandler:
         Raises:
             Exception: If map not found.
         """
+        # Auto-detect workspace if "*" is provided
+        if workspace == "*":
+            detected_workspace = self.find_map_workspace(map_name)
+            if not detected_workspace:
+                raise Exception(f"Map '{map_name}' not found in any workspace")
+            workspace = detected_workspace
+
         maps = self.get_all_maps(workspace=workspace)
         map_info = next((m for m in maps if m["name"] == map_name), None)
         if not map_info:
-            raise Exception(f"Map {map_name} not found in workspace {workspace}")
+            raise Exception(f"Map '{map_name}' not found in workspace '{workspace}'")
         return map_info["full_path"]
 
     def _get_local_map_dir(self, workspace: str) -> str:

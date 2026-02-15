@@ -270,8 +270,14 @@ def create_simulator(
         # Load template and convert to XML
         tpl_doc, xml_content = _load_template_and_convert_to_xml(mongo_db, payload.template_id, ip)
 
-        # Get workspace for device creation - use "default" for super admin
-        workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
+        # Get workspace for device creation
+        # Super admin (workspace='*') should auto-detect workspace from map
+        if current_user.workspace == "*":
+            workspace = "*"  # Auto-detect in get_full_map_path
+        else:
+            workspace = current_user.workspace
+
+        logger.info(f"Creating device for user {current_user.username} (workspace: {current_user.workspace}) -> using workspace: {workspace}")
 
         # Get full map path once at route level
         try:
@@ -345,7 +351,11 @@ def create_simulator(
         failed = 0
 
         # Get workspace for device creation
-        workspace = current_user.workspace if current_user.workspace else "default"
+        # Super admin (workspace='*') should auto-detect workspace from map
+        if current_user.workspace == "*":
+            workspace = "*"  # Auto-detect in get_full_map_path
+        else:
+            workspace = current_user.workspace
 
         # Get full map path once at route level
         try:
@@ -465,7 +475,11 @@ async def create_simulator_stream(
             total = len(ip_list)
 
             # Get workspace for device creation
-            workspace = current_user.workspace if current_user.workspace else "default"
+            # Super admin (workspace='*') should auto-detect workspace from map
+            if current_user.workspace == "*":
+                workspace = "*"  # Auto-detect in get_full_map_path
+            else:
+                workspace = current_user.workspace
 
             # Get full map path once at route level
             try:
@@ -720,8 +734,12 @@ def update_simulator(
     if not map_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Map is required")
 
-    # Get workspace from user - use "default" for super admin
-    workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
+    # Get workspace for device update
+    # Super admin (workspace='*') should auto-detect workspace from map
+    if current_user.workspace == "*":
+        workspace = "*"  # Auto-detect in get_full_map_path
+    else:
+        workspace = current_user.workspace
 
     # Get full map path once at route level
     try:
@@ -794,8 +812,12 @@ def delete_simulator(
     if not map_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
 
-    # Get workspace from user - use "default" for super admin
-    workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
+    # Get workspace for device deletion
+    # Super admin (workspace='*') should auto-detect workspace from map
+    if current_user.workspace == "*":
+        workspace = "*"  # Auto-detect in get_full_map_path
+    else:
+        workspace = current_user.workspace
 
     # Get full map path once at route level
     try:

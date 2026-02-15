@@ -112,13 +112,23 @@ def get_user(user_id: int, db: Session = Depends(get_db),
 
 
 @router.get("/users", response_model=list[UserWithRolesResponse], status_code=status.HTTP_200_OK)
-def get_all_users(db: Session = Depends(get_db), _current_user: Any = Depends(get_current_user)) -> list[
+def get_all_users(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)) -> list[
     UserWithRolesResponse]:
-    """Retrieve all users (protected).
+    """Retrieve users (protected).
 
     Requires authentication (via `get_current_user`).
+
+    Workspace filtering:
+    - Super admin (username='admin') sees all users
+    - Regular users see only users from their workspace
     """
-    users = db.query(User).all()
+    # Super admin sees all users
+    if current_user.username == 'admin':
+        users = db.query(User).all()
+    else:
+        # Regular users see only their workspace users
+        users = db.query(User).filter(User.workspace == current_user.workspace).all()
+
     return [
         UserWithRolesResponse(
             user_id=user.user_id,
