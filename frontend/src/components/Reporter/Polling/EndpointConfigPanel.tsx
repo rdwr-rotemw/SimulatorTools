@@ -99,6 +99,28 @@ export const EndpointConfigPanel: React.FC<EndpointConfigPanelProps> = ({
       return;
     }
 
+    // Check if data_structure already has configured data (from template load)
+    // If it does, skip the fetch to avoid overwriting restored data
+    const hasConfiguredData = Object.values(endpoint.data_structure || {}).some((field: any) => {
+      // Check if it's an array with repeat > 0 (indicates configured items)
+      if (field.type === 'array' && field.repeat && field.repeat > 0) {
+        return true;
+      }
+      // Check if it's an object with nested configured arrays
+      if (field.type === 'object' && field.properties) {
+        return Object.values(field.properties).some((prop: any) =>
+          prop.type === 'array' && prop.repeat && prop.repeat > 0
+        );
+      }
+      return false;
+    });
+
+    if (hasConfiguredData) {
+      // Mark as loaded to prevent future fetches
+      setLoadedDataKey(endpoint.data_key);
+      return;
+    }
+
     const loadStructure = async () => {
       setIsLoadingStructure(true);
       setStructureError(null);
@@ -119,20 +141,11 @@ export const EndpointConfigPanel: React.FC<EndpointConfigPanelProps> = ({
           actualStructure = dataStructure[endpoint.data_key];
         }
 
-        console.log('=== Structure Loading Debug ===');
-        console.log('1. Fetched MongoDB structure:', JSON.stringify(mongoStructure, null, 2));
-        console.log('2. Extracted data structure:', JSON.stringify(dataStructure, null, 2));
-        console.log('3. Actual structure to parse:', JSON.stringify(actualStructure, null, 2));
-
         // Parse into FieldValue format
         const parsedStructure = parseStructureTemplate(actualStructure);
 
-        console.log('4. Parsed structure:', JSON.stringify(parsedStructure, null, 2));
-
         // Initialize mode for all fields (defaults to random for applicable types)
         const initializedStructure = initializeFieldModes(parsedStructure);
-
-        console.log('5. Initialized structure:', JSON.stringify(initializedStructure, null, 2));
 
         // Get selected option for path
         const selectedOption = DATA_KEY_OPTIONS.find((opt) => opt.value === endpoint.data_key);
@@ -141,9 +154,6 @@ export const EndpointConfigPanel: React.FC<EndpointConfigPanelProps> = ({
         // If parsed structure is an object with properties, use those properties directly
         // Otherwise, wrap it with the data_key
         const finalDataStructure = initializedStructure.properties || { [endpoint.data_key]: initializedStructure };
-
-        console.log('6. Final data structure:', JSON.stringify(finalDataStructure, null, 2));
-        console.log('=== End Debug ===');
 
         onChange({
           ...endpoint,
@@ -207,10 +217,10 @@ export const EndpointConfigPanel: React.FC<EndpointConfigPanelProps> = ({
           <Divider sx={{ mb: 2 }} />
 
           <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', md: '1fr 1fr' }, gap: 2 }}>
-            {/* Data Key Selector */}
+            {/* Endpoint Name Selector */}
             <Box>
               <FormControl fullWidth required>
-                <InputLabel>Data Key</InputLabel>
+                <InputLabel>Endpoint Name</InputLabel>
                 <Select
                   value={endpoint.data_key}
                   onChange={(e) => {
@@ -221,10 +231,10 @@ export const EndpointConfigPanel: React.FC<EndpointConfigPanelProps> = ({
                       data_structure: {},
                     });
                   }}
-                  label="Data Key"
+                  label="Endpoint Name"
                 >
                   <MenuItem value="">
-                    <em>Select a data key...</em>
+                    <em>Select an endpoint...</em>
                   </MenuItem>
                   {DATA_KEY_OPTIONS.map((option) => (
                     <MenuItem key={option.value} value={option.value}>

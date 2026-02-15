@@ -60,7 +60,6 @@ export interface CCState {
   fetchDevices: (cc_ip: string, forceRefresh?: boolean, skipLoadingState?: boolean) => Promise<void>;
   fetchSaproSimulators: (forceRefresh?: boolean) => Promise<void>;
   fetchManagementPorts: (cc_ip: string, skipLoadingState?: boolean) => Promise<void>;
-  addDevice: (cc_ip: string, data: CCAddDeviceRequest) => Promise<void>;
   deleteDevice: (cc_ip: string, device_id: string) => Promise<void>;
   clearError: () => void;
   clearState: () => void;

@@ -12,6 +12,7 @@ import CCManagementPage from './pages/CCManagementPage';
 import { CCDashboardPage } from './pages/CCDashboardPage';
 import { ReportingPage } from './pages/ReportingPage';
 import { SNMPPage } from './pages/SNMPPage';
+import { PollingPage } from './pages/PollingPage';
 import { IRPManagerPage } from './pages/IRPManagerPage';
 import { IRPSenderPage } from './pages/IRPSenderPage';
 import activityTracker from './utils/activityTracker';
@@ -85,6 +86,14 @@ function App() {
             element={
               <ProtectedRoute requiredRoles={["admin", "cc_admin"]}>
                 <SNMPPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/cc/reporting/polling"
+            element={
+              <ProtectedRoute requiredRoles={["admin", "cc_admin"]}>
+                <PollingPage />
               </ProtectedRoute>
             }
           />

@@ -62,7 +62,7 @@ const CCManagementPage: React.FC = () => {
     const saproSimulators = useCCStore((state) => state.saproSimulators);  // All Sapro simulators
     const isLoading = useCCStore((state) => state.isLoading);
     const fetchDevices = useCCStore((state) => state.fetchDevices);
-    const addDevice = useCCStore((state) => state.addDevice);
+    const fetchSaproSimulators = useCCStore((state) => state.fetchSaproSimulators);
     const deleteDevice = useCCStore((state) => state.deleteDevice);
 
     // Filter CC devices to only show those that exist in Sapro
@@ -97,94 +97,80 @@ const CCManagementPage: React.FC = () => {
     const handleAddDeviceSubmit = async (data: CCAddDeviceRequest) => {
         if (!currentCC) return;
 
-        // Check if IP is a range
-        const isRange = data.management_ip && data.management_ip.includes('-');
+        // Use streaming with status check for both single IPs and ranges
+        setIsAdding(true);
+        setCurrentDevice(0);
+        setTotalDevices(0);
+        setDeviceProgress(null);
+        setAddDialogOpen(false); // Close dialog immediately for streaming
 
-        if (isRange) {
-            // Use streaming with status check for ranges
-            setIsAdding(true);
-            setCurrentDevice(0);
-            setTotalDevices(0);
-            setDeviceProgress(null);
-            setAddDialogOpen(false); // Close dialog immediately for streaming
+        try {
+            await ccService.addDeviceWithStatusCheck(
+                currentCC,
+                data,
+                (current, total, ip, name, status, message) => {
+                    setCurrentDevice(current);
+                    setTotalDevices(total);
 
-            try {
-                await ccService.addDeviceWithStatusCheck(
-                    currentCC,
-                    data,
-                    (current, total, ip, name, status, message) => {
-                        setCurrentDevice(current);
-                        setTotalDevices(total);
+                    // Detect phase from status
+                    if (status === 'adding' || status === 'added') {
+                        setCurrentPhase('adding');
+                    } else if (status === 'checking' || status === 'success' || status === 'failed') {
+                        setCurrentPhase('waiting');
+                    }
 
-                        // Detect phase from status
-                        if (status === 'adding' || status === 'added') {
-                            setCurrentPhase('adding');
-                        } else if (status === 'checking' || status === 'success' || status === 'failed') {
-                            setCurrentPhase('waiting');
-                        }
-
-                        setDeviceProgress({
-                            current,
-                            total,
-                            ip,
-                            name,
-                            status,
-                            message
-                        });
-                    },
-                    (successCount, failedCount, totalCount) => {
-                        setIsAdding(false);
-                        setDeviceProgress(null);
-                        setCurrentPhase(null);
-                        if (failedCount === 0) {
-                            setSnackbar({
-                                open: true,
-                                message: `Successfully added all ${successCount} device(s)`,
-                                severity: 'success'
-                            });
-                        } else if (successCount === 0) {
-                            setSnackbar({
-                                open: true,
-                                message: `Failed to add all ${failedCount} device(s)`,
-                                severity: 'error'
-                            });
-                        } else {
-                            setSnackbar({
-                                open: true,
-                                message: `Added ${successCount} device(s), ${failedCount} failed`,
-                                severity: 'success'
-                            });
-                        }
-                        // Refresh devices after completion
-                        fetchDevices(currentCC);
-                    },
-                    (error) => {
-                        setIsAdding(false);
-                        setDeviceProgress(null);
-                        setCurrentPhase(null);
+                    setDeviceProgress({
+                        current,
+                        total,
+                        ip,
+                        name,
+                        status,
+                        message
+                    });
+                },
+                (successCount, failedCount, totalCount) => {
+                    setIsAdding(false);
+                    setDeviceProgress(null);
+                    setCurrentPhase(null);
+                    if (failedCount === 0) {
                         setSnackbar({
                             open: true,
-                            message: `Error: ${error}`,
+                            message: `Successfully added all ${successCount} device(s)`,
+                            severity: 'success'
+                        });
+                    } else if (successCount === 0) {
+                        setSnackbar({
+                            open: true,
+                            message: `Failed to add all ${failedCount} device(s)`,
                             severity: 'error'
                         });
+                    } else {
+                        setSnackbar({
+                            open: true,
+                            message: `Added ${successCount} device(s), ${failedCount} failed`,
+                            severity: 'success'
+                        });
                     }
-                );
-            } catch (err: any) {
-                setIsAdding(false);
-                setDeviceProgress(null);
-                const msg = err?.response?.data?.detail || err?.message || 'Failed to add devices';
-                setSnackbar({open: true, message: msg, severity: 'error'});
-            }
-        } else {
-            // Single IP - use regular addDevice
-            try {
-                await addDevice(currentCC, data);
-                setAddDialogOpen(false);
-                setSnackbar({open: true, message: 'Device added successfully', severity: 'success'});
-            } catch (err: any) {
-                const msg = err?.response?.data?.detail || err?.message || 'Failed to add device';
-                setSnackbar({open: true, message: msg, severity: 'error'});
-            }
+                    // Refresh devices and Sapro simulators after completion
+                    fetchSaproSimulators(true); // Force refresh
+                    fetchDevices(currentCC);
+                },
+                (error) => {
+                    setIsAdding(false);
+                    setDeviceProgress(null);
+                    setCurrentPhase(null);
+                    setSnackbar({
+                        open: true,
+                        message: `Error: ${error}`,
+                        severity: 'error'
+                    });
+                }
+            );
+        } catch (err: any) {
+            setIsAdding(false);
+            setDeviceProgress(null);
+            const msg = err?.response?.data?.detail || err?.message || 'Failed to add devices';
+            setSnackbar({open: true, message: msg, severity: 'error'});
         }
     };
 
@@ -263,7 +249,12 @@ const CCManagementPage: React.FC = () => {
                         <Button
                             startIcon={<RefreshIcon/>}
                             variant="outlined"
-                            onClick={() => currentCC && fetchDevices(currentCC, true)}
+                            onClick={() => {
+                                if (currentCC) {
+                                    fetchSaproSimulators(true);
+                                    fetchDevices(currentCC, true);
+                                }
+                            }}
                             disabled={isLoading}
                         >
                             Refresh

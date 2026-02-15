@@ -1,33 +1,80 @@
 """
-Reporter sending routes for CyberController simulators.
+Reporter routes for CyberController simulators.
 
-Endpoints:
-- POST /api/cc/{cc_ip}/simulators/{simulator_ip}/reporter/snmp     -> Send SNMP trap to simulator
-- POST /api/cc/{cc_ip}/simulators/{simulator_ip}/reporter/irp      -> Send IRP message to simulator
-- POST /api/cc/{cc_ip}/simulators/{simulator_ip}/reporter/polling  -> Send polling config to simulator
+## SNMP Endpoints:
+- POST   /api/cc/{cc_ip}/simulators/{simulator_ip}/reporter/snmp         -> Send SNMP trap to simulator
+- POST   /api/cc/{cc_ip}/simulators/{simulator_ip}/reporter/snmp/stream  -> Stream SNMP traps to simulator
+- POST   /api/reporter/snmp/import-from-pcap                             -> Import SNMP traps from PCAP file
+
+## IRP Endpoints:
+- POST   /api/cc/{cc_ip}/simulators/{simulator_ip}/reporter/irp          -> Send IRP message to simulator
+- POST   /api/cc/{cc_ip}/simulators/{simulator_ip}/reporter/irp/stream   -> Stream IRP messages to simulator
+- POST   /api/cc/{cc_ip}/irp/template                                    -> Generate IRP template from schema
+- POST   /api/reporter/irp/test-message                                  -> Test IRP message parsing
+- POST   /api/reporter/irp/analyze-pcap                                  -> Analyze IRP messages in PCAP file
+
+## IRP Template Management:
+- POST   /api/cc/{cc_ip}/irp/templates                   -> Create IRP template
+- GET    /api/cc/{cc_ip}/irp/templates                   -> List all IRP templates
+- GET    /api/cc/{cc_ip}/irp/templates/{template_id}     -> Get specific IRP template
+- DELETE /api/cc/{cc_ip}/irp/templates/{template_id}     -> Delete IRP template
+
+## Polling Configuration:
+- GET    /api/cc/{cc_ip}/reporter/polling/structures                           -> List all polling structure templates
+- GET    /api/cc/{cc_ip}/reporter/polling/structures/{structure_id}            -> Get specific polling structure
+- POST   /api/cc/{cc_ip}/reporter/polling/save-xmf                             -> Save XMF file only (no load)
+- POST   /api/cc/{cc_ip}/simulators/{simulator_ip}/reporter/polling            -> Save XMF and load to simulator (supports comma-separated IPs)
+
+## Polling Template Management:
+- POST   /api/cc/{cc_ip}/polling/templates                 -> Create polling template
+- GET    /api/cc/{cc_ip}/polling/templates                 -> List all polling templates
+- GET    /api/cc/{cc_ip}/polling/templates/{template_id}   -> Get specific polling template
+- DELETE /api/cc/{cc_ip}/polling/templates/{template_id}   -> Delete polling template
 
 All endpoints require 'cc_admin' or 'admin' role (enforced via require_cc_access).
-These endpoints integrate directly with reporter implementation modules.
 """
+
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import os
+import queue
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
+from backend.app.models.polling import PollingTemplateCreate, EndpointConfig
 from backend.app.models.user import User
-from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo, send_irp_messages
+from backend.app.modules.reporter.irp.core.message_testing_coordinator import (
+    MessageTestingCoordinator,
+)
+from backend.app.modules.reporter.irp.irp_module import (
+    load_schema_from_mongo,
+    send_irp_messages,
+)
 from backend.app.modules.reporter.irp.irp_module import send_irp_messages_with_progress
+from backend.app.modules.reporter.irp.tools.irp_pcap_analyzer import (
+    analyze_irp_pcap_file,
+)
+from backend.app.modules.reporter.irp.tools.template_generator import TemplateGenerator
+from backend.app.modules.reporter.polling.polling_service import PollingService
 from backend.app.modules.reporter.snmp import attack_traps
-from backend.app.modules.reporter.snmp.attack_traps import send_attack_traps_with_progress
-from backend.app.modules.sapro.sapro_client import get_sapro_handler, SaproCommunicationHandler
+from backend.app.modules.reporter.snmp.attack_traps import (
+    send_attack_traps_with_progress,
+)
+from backend.app.modules.sapro.sapro_client import (
+    get_sapro_handler,
+    SaproCommunicationHandler,
+)
 from backend.app.schemas.reporter import (
     ReporterSNMPPayload,
     ReporterPollingPayload,
@@ -38,6 +85,7 @@ from backend.app.schemas.reporter import (
 )
 from backend.app.utils.auth import require_cc_access, get_current_user
 from backend.app.utils.database import get_mongo_db
+from backend.app.utils.pcap_converter import pcap_to_traps, PcapParseError
 
 router = APIRouter(prefix="/api", tags=["reporter"])
 logger = logging.getLogger("sim-tools.reporter")
@@ -52,10 +100,10 @@ _executor = ThreadPoolExecutor(max_workers=2)
     response_model=ReporterResponse,
 )
 async def send_snmp_trap_endpoint(
-        cc_ip: str,
-        simulator_ip: str,
-        payload: ReporterSNMPPayload,
-        _current_user: User = Depends(require_cc_access),
+    cc_ip: str,
+    simulator_ip: str,
+    payload: ReporterSNMPPayload,
+    _current_user: User = Depends(require_cc_access),
 ) -> ReporterResponse:
     """Send SNMP trap to simulator(s) via CyberController.
 
@@ -77,42 +125,48 @@ async def send_snmp_trap_endpoint(
         trap_data = payload.model_dump(exclude_none=True)
 
         # Validate trap_data structure
-        if not trap_data or 'traps' not in trap_data:
+        if not trap_data or "traps" not in trap_data:
             logger.error("Invalid trap_data: missing 'traps' key")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid trap data: 'traps' key is required"
+                detail="Invalid trap data: 'traps' key is required",
             )
 
-        if not isinstance(trap_data['traps'], list) or not trap_data['traps']:
+        if not isinstance(trap_data["traps"], list) or not trap_data["traps"]:
             logger.error("Invalid trap_data: 'traps' must be a non-empty list")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid trap data: 'traps' must be a non-empty list"
+                detail="Invalid trap data: 'traps' must be a non-empty list",
             )
 
         # Check if multiple simulators (comma-separated)
-        if ',' in simulator_ip:
-            simulator_ips = [ip.strip() for ip in simulator_ip.split(',')]
+        if "," in simulator_ip:
+            simulator_ips = [ip.strip() for ip in simulator_ip.split(",")]
             logger.info(f"Processing multiple simulators: {simulator_ips}")
 
             # Handle map field - convert to dict if needed
             map_dict = {}
-            if isinstance(trap_data['map'], dict):
-                map_dict = trap_data['map']
+            if isinstance(trap_data["map"], dict):
+                map_dict = trap_data["map"]
             else:
                 # Single map string - use for all simulators
                 for sim_ip in simulator_ips:
-                    map_dict[sim_ip] = trap_data['map']
+                    map_dict[sim_ip] = trap_data["map"]
 
             # Process all simulators in parallel
             async def send_to_simulator(sim_ip: str):
                 sim_trap_data = trap_data.copy()
-                sim_trap_data['map'] = map_dict.get(sim_ip, trap_data['map'] if isinstance(trap_data['map'], str) else '')
+                sim_trap_data["map"] = map_dict.get(
+                    sim_ip,
+                    trap_data["map"] if isinstance(trap_data["map"], str) else "",
+                )
                 return attack_traps.send_attack_traps(cc_ip, sim_ip, sim_trap_data)
 
             # Execute in parallel
-            results = await asyncio.gather(*[send_to_simulator(sim_ip) for sim_ip in simulator_ips], return_exceptions=True)
+            results = await asyncio.gather(
+                *[send_to_simulator(sim_ip) for sim_ip in simulator_ips],
+                return_exceptions=True,
+            )
 
             # Aggregate results
             total_success = 0
@@ -124,8 +178,8 @@ async def send_snmp_trap_endpoint(
                 if isinstance(result, Exception):
                     logger.error(f"Simulator {simulator_ips[idx]} failed: {result}")
                     errors.append(f"{simulator_ips[idx]}: {str(result)}")
-                    total_failed += len(trap_data['traps'])
-                    total_count += len(trap_data['traps'])
+                    total_failed += len(trap_data["traps"])
+                    total_count += len(trap_data["traps"])
                 else:
                     success_count, failed_count, count = result
                     total_success += success_count
@@ -143,8 +197,7 @@ async def send_snmp_trap_endpoint(
                     message += f". Errors: {'; '.join(errors)}"
                 logger.warning(message)
                 raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=message
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message
                 )
             else:
                 message = f"Failed to send all {total_count} trap(s) to {len(simulator_ips)} simulator(s)"
@@ -152,23 +205,24 @@ async def send_snmp_trap_endpoint(
                     message += f". Errors: {'; '.join(errors)}"
                 logger.error(message)
                 raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=message
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message
                 )
         else:
             # Single simulator (backward compatible)
             # Handle map field
-            if isinstance(trap_data['map'], dict):
+            if isinstance(trap_data["map"], dict):
                 # Dict provided but only one simulator - extract map for this simulator
-                trap_data['map'] = trap_data['map'].get(simulator_ip, '')
-                if not trap_data['map']:
+                trap_data["map"] = trap_data["map"].get(simulator_ip, "")
+                if not trap_data["map"]:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Map not found for simulator {simulator_ip}"
+                        detail=f"Map not found for simulator {simulator_ip}",
                     )
 
             # Call attack_traps module directly
-            logger.info(f"Sending {len(trap_data['traps'])} trap(s) from {simulator_ip} to {cc_ip}")
+            logger.info(
+                f"Sending {len(trap_data['traps'])} trap(s) from {simulator_ip} to {cc_ip}"
+            )
             success_count, failed_count, total_count = attack_traps.send_attack_traps(
                 cc_ip, simulator_ip, trap_data
             )
@@ -182,15 +236,13 @@ async def send_snmp_trap_endpoint(
                 message = f"Partially successful: {success_count} succeeded, {failed_count} failed"
                 logger.warning(message)
                 raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=message
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message
                 )
             else:
                 message = f"Failed to send all {total_count} trap(s)"
                 logger.error(message)
                 raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=message
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message
                 )
 
     except HTTPException:
@@ -199,13 +251,352 @@ async def send_snmp_trap_endpoint(
         logger.error(f"Invalid trap configuration: {exc!s}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid trap configuration: missing key {exc!s}"
+            detail=f"Invalid trap configuration: missing key {exc!s}",
         )
     except Exception as exc:
         logger.exception(f"Failed to send SNMP traps: {exc!s}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to send SNMP trap: {exc!s}"
+            detail=f"Failed to send SNMP trap: {exc!s}",
+        )
+
+
+@router.get(
+    "/cc/{cc_ip}/reporter/polling/structures",
+    status_code=status.HTTP_200_OK,
+)
+async def list_polling_structures(
+    cc_ip: str,
+    _current_user: User = Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
+) -> list:
+    """List all available polling structure templates.
+
+    Requires cc_admin or admin role.
+
+    Args:
+        cc_ip: CyberController IP address
+        _current_user: Authenticated user with cc_admin or admin role
+        mongo_db: MongoDB database instance
+
+    Returns:
+        List of all polling structure templates
+    """
+    try:
+        collection = mongo_db["polling_structures"]
+        structures = list(collection.find({}))
+
+        # Convert ObjectId to string
+        for structure in structures:
+            structure["_id"] = str(structure["_id"])
+
+        logger.info(f"Retrieved {len(structures)} polling structure templates")
+        return structures
+
+    except Exception as exc:
+        logger.exception(f"Failed to list polling structures: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list polling structures: {exc!s}",
+        )
+
+
+@router.get(
+    "/cc/{cc_ip}/reporter/polling/structures/{structure_id}",
+    status_code=status.HTTP_200_OK,
+)
+async def get_polling_structure(
+    cc_ip: str,
+    structure_id: str,
+    _current_user: User = Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
+) -> dict:
+    """Get a specific polling structure template by structure_id.
+
+    Requires cc_admin or admin role.
+
+    Args:
+        cc_ip: CyberController IP address
+        structure_id: Structure identifier (e.g., 'attack_data')
+        _current_user: Authenticated user with cc_admin or admin role
+        mongo_db: MongoDB database instance
+
+    Returns:
+        Polling structure template
+    """
+    try:
+        collection = mongo_db["polling_structures"]
+        structure = collection.find_one({"structure_id": structure_id})
+
+        if not structure:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Polling structure not found: {structure_id}",
+            )
+
+        # Convert ObjectId to string
+        structure["_id"] = str(structure["_id"])
+
+        logger.info(f"Retrieved polling structure: {structure_id}")
+        return structure
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(f"Failed to get polling structure: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get polling structure: {exc!s}",
+        )
+
+
+@router.post(
+    "/cc/{cc_ip}/polling/templates",
+    status_code=status.HTTP_200_OK,
+)
+async def create_polling_template(
+    cc_ip: str,
+    template: dict,
+    _current_user: User = Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
+    sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
+):
+    """Create a new polling template.
+
+    Requires cc_admin or admin role.
+
+    Args:
+        cc_ip: CyberController IP address
+        template: Template data (name, description, endpoint config)
+        _current_user: Authenticated user with cc_admin or admin role
+        mongo_db: MongoDB database instance
+        sapro_handler: Sapro communication handler instance
+
+    Returns:
+        Success response with template ID
+    """
+    try:
+
+        service = PollingService(mongo_db, sapro_handler)
+        template_obj = PollingTemplateCreate(**template)
+
+        template_id = await service.create_template(template_obj)
+
+        return {
+            "success": True,
+            "template_id": template_id,
+            "message": "Template created successfully",
+        }
+
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+    except Exception as exc:
+        logger.exception(f"Failed to create polling template: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create polling template: {exc!s}",
+        )
+
+
+@router.get(
+    "/cc/{cc_ip}/polling/templates",
+    status_code=status.HTTP_200_OK,
+)
+async def list_polling_templates(
+    cc_ip: str,
+    _current_user: User = Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
+    sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
+):
+    """List all polling templates.
+
+    Requires cc_admin or admin role.
+
+    Args:
+        cc_ip: CyberController IP address
+        _current_user: Authenticated user with cc_admin or admin role
+        mongo_db: MongoDB database instance
+        sapro_handler: Sapro communication handler instance
+
+    Returns:
+        List of template summaries
+    """
+    try:
+
+        service = PollingService(mongo_db, sapro_handler)
+        templates = await service.list_templates()
+
+        return {"success": True, "templates": templates}
+
+    except Exception as exc:
+        logger.exception(f"Failed to list polling templates: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list polling templates: {exc!s}",
+        )
+
+
+@router.get(
+    "/cc/{cc_ip}/polling/templates/{template_id}",
+    status_code=status.HTTP_200_OK,
+)
+async def get_polling_template(
+    cc_ip: str,
+    template_id: str,
+    _current_user: User = Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
+    sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
+):
+    """Get polling template details by ID.
+
+    Requires cc_admin or admin role.
+
+    Args:
+        cc_ip: CyberController IP address
+        template_id: MongoDB template ID
+        _current_user: Authenticated user with cc_admin or admin role
+        mongo_db: MongoDB database instance
+        sapro_handler: Sapro communication handler instance
+
+    Returns:
+        Full template details
+    """
+    try:
+
+        service = PollingService(mongo_db, sapro_handler)
+        template = await service.get_template(template_id)
+
+        # Convert ObjectId to string
+        template["_id"] = str(template["_id"])
+
+        return {"success": True, "template": template}
+
+    except ValueError as ve:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(ve))
+    except Exception as exc:
+        logger.exception(f"Failed to get polling template: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get polling template: {exc!s}",
+        )
+
+
+@router.delete(
+    "/cc/{cc_ip}/polling/templates/{template_id}",
+    status_code=status.HTTP_200_OK,
+)
+async def delete_polling_template(
+    cc_ip: str,
+    template_id: str,
+    _current_user: User = Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
+    sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
+):
+    """Delete a polling template.
+
+    Requires cc_admin or admin role.
+
+    Args:
+        cc_ip: CyberController IP address
+        template_id: MongoDB template ID
+        _current_user: Authenticated user with cc_admin or admin role
+        mongo_db: MongoDB database instance
+        sapro_handler: Sapro communication handler instance
+
+    Returns:
+        Success response
+    """
+    try:
+
+        service = PollingService(mongo_db, sapro_handler)
+        deleted = await service.delete_template(template_id)
+
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Template not found"
+            )
+
+        return {"success": True, "message": "Template deleted successfully"}
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(f"Failed to delete polling template: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete polling template: {exc!s}",
+        )
+
+
+@router.post(
+    "/cc/{cc_ip}/reporter/polling/save-xmf",
+    status_code=status.HTTP_200_OK,
+    response_model=ReporterResponse,
+)
+async def save_xmf_to_simulator(
+    cc_ip: str,
+    payload: ReporterPollingPayload,
+    current_user: User = Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
+    sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
+) -> ReporterResponse:
+    """Save XMF file to Sapro filesystem (does NOT load to simulator).
+
+    Requires cc_admin or admin role.
+
+    Args:
+        cc_ip: CyberController IP address
+        payload: Polling payload with template_id or endpoint_config and xmf_filename
+        current_user: Authenticated user with cc_admin or admin role
+        mongo_db: MongoDB database instance
+        sapro_handler: Sapro communication handler instance
+
+    Returns:
+        ReporterResponse with success status and file path
+    """
+    try:
+
+        service = PollingService(mongo_db, sapro_handler)
+
+        # Generate XMF content
+        if payload.template_id:
+            xmf_content = await service.generate_xmf_from_template(payload.template_id)
+        elif payload.endpoints:
+            # Convert dict to EndpointConfig objects
+            endpoints = [EndpointConfig(**ep) for ep in payload.endpoints]
+            xmf_content = await service.generate_xmf_from_endpoints(endpoints)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Either template_id or endpoints must be provided",
+            )
+
+        # Write XMF to filesystem
+        workspace = current_user.workspace
+        success, result = service._write_xmf_to_filesystem(
+            xmf_content, payload.xmf_filename, workspace, payload.overwrite
+        )
+
+        if not success:
+            # Check if file exists and user didn't allow overwrite
+            if result.startswith("FILE_EXISTS:"):
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=result)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to save XMF file: {result}",
+            )
+
+        return ReporterResponse(
+            success=True, message=f"XMF file saved successfully: {result}"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(f"Failed to save XMF file: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to save XMF file: {exc!s}",
         )
 
 
@@ -215,32 +606,232 @@ async def send_snmp_trap_endpoint(
     response_model=ReporterResponse,
 )
 async def set_polling_config(
-        cc_ip: str,
-        simulator_ip: str,
-        payload: ReporterPollingPayload,
-        _current_user: User = Depends(require_cc_access),
-        sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
+    cc_ip: str,
+    simulator_ip: str,
+    payload: ReporterPollingPayload,
+    current_user: User = Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
+    sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
 ) -> ReporterResponse:
-    """Send polling configuration to simulator via CyberController.
+    """Set polling configuration on simulator(s) (saves XMF and loads to device).
+
+    This is the full flow that:
+    1. Generates XMF from template or config
+    2. Saves XMF to Sapro filesystem (once for all simulators)
+    3. Creates DeviceMap XML
+    4. Loads to simulator(s) via update_device()
+    5. Simulator starts responding immediately
+
+    Supports multiple simulators via comma-separated IPs (e.g., "192.168.1.1,192.168.1.2").
+    When using multiple simulators, payload.map can be:
+    - Dict mapping each IP to its map: {"192.168.1.1": "map1", "192.168.1.2": "map2"}
+    - Single string (same map for all): "map1"
 
     Requires cc_admin or admin role.
 
     Args:
         cc_ip: CyberController IP address
-        simulator_ip: Target simulator IP address
-        payload: Polling configuration
-        _current_user: Authenticated user with cc_admin or admin role
+        simulator_ip: Target simulator IP address (or comma-separated IPs for multiple)
+        payload: Polling payload with template_id or endpoints, xmf_filename, and map (string or dict)
+        current_user: Authenticated user with cc_admin or admin role
+        mongo_db: MongoDB database instance
         sapro_handler: Sapro communication handler instance
 
     Returns:
         ReporterResponse with success status and message
     """
-    # TODO: integrate with real polling module when implemented
-    logger.warning("Polling configuration functionality not yet implemented")
-    raise HTTPException(
-        status_code=status.HTTP_501_NOT_IMPLEMENTED,
-        detail="Polling functionality not implemented yet"
-    )
+    try:
+        service = PollingService(mongo_db, sapro_handler)
+
+        # Generate XMF content once
+        if payload.template_id:
+            xmf_content = await service.generate_xmf_from_template(payload.template_id)
+        elif payload.endpoints:
+            # Convert dict to EndpointConfig objects
+            endpoints = [EndpointConfig(**ep) for ep in payload.endpoints]
+            xmf_content = await service.generate_xmf_from_endpoints(endpoints)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Either template_id or endpoints must be provided",
+            )
+
+        # Check if multiple simulators (comma-separated)
+        if "," in simulator_ip:
+            simulator_ips = [ip.strip() for ip in simulator_ip.split(",")]
+            logger.info(f"Loading polling config to multiple simulators: {simulator_ips}")
+
+            # Handle map field - convert to dict if needed (matches SNMP pattern)
+            map_dict = {}
+            if isinstance(payload.map, dict):
+                map_dict = payload.map
+            else:
+                # Single map string - use for all simulators
+                for sim_ip in simulator_ips:
+                    map_dict[sim_ip] = payload.map
+
+            workspace = current_user.workspace
+            results = []
+            write_xmf = payload.write_xmf if hasattr(payload, 'write_xmf') and payload.write_xmf is not None else True
+            overwrite = payload.overwrite if hasattr(payload, 'overwrite') and payload.overwrite is not None else False
+
+            # Write XMF once if needed
+            if write_xmf:
+                # Use first simulator's map path for writing XMF
+                first_sim_ip = simulator_ips[0]
+                first_map_name = map_dict.get(first_sim_ip)
+                if not first_map_name:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Map not found for simulator {first_sim_ip}",
+                    )
+
+                try:
+                    first_map_path = sapro_handler.get_full_map_path(first_map_name, workspace)
+                except Exception as e:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"Failed to get map path: {e}",
+                    )
+
+                # Write XMF file once
+                success, message = await service.load_xmf_to_simulator(
+                    device_ip=first_sim_ip,
+                    xmf_content=xmf_content,
+                    xmf_filename=payload.xmf_filename,
+                    map_path=first_map_path,
+                    workspace=workspace,
+                    overwrite=overwrite,
+                    write_xmf=True,
+                )
+
+                if not success:
+                    # Check if file exists and user didn't allow overwrite
+                    if message.startswith("FILE_EXISTS:"):
+                        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message
+                    )
+
+            # Load XMF to each simulator
+            for sim_ip in simulator_ips:
+                map_name = map_dict.get(sim_ip)
+                if not map_name:
+                    results.append({
+                        "simulator_ip": sim_ip,
+                        "success": False,
+                        "message": f"Map not found for simulator {sim_ip}"
+                    })
+                    continue
+
+                try:
+                    map_path = sapro_handler.get_full_map_path(map_name, workspace)
+                except Exception as e:
+                    results.append({
+                        "simulator_ip": sim_ip,
+                        "success": False,
+                        "message": f"Failed to get map path: {e}"
+                    })
+                    continue
+
+                success, message = await service.load_xmf_to_simulator(
+                    device_ip=sim_ip,
+                    xmf_content=xmf_content,
+                    xmf_filename=payload.xmf_filename,
+                    map_path=map_path,
+                    workspace=workspace,
+                    overwrite=overwrite,
+                    write_xmf=False,  # XMF already written above
+                )
+
+                results.append({
+                    "simulator_ip": sim_ip,
+                    "success": success,
+                    "message": message
+                })
+
+            # Summarize results
+            successes = sum(1 for r in results if r["success"])
+            failures = len(results) - successes
+
+            if failures == 0:
+                return ReporterResponse(
+                    success=True,
+                    message=f"Polling configuration loaded successfully to all {successes} simulator(s)"
+                )
+            elif successes > 0:
+                return ReporterResponse(
+                    success=True,
+                    message=f"Loaded to {successes} simulator(s), failed for {failures} simulator(s)"
+                )
+            else:
+                # All failed
+                error_messages = [f"{r['simulator_ip']}: {r['message']}" for r in results if not r['success']]
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to load to all simulators: {'; '.join(error_messages)}"
+                )
+
+        else:
+            # Single simulator (original logic)
+            # Load XMF to simulator
+            # Get map from payload (matches SNMP pattern)
+            if not payload.map:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Map is required for loading configuration to simulator",
+                )
+
+            # Extract map name for this specific simulator
+            if isinstance(payload.map, dict):
+                map_name = payload.map.get(simulator_ip)
+                if not map_name:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Map not found for simulator {simulator_ip}",
+                    )
+            else:
+                map_name = payload.map
+
+            workspace = current_user.workspace
+
+            # Get full map path once at route level
+            try:
+                map_path = sapro_handler.get_full_map_path(map_name, workspace)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to get map path: {e}",
+                )
+
+            success, message = await service.load_xmf_to_simulator(
+                device_ip=simulator_ip,
+                xmf_content=xmf_content,
+                xmf_filename=payload.xmf_filename,
+                map_path=map_path,
+                workspace=workspace,
+                overwrite=payload.overwrite if hasattr(payload, 'overwrite') and payload.overwrite is not None else False,
+                write_xmf=payload.write_xmf if hasattr(payload, 'write_xmf') and payload.write_xmf is not None else True,
+            )
+
+            if not success:
+                # Check if file exists and user didn't allow overwrite
+                if message.startswith("FILE_EXISTS:"):
+                    raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message
+                )
+
+            return ReporterResponse(success=True, message=message)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(f"Failed to set polling configuration: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to set polling configuration: {exc!s}",
+        )
 
 
 @router.post(
@@ -249,11 +840,11 @@ async def set_polling_config(
     response_model=ReporterResponse,
 )
 async def send_irp_messages_endpoint(
-        cc_ip: str,
-        simulator_ip: str,
-        payload: IRPSendPayload,
-        _current_user: User = Depends(require_cc_access),
-        mongo_db=Depends(get_mongo_db),
+    cc_ip: str,
+    simulator_ip: str,
+    payload: IRPSendPayload,
+    _current_user: User = Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
 ) -> ReporterResponse:
     """Send an IRP message based on a stored IdsDataFormat schema in MongoDB.
 
@@ -268,24 +859,32 @@ async def send_irp_messages_endpoint(
     except KeyError as ke:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ke))
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to load schema: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load schema: {exc!s}",
+        )
 
     try:
         # Check if multiple simulators (comma-separated)
-        if ',' in simulator_ip:
-            simulator_ips = [ip.strip() for ip in simulator_ip.split(',')]
+        if "," in simulator_ip:
+            simulator_ips = [ip.strip() for ip in simulator_ip.split(",")]
             logger.info(f"Processing multiple simulators for IRP: {simulator_ips}")
 
             # Process all simulators in parallel (IRP doesn't need different maps)
             async def send_to_simulator(sim_ip: str):
                 try:
-                    return send_irp_messages(schema_obj, payload.message_data, sim_ip, cc_ip)
+                    return send_irp_messages(
+                        schema_obj, payload.message_data, sim_ip, cc_ip
+                    )
                 except Exception as e:
                     logger.error(f"Error sending to {sim_ip}: {e}")
                     return {"error": f"Failed to send to {sim_ip}: {str(e)}"}
 
             # Execute in parallel
-            results_list = await asyncio.gather(*[send_to_simulator(sim_ip) for sim_ip in simulator_ips], return_exceptions=True)
+            results_list = await asyncio.gather(
+                *[send_to_simulator(sim_ip) for sim_ip in simulator_ips],
+                return_exceptions=True,
+            )
 
             # Aggregate results
             all_success = True
@@ -331,24 +930,36 @@ async def send_irp_messages_endpoint(
             if all_success:
                 message = f"All IRP messages sent successfully to {len(simulator_ips)} simulator(s)"
                 logger.info(message)
-                return ReporterResponse(success=True, message=message, messages=aggregated_results)
+                return ReporterResponse(
+                    success=True, message=message, messages=aggregated_results
+                )
             elif not any_success:
                 # All failed - treat as server error
-                message = f"All IRP messages failed for {len(simulator_ips)} simulator(s)"
+                message = (
+                    f"All IRP messages failed for {len(simulator_ips)} simulator(s)"
+                )
                 if errors:
                     message += f". Errors: {'; '.join(errors)}"
                 logger.error(message)
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message
+                )
             else:
                 # Mixed results - partial success
-                message = f"Partial IRP results across {len(simulator_ips)} simulator(s)"
+                message = (
+                    f"Partial IRP results across {len(simulator_ips)} simulator(s)"
+                )
                 if errors:
                     message += f". Errors: {'; '.join(errors)}"
                 logger.warning(message)
-                return ReporterResponse(success=False, message=message, messages=aggregated_results)
+                return ReporterResponse(
+                    success=False, message=message, messages=aggregated_results
+                )
         else:
             # Single simulator (backward compatible)
-            results = send_irp_messages(schema_obj, payload.message_data, simulator_ip, cc_ip)
+            results = send_irp_messages(
+                schema_obj, payload.message_data, simulator_ip, cc_ip
+            )
             if isinstance(results, dict):
                 # The results dict contains per-message tuples/lists like: { name: [bool_success, message_or_error] }
                 all_success = True
@@ -365,36 +976,48 @@ async def send_irp_messages_endpoint(
 
                 if all_success:
                     logger.info("All IRP messages succeeded")
-                    return ReporterResponse(success=True, message="All IRP messages sent successfully", messages=results)
+                    return ReporterResponse(
+                        success=True,
+                        message="All IRP messages sent successfully",
+                        messages=results,
+                    )
                 if not any_success:
                     # All failed - treat as server error
                     logger.error(f"All IRP messages failed: {results}")
-                    raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                        detail=f"All IRP messages failed: {results}")
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=f"All IRP messages failed: {results}",
+                    )
 
                 # Mixed results - partial success
                 logger.warning(f"Partial IRP results: {results}")
-                return ReporterResponse(success=False, message="Partial failure sending IRP messages", messages=results)
+                return ReporterResponse(
+                    success=False,
+                    message="Partial failure sending IRP messages",
+                    messages=results,
+                )
             else:
                 # Overall failure
                 success, error_msg = results
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg)
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_msg
+                )
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Failed to send IRP messages: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to send IRP messages: {exc!s}",
+        )
 
 
-@router.post(
-    "/cc/{cc_ip}/simulators/{simulator_ip}/reporter/irp/stream"
-)
+@router.post("/cc/{cc_ip}/simulators/{simulator_ip}/reporter/irp/stream")
 async def send_irp_messages_stream_endpoint(
-        cc_ip: str,
-        simulator_ip: str,
-        payload: IRPSendPayload,
-        _current_user: User = Depends(require_cc_access),
-        mongo_db=Depends(get_mongo_db),
+    cc_ip: str,
+    simulator_ip: str,
+    payload: IRPSendPayload,
+    _current_user: User = Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
 ):
     """Send IRP messages with real-time progress via Server-Sent Events.
 
@@ -407,31 +1030,41 @@ async def send_irp_messages_stream_endpoint(
     except KeyError as ke:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ke))
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to load schema: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load schema: {exc!s}",
+        )
 
     try:
         message_data = payload.message_data
 
         # Check if multiple simulators (comma-separated)
-        if ',' in simulator_ip:
-            simulator_ips = [ip.strip() for ip in simulator_ip.split(',')]
-            logger.info(f"Streaming IRP messages to multiple simulators: {simulator_ips}")
+        if "," in simulator_ip:
+            simulator_ips = [ip.strip() for ip in simulator_ip.split(",")]
+            logger.info(
+                f"Streaming IRP messages to multiple simulators: {simulator_ips}"
+            )
 
             async def event_generator():
                 try:
                     # Create async generators for each simulator
                     async def simulator_generator(sim_ip: str):
                         try:
-                            for progress in send_irp_messages_with_progress(schema_obj, message_data, sim_ip, cc_ip):
+                            for progress in send_irp_messages_with_progress(
+                                schema_obj, message_data, sim_ip, cc_ip
+                            ):
                                 # Add simulator_ip to progress event
-                                progress['simulator_ip'] = sim_ip
+                                progress["simulator_ip"] = sim_ip
                                 yield progress
                         except Exception as exc:
                             logger.exception(f"Error streaming to {sim_ip}: {exc}")
-                            yield {"type": "error", "simulator_ip": sim_ip, "message": str(exc)}
+                            yield {
+                                "type": "error",
+                                "simulator_ip": sim_ip,
+                                "message": str(exc),
+                            }
 
                     # Interleave events from all simulators
-                    import queue
                     event_queue = queue.Queue()
                     completed_simulators = set()
 
@@ -442,7 +1075,10 @@ async def send_irp_messages_stream_endpoint(
                         completed_simulators.add(sim_ip)
 
                     # Start all tasks
-                    tasks = [asyncio.create_task(run_generator(sim_ip)) for sim_ip in simulator_ips]
+                    tasks = [
+                        asyncio.create_task(run_generator(sim_ip))
+                        for sim_ip in simulator_ips
+                    ]
 
                     # Yield events as they arrive
                     while len(completed_simulators) < len(simulator_ips):
@@ -469,32 +1105,40 @@ async def send_irp_messages_stream_endpoint(
             return StreamingResponse(
                 event_generator(),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         else:
             # Single simulator (backward compatible)
             async def event_generator():
                 try:
-                    for progress in send_irp_messages_with_progress(schema_obj, message_data, simulator_ip, cc_ip):
+                    for progress in send_irp_messages_with_progress(
+                        schema_obj, message_data, simulator_ip, cc_ip
+                    ):
                         # Add simulator_ip for consistency
-                        progress['simulator_ip'] = simulator_ip
+                        progress["simulator_ip"] = simulator_ip
                         yield f"data: {json.dumps(progress)}\n\n"
                 except Exception as exc:
                     logger.exception(f"Error during IRP message streaming: {exc}")
-                    error_event = {"type": "error", "simulator_ip": simulator_ip, "message": str(exc)}
+                    error_event = {
+                        "type": "error",
+                        "simulator_ip": simulator_ip,
+                        "message": str(exc),
+                    }
                     yield f"data: {json.dumps(error_event)}\n\n"
 
             return StreamingResponse(
                 event_generator(),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Failed to initialize IRP streaming: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initialize IRP streaming: {exc!s}",
+        )
 
 
 @router.post(
@@ -502,9 +1146,9 @@ async def send_irp_messages_stream_endpoint(
     status_code=status.HTTP_200_OK,
 )
 async def create_irp_template_endpoint(
-        payload: IRPTemplatePayload,
-        _current_user: User = Depends(require_cc_access),
-        mongo_db=Depends(get_mongo_db),
+    payload: IRPTemplatePayload,
+    _current_user: User = Depends(require_cc_access),
+    mongo_db=Depends(get_mongo_db),
 ) -> Dict[str, Any]:
     """Generate an IRP template for a message from a stored schema in MongoDB."""
     try:
@@ -514,35 +1158,46 @@ async def create_irp_template_endpoint(
     except KeyError as ke:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ke))
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to load schema: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load schema: {exc!s}",
+        )
 
     try:
-        from backend.app.modules.reporter.irp.tools.template_generator import TemplateGenerator
         tg = TemplateGenerator(schema_obj.schema)
 
         # Use new method that generates both template and metadata
-        result = tg.generate_template_with_metadata(payload.message_id, interactive=False)
+        result = tg.generate_template_with_metadata(
+            payload.message_id, interactive=False
+        )
 
         # Get message name
         message_id_str = str(payload.message_id)
         message_name = "Unknown"
-        if hasattr(schema_obj.schema, 'messages') and message_id_str in schema_obj.schema.messages:
+        if (
+            hasattr(schema_obj.schema, "messages")
+            and message_id_str in schema_obj.schema.messages
+        ):
             msg_obj = schema_obj.schema.messages[message_id_str]
-            message_name = getattr(msg_obj, 'name', 'Unknown')
+            message_name = getattr(msg_obj, "name", "Unknown")
 
         return {
             "success": True,
             "name": message_name,
             "template": result["template"],
-            "schema": result["schema"]
+            "schema": result["schema"],
         }
     except HTTPException:
         raise
     except KeyError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message ID not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Message ID not found"
+        )
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Template generation failed: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Template generation failed: {exc!s}",
+        )
 
 
 # Utility function to sanitize data for MongoDB storage
@@ -579,7 +1234,7 @@ def deserialize_from_mongo(data: Any) -> Any:
         # Try to convert string back to integer if it looks like a number
         try:
             # Check if string is purely numeric (including negative)
-            if data.lstrip('-').isdigit():
+            if data.lstrip("-").isdigit():
                 return int(data)
         except (ValueError, AttributeError):
             pass
@@ -591,9 +1246,7 @@ def deserialize_from_mongo(data: Any) -> Any:
 # IRP Template Management
 @router.post("/cc/{cc_ip}/irp/templates")
 async def save_irp_template(
-        cc_ip: str,
-        template_data: dict,
-        current_user: dict = Depends(get_current_user)
+    cc_ip: str, template_data: dict, current_user: dict = Depends(get_current_user)
 ):
     """Save an IRP message template"""
     try:
@@ -609,7 +1262,7 @@ async def save_irp_template(
             "schema_id": template_data["schema_id"],
             "schema_name": template_data["schema_name"],
             "messages": sanitized_messages,
-            "created_at": datetime.now(timezone.utc)
+            "created_at": datetime.now(timezone.utc),
         }
 
         result = db.irp_templates.insert_one(template_doc)
@@ -617,25 +1270,31 @@ async def save_irp_template(
         return {
             "success": True,
             "template_id": str(result.inserted_id),
-            "message": "Template saved successfully"
+            "message": "Template saved successfully",
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save template: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to save template: {str(e)}"
+        )
 
 
 @router.get("/cc/{cc_ip}/irp/templates")
 async def list_irp_templates(
-        cc_ip: str,
-        current_user: dict = Depends(get_current_user)
+    cc_ip: str, current_user: dict = Depends(get_current_user)
 ):
     """List all IRP templates for current user and CC"""
     try:
         db = get_mongo_db()
 
-        templates = list(db.irp_templates.find(
-            {"user_id": current_user.get("sub") or current_user.get("id"), "cc_ip": cc_ip},
-            {"_id": 1, "name": 1, "schema_name": 1, "created_at": 1}
-        ))
+        templates = list(
+            db.irp_templates.find(
+                {
+                    "user_id": current_user.get("sub") or current_user.get("id"),
+                    "cc_ip": cc_ip,
+                },
+                {"_id": 1, "name": 1, "schema_name": 1, "created_at": 1},
+            )
+        )
 
         # Convert ObjectId to string
         for template in templates:
@@ -643,25 +1302,26 @@ async def list_irp_templates(
 
         return {"success": True, "templates": templates}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to list templates: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to list templates: {str(e)}"
+        )
 
 
 @router.get("/cc/{cc_ip}/irp/templates/{template_id}")
 async def load_irp_template(
-        cc_ip: str,
-        template_id: str,
-        current_user: dict = Depends(get_current_user)
+    cc_ip: str, template_id: str, current_user: dict = Depends(get_current_user)
 ):
     """Load a specific IRP template"""
     try:
-        from bson import ObjectId
         db = get_mongo_db()
 
-        template = db.irp_templates.find_one({
-            "_id": ObjectId(template_id),
-            "user_id": current_user.get("sub") or current_user.get("id"),
-            "cc_ip": cc_ip
-        })
+        template = db.irp_templates.find_one(
+            {
+                "_id": ObjectId(template_id),
+                "user_id": current_user.get("sub") or current_user.get("id"),
+                "cc_ip": cc_ip,
+            }
+        )
 
         if not template:
             raise HTTPException(status_code=404, detail="Template not found")
@@ -676,46 +1336,43 @@ async def load_irp_template(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load template: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load template: {str(e)}"
+        )
 
 
 @router.delete("/cc/{cc_ip}/irp/templates/{template_id}")
 async def delete_irp_template(
-        cc_ip: str,
-        template_id: str,
-        current_user: dict = Depends(get_current_user)
+    cc_ip: str, template_id: str, current_user: dict = Depends(get_current_user)
 ):
     """Delete an IRP template"""
     try:
-        from bson import ObjectId
         db = get_mongo_db()
 
-        result = db.irp_templates.delete_one({
-            "_id": ObjectId(template_id),
-            "user_id": current_user.get("sub") or current_user.get("id"),
-            "cc_ip": cc_ip
-        })
+        result = db.irp_templates.delete_one(
+            {
+                "_id": ObjectId(template_id),
+                "user_id": current_user.get("sub") or current_user.get("id"),
+                "cc_ip": cc_ip,
+            }
+        )
 
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Template not found")
 
         return {"success": True, "message": "Template deleted successfully"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete template: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to delete template: {str(e)}"
+        )
 
 
 @router.post("/reporter/irp/test-message")
 async def test_irp_message(
-        payload: dict,
-        current_user: User = Depends(get_current_user)
+    payload: dict, current_user: User = Depends(get_current_user)
 ):
     """Test IRP message with full e2e workflow (UDP capture + Java parser)."""
     try:
-        from backend.app.modules.reporter.irp.core.message_testing_coordinator import MessageTestingCoordinator
-        from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo
-        import tempfile
-        from bson import ObjectId
-        import base64
 
         schema_id = payload.get("schema_id")
         message_id = payload.get("message_id")
@@ -724,7 +1381,7 @@ async def test_irp_message(
         if not all([schema_id, message_id, template_data]):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Missing required fields: schema_id, message_id, template"
+                detail="Missing required fields: schema_id, message_id, template",
             )
 
         mongo_db = get_mongo_db()
@@ -739,7 +1396,7 @@ async def test_irp_message(
         if not raw_doc:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Schema not found: {schema_id}"
+                detail=f"Schema not found: {schema_id}",
             )
 
         xml_blob = raw_doc.get("xml_blob")
@@ -760,33 +1417,50 @@ async def test_irp_message(
             if xml_blob:
                 try:
                     xml_bytes = base64.b64decode(xml_blob)
-                    xml_content = xml_bytes.decode('utf-8')
+                    xml_content = xml_bytes.decode("utf-8")
                     xml_file_for_parser.write_text(xml_content)
                     used_cached_blob = True
                     if xml_checksum:
-                        logger.debug(f"Using XML blob with checksum: {xml_checksum[:16]}...")
+                        logger.debug(
+                            f"Using XML blob with checksum: {xml_checksum[:16]}..."
+                        )
                     else:
                         logger.debug("Using XML blob (no checksum available)")
                 except Exception as exc:
                     # Base64 decode failed - log and fall back to bundled XML file
-                    logger.exception("Failed to decode stored xml_blob for schema %s: %s", schema_id, exc)
+                    logger.exception(
+                        "Failed to decode stored xml_blob for schema %s: %s",
+                        schema_id,
+                        exc,
+                    )
                     used_cached_blob = False
 
             if not used_cached_blob:
                 # Fallback: use local data_formats copy shipped with the repo
-                xml_file_source = Path(
-                    __file__).parent.parent / "modules" / "reporter" / "irp" / "data_formats" / "IdsDataFormat100600.xml"
+                xml_file_source = (
+                    Path(__file__).parent.parent
+                    / "modules"
+                    / "reporter"
+                    / "irp"
+                    / "data_formats"
+                    / "IdsDataFormat100600.xml"
+                )
 
                 if not xml_file_source.exists():
-                    logger.error("No xml_blob in schema and local fallback XML not found for schema %s", schema_id)
+                    logger.error(
+                        "No xml_blob in schema and local fallback XML not found for schema %s",
+                        schema_id,
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail="DataFormat XML source not available for parsing"
+                        detail="DataFormat XML source not available for parsing",
                     )
 
                 # Copy local source to temp parser file
                 xml_file_for_parser.write_text(xml_file_source.read_text())
-                logger.debug("Falling back to local data_formats copy for schema %s", schema_id)
+                logger.debug(
+                    "Falling back to local data_formats copy for schema %s", schema_id
+                )
 
             # Reconstruct schema object using existing helper
             schema_obj = load_schema_from_mongo(mongo_db, schema_id)
@@ -794,12 +1468,11 @@ async def test_irp_message(
             if not schema_obj:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Schema reconstruction failed: {schema_id}"
+                    detail=f"Schema reconstruction failed: {schema_id}",
                 )
 
             coordinator = MessageTestingCoordinator(
-                captures_dir=captures_dir,
-                results_dir=results_dir
+                captures_dir=captures_dir, results_dir=results_dir
             )
 
             result = coordinator.test_message(
@@ -809,28 +1482,32 @@ async def test_irp_message(
                 xml_file_for_parser=str(xml_file_for_parser),
                 from_ip="127.0.0.1",
                 to_ip="127.0.0.1",
-                timeout=30
+                timeout=30,
             )
 
             # Always try to read parsed XML, even if test failed
             # This allows users to see parser errors in the XML output
             parsed_xml = None
             for step in result.get("steps", []):
-                if step.get("step") == "parse_message" and step.get("parse_result_file"):
+                if step.get("step") == "parse_message" and step.get(
+                    "parse_result_file"
+                ):
                     parse_file = Path(step["parse_result_file"])
                     if parse_file.exists():
                         try:
-                            with open(parse_file, 'r') as f:
+                            with open(parse_file, "r") as f:
                                 parsed_xml = f.read()
                         except Exception as read_exc:
-                            logger.warning(f"Could not read parse result file: {read_exc}")
+                            logger.warning(
+                                f"Could not read parse result file: {read_exc}"
+                            )
                     break
 
             return {
                 "success": result.get("status") == "completed",
                 "message": f"Test {'completed' if result.get('status') == 'completed' else 'failed'} for message {message_id}",
                 "result": result,
-                "parsed_xml": parsed_xml
+                "parsed_xml": parsed_xml,
             }
 
     except HTTPException:
@@ -839,27 +1516,23 @@ async def test_irp_message(
         logger.exception(f"Error testing message: {exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error testing message: {exc!s}"
+            detail=f"Error testing message: {exc!s}",
         )
 
 
 @router.post("/reporter/snmp/import-from-pcap")
 async def import_snmp_from_pcap(
-        file: UploadFile = File(...),
-        current_user: dict = Depends(get_current_user)
+    file: UploadFile = File(...), current_user: dict = Depends(get_current_user)
 ):
     """Upload a PCAP file and extract SNMP traps."""
-    import tempfile
-    import os
-    from backend.app.utils.pcap_converter import pcap_to_traps, PcapParseError
 
     try:
         # Validate file extension
-        if not file.filename.lower().endswith('.pcap'):
+        if not file.filename.lower().endswith(".pcap"):
             raise ValueError("Invalid file format. Please upload a .pcap file.")
 
         # Save uploaded file to temporary location
-        with tempfile.NamedTemporaryFile(suffix='.pcap', delete=False) as tmp_file:
+        with tempfile.NamedTemporaryFile(suffix=".pcap", delete=False) as tmp_file:
             contents = await file.read()
             tmp_file.write(contents)
             tmp_path = tmp_file.name
@@ -885,10 +1558,12 @@ async def import_snmp_from_pcap(
 
             # Run PCAP parsing in thread pool to avoid event loop conflict
             running_loop = asyncio.get_running_loop()
-            result = await running_loop.run_in_executor(_executor, _parse_in_thread, tmp_path, 50)
+            result = await running_loop.run_in_executor(
+                _executor, _parse_in_thread, tmp_path, 50
+            )
 
             warning = None
-            if result.get('truncated'):
+            if result.get("truncated"):
                 warning = (
                     f"PCAP contained {result.get('total_extracted')} traps but only the first 50 are displayed. "
                     "Please split the PCAP file if you need more traps."
@@ -897,7 +1572,7 @@ async def import_snmp_from_pcap(
             response = {
                 "success": True,
                 "data": result,
-                "message": f"Successfully extracted {result.get('total_returned')} traps from PCAP file."
+                "message": f"Successfully extracted {result.get('total_returned')} traps from PCAP file.",
             }
 
             if warning:
@@ -921,15 +1596,17 @@ async def import_snmp_from_pcap(
     except Exception as e:
         # Unexpected error
         logger.exception("Error processing PCAP: %s", str(e))
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+        )
 
 
 @router.post("/reporter/irp/analyze-pcap", response_model=IRPPcapAnalysisResponse)
 async def analyze_irp_pcap(
-        file: UploadFile = File(...),
-        schema_id: Optional[str] = Form(None),
-        mongo_db=Depends(get_mongo_db),
-        current_user: dict = Depends(get_current_user)
+    file: UploadFile = File(...),
+    schema_id: Optional[str] = Form(None),
+    mongo_db=Depends(get_mongo_db),
+    current_user: dict = Depends(get_current_user),
 ):
     """Analyze PCAP file to extract IRP message IDs and names.
 
@@ -941,14 +1618,13 @@ async def analyze_irp_pcap(
         Analysis results with message statistics
     """
     # Validate file extension
-    if not file.filename.endswith('.pcap') and not file.filename.endswith('.pcapng'):
+    if not file.filename.endswith(".pcap") and not file.filename.endswith(".pcapng"):
         raise HTTPException(400, "File must be .pcap or .pcapng")
 
     try:
-        import tempfile
 
         # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pcap') as temp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pcap") as temp_file:
             content = await file.read()
             temp_file.write(content)
             temp_path = Path(temp_file.name)
@@ -966,13 +1642,12 @@ async def analyze_irp_pcap(
                         sort=[("downloaded_at", -1)]
                     )
                     if schema_doc:
-                        schema = load_schema_from_mongo(mongo_db, schema_doc['_id'])
+                        schema = load_schema_from_mongo(mongo_db, schema_doc["_id"])
             except Exception as e:
                 logger.warning(f"Could not load schema for PCAP analysis: {e}")
                 # Continue without schema - will show message IDs only
 
             # Analyze PCAP
-            from backend.app.modules.reporter.irp.tools.irp_pcap_analyzer import analyze_irp_pcap_file
             results = analyze_irp_pcap_file(temp_path, schema)
 
             return results
@@ -993,10 +1668,10 @@ async def analyze_irp_pcap(
     status_code=status.HTTP_200_OK,
 )
 async def send_snmp_trap_stream_endpoint(
-        cc_ip: str,
-        simulator_ip: str,
-        payload: ReporterSNMPPayload,
-        _current_user: User = Depends(require_cc_access),
+    cc_ip: str,
+    simulator_ip: str,
+    payload: ReporterSNMPPayload,
+    _current_user: User = Depends(require_cc_access),
 ):
     """Send SNMP traps with real-time progress via Server-Sent Events.
 
@@ -1009,33 +1684,33 @@ async def send_snmp_trap_stream_endpoint(
         trap_data = payload.model_dump(exclude_none=True)
 
         # Validate trap_data structure
-        if not trap_data or 'traps' not in trap_data:
+        if not trap_data or "traps" not in trap_data:
             logger.error("Invalid trap_data: missing 'traps' key")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid trap data: 'traps' key is required"
+                detail="Invalid trap data: 'traps' key is required",
             )
 
-        if not isinstance(trap_data['traps'], list) or not trap_data['traps']:
+        if not isinstance(trap_data["traps"], list) or not trap_data["traps"]:
             logger.error("Invalid trap_data: 'traps' must be a non-empty list")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid trap data: 'traps' must be a non-empty list"
+                detail="Invalid trap data: 'traps' must be a non-empty list",
             )
 
         # Check if multiple simulators (comma-separated)
-        if ',' in simulator_ip:
-            simulator_ips = [ip.strip() for ip in simulator_ip.split(',')]
+        if "," in simulator_ip:
+            simulator_ips = [ip.strip() for ip in simulator_ip.split(",")]
             logger.info(f"Streaming SNMP traps to multiple simulators: {simulator_ips}")
 
             # Handle map field - convert to dict if needed
             map_dict = {}
-            if isinstance(trap_data['map'], dict):
-                map_dict = trap_data['map']
+            if isinstance(trap_data["map"], dict):
+                map_dict = trap_data["map"]
             else:
                 # Single map string - use for all simulators
                 for sim_ip in simulator_ips:
-                    map_dict[sim_ip] = trap_data['map']
+                    map_dict[sim_ip] = trap_data["map"]
 
             async def event_generator():
                 try:
@@ -1043,18 +1718,30 @@ async def send_snmp_trap_stream_endpoint(
                     async def simulator_generator(sim_ip: str):
                         try:
                             sim_trap_data = trap_data.copy()
-                            sim_trap_data['map'] = map_dict.get(sim_ip, trap_data['map'] if isinstance(trap_data['map'], str) else '')
+                            sim_trap_data["map"] = map_dict.get(
+                                sim_ip,
+                                (
+                                    trap_data["map"]
+                                    if isinstance(trap_data["map"], str)
+                                    else ""
+                                ),
+                            )
 
-                            for progress in send_attack_traps_with_progress(cc_ip, sim_ip, sim_trap_data):
+                            for progress in send_attack_traps_with_progress(
+                                cc_ip, sim_ip, sim_trap_data
+                            ):
                                 # Add simulator_ip to progress event
-                                progress['simulator_ip'] = sim_ip
+                                progress["simulator_ip"] = sim_ip
                                 yield progress
                         except Exception as exc:
                             logger.exception(f"Error streaming to {sim_ip}: {exc}")
-                            yield {"type": "error", "simulator_ip": sim_ip, "message": str(exc)}
+                            yield {
+                                "type": "error",
+                                "simulator_ip": sim_ip,
+                                "message": str(exc),
+                            }
 
                     # Interleave events from all simulators
-                    import queue
                     event_queue = queue.Queue()
                     completed_simulators = set()
 
@@ -1065,7 +1752,10 @@ async def send_snmp_trap_stream_endpoint(
                         completed_simulators.add(sim_ip)
 
                     # Start all tasks
-                    tasks = [asyncio.create_task(run_generator(sim_ip)) for sim_ip in simulator_ips]
+                    tasks = [
+                        asyncio.create_task(run_generator(sim_ip))
+                        for sim_ip in simulator_ips
+                    ]
 
                     # Yield events as they arrive
                     while len(completed_simulators) < len(simulator_ips):
@@ -1092,35 +1782,41 @@ async def send_snmp_trap_stream_endpoint(
             return StreamingResponse(
                 event_generator(),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
         else:
             # Single simulator (backward compatible)
             # Handle map field
-            if isinstance(trap_data['map'], dict):
+            if isinstance(trap_data["map"], dict):
                 # Dict provided but only one simulator - extract map for this simulator
-                trap_data['map'] = trap_data['map'].get(simulator_ip, '')
-                if not trap_data['map']:
+                trap_data["map"] = trap_data["map"].get(simulator_ip, "")
+                if not trap_data["map"]:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Map not found for simulator {simulator_ip}"
+                        detail=f"Map not found for simulator {simulator_ip}",
                     )
 
             async def event_generator():
                 try:
-                    for progress in send_attack_traps_with_progress(cc_ip, simulator_ip, trap_data):
+                    for progress in send_attack_traps_with_progress(
+                        cc_ip, simulator_ip, trap_data
+                    ):
                         # Add simulator_ip for consistency
-                        progress['simulator_ip'] = simulator_ip
+                        progress["simulator_ip"] = simulator_ip
                         yield f"data: {json.dumps(progress)}\n\n"
                 except Exception as exc:
                     logger.exception(f"Error during SNMP trap streaming: {exc}")
-                    error_event = {"type": "error", "simulator_ip": simulator_ip, "message": str(exc)}
+                    error_event = {
+                        "type": "error",
+                        "simulator_ip": simulator_ip,
+                        "message": str(exc),
+                    }
                     yield f"data: {json.dumps(error_event)}\n\n"
 
             return StreamingResponse(
                 event_generator(),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
     except HTTPException:
@@ -1129,11 +1825,11 @@ async def send_snmp_trap_stream_endpoint(
         logger.error(f"Invalid trap configuration: {exc!s}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid trap configuration: missing key {exc!s}"
+            detail=f"Invalid trap configuration: missing key {exc!s}",
         )
     except Exception as exc:
         logger.exception(f"Failed to initialize SNMP trap streaming: {exc!s}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to initialize SNMP trap streaming: {exc!s}"
+            detail=f"Failed to initialize SNMP trap streaming: {exc!s}",
         )

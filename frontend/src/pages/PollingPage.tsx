@@ -117,63 +117,6 @@ export const PollingPage: React.FC = () => {
   };
 
   /**
-   * Recursively filter out empty arrays from data structure
-   */
-  const filterEmptyArrays = (structure: Record<string, FieldValue>): Record<string, FieldValue> => {
-    const filtered: Record<string, FieldValue> = {};
-
-    Object.keys(structure).forEach((key) => {
-      const field = structure[key];
-
-      // Skip arrays with repeat=0 (empty arrays)
-      if (field.type === FieldType.ARRAY) {
-        if (field.repeat === 0) {
-          return; // Skip this field entirely
-        }
-        // If repeat_min exists and is 0, also skip
-        if (field.repeat === undefined && field.repeat_min === 0 && field.repeat_max === 0) {
-          return;
-        }
-      }
-
-      // For objects, recursively filter nested properties
-      if (field.type === FieldType.OBJECT && field.properties) {
-        const filteredProps = filterEmptyArrays(field.properties);
-        // Only include if there are non-empty properties
-        if (Object.keys(filteredProps).length > 0) {
-          filtered[key] = {
-            ...field,
-            properties: filteredProps,
-          };
-        }
-        return;
-      }
-
-      // For arrays with object items, recursively filter item properties
-      if (
-        field.type === FieldType.ARRAY &&
-        field.item?.type === FieldType.OBJECT &&
-        field.item.properties
-      ) {
-        const filteredItemProps = filterEmptyArrays(field.item.properties);
-        filtered[key] = {
-          ...field,
-          item: {
-            ...field.item,
-            properties: filteredItemProps,
-          },
-        };
-        return;
-      }
-
-      // Include all other fields
-      filtered[key] = field;
-    });
-
-    return filtered;
-  };
-
-  /**
    * Add a new empty endpoint configuration
    */
   const handleAddEndpoint = () => {
@@ -293,15 +236,21 @@ export const PollingPage: React.FC = () => {
    */
   const handleSaveTemplateConfirm = async (name: string, description: string) => {
     try {
+      // Clean the data structure for backend compatibility for ALL endpoints
+      const cleanedEndpoints = endpoints.map((endpoint) => ({
+        ...endpoint,
+        data_structure: cleanStructureForBackend(endpoint.data_structure),
+      }));
+
       await createTemplate(currentCC!, {
         name,
         description,
-        endpoint: endpoints[0],
+        endpoints: cleanedEndpoints,
       });
 
       setStatus({
         type: 'success',
-        message: `Template "${name}" saved successfully`,
+        message: `Template "${name}" saved successfully with ${endpoints.length} endpoint(s)`,
       });
     } catch (error: any) {
       throw new Error(error.response?.data?.detail || error.message || 'Failed to save template');
@@ -318,14 +267,97 @@ export const PollingPage: React.FC = () => {
   /**
    * Handle template load confirmation
    */
+  /**
+   * Restore data structure from backend format to UI format.
+   * Transforms backend format (arrays with 'repeat' and 'item' template)
+   * to UI format (arrays with 'value' field containing configured items).
+   */
+  const restoreStructureFromBackend = (structure: Record<string, FieldValue>): Record<string, FieldValue> => {
+    const restored: Record<string, FieldValue> = {};
+
+    Object.keys(structure).forEach((key) => {
+      const field = { ...structure[key] };
+
+      // Recursively restore nested object properties FIRST
+      if (field.type === FieldType.OBJECT && field.properties) {
+        field.properties = restoreStructureFromBackend(field.properties);
+      }
+
+      // Recursively restore array item properties FIRST (before generating items)
+      if (field.type === FieldType.ARRAY && field.item) {
+        if (field.item.type === FieldType.OBJECT && field.item.properties) {
+          field.item = {
+            ...field.item,
+            properties: restoreStructureFromBackend(field.item.properties),
+          };
+        }
+      }
+
+      // Handle ARRAY type with repeat count - generate items for UI
+      if (field.type === FieldType.ARRAY && field.repeat && field.item) {
+        const items: any[] = [];
+
+        // Generate 'repeat' number of items based on the item template
+        for (let i = 0; i < field.repeat; i++) {
+          if (field.item.type === FieldType.OBJECT && field.item.properties) {
+            const item: any = {};
+
+            Object.keys(field.item.properties).forEach((propKey) => {
+              const propField = field.item!.properties![propKey];
+
+              // Extract the configured value from the template
+              if (propField.type === FieldType.ARRAY && Array.isArray(propField.value)) {
+                // Nested array already restored - copy its value array
+                item[propKey] = propField.value;
+              } else if (propField.value !== undefined && propField.value !== null && propField.value !== '') {
+                // Has a configured value
+                item[propKey] = propField.value;
+              } else if (propField.mode === 'fixed' && propField.value !== undefined) {
+                item[propKey] = propField.value;
+              } else if (propField.type === FieldType.TIMESTAMP && propField.offset !== undefined) {
+                item[propKey] = { offset: propField.offset };
+              } else if (propField.mode === 'random' || propField.type === 'random_ipv4' || propField.type === 'random_fqdn') {
+                // Keep random fields as-is (for UI to handle)
+                item[propKey] = propField;
+              } else if (propField.options && propField.options.length > 0) {
+                // Enum field - use value or first option
+                item[propKey] = propField.value || propField.options[0];
+              } else {
+                // Default empty value
+                item[propKey] = '';
+              }
+            });
+
+            items.push(item);
+          }
+        }
+
+        // Set the value array with generated items
+        // TypeScript: value field is used for arrays in UI format, though type definition doesn't reflect this
+        (field as any).value = items;
+      }
+
+      restored[key] = field;
+    });
+
+    return restored;
+  };
+
   const handleLoadTemplateConfirm = (template: PollingTemplate) => {
-    setEndpoints([template.endpoint]);
+    // Restore ALL endpoints' data structures from backend format to UI format
+    const restoredEndpoints = template.endpoints.map((endpoint) => ({
+      ...endpoint,
+      data_structure: restoreStructureFromBackend(endpoint.data_structure),
+    }));
+
+    setEndpoints(restoredEndpoints);
     setActiveEndpointIndex(0);
-    setExpandedEndpoints([0]);
+    // Expand all loaded endpoints
+    setExpandedEndpoints(restoredEndpoints.map((_, index) => index));
 
     setStatus({
       type: 'success',
-      message: `Template "${template.name}" loaded successfully`,
+      message: `Template "${template.name}" loaded successfully with ${restoredEndpoints.length} endpoint(s)`,
     });
   };
 
@@ -425,8 +457,64 @@ export const PollingPage: React.FC = () => {
    * Save XMF file to Sapro filesystem (does NOT load to simulator)
    * Only validates filename and endpoint, not simulator selection
    */
+  /**
+   * Internal helper to save XMF with optional overwrite
+   */
+  const saveXmfInternal = async (overwrite: boolean = false) => {
+    setLoading(true);
+    setStatus({ type: 'info', message: 'Saving XMF file...' });
+
+    try {
+      // Clean up structure for ALL endpoints for backend compatibility
+      const cleanedEndpoints = endpoints.map((endpoint) => ({
+        ...endpoint,
+        data_structure: cleanStructureForBackend(endpoint.data_structure),
+      }));
+
+      const payload: PollingPayload = {
+        endpoints: cleanedEndpoints,  // Send all configured endpoints
+        xmf_filename: getXmfFilename(),
+        overwrite,
+      };
+
+      // Save XMF to Sapro filesystem (no simulator parameter needed)
+      await saveXmfToSimulator(currentCC!, payload);
+
+      setStatus({
+        type: 'success',
+        message: `XMF file "${getXmfFilename()}" saved successfully to Sapro`,
+      });
+    } catch (error: any) {
+      // Check if file exists (409 Conflict)
+      if (error.response?.status === 409 && error.response?.data?.detail?.startsWith('FILE_EXISTS:')) {
+        setLoading(false);
+        const confirmed = window.confirm(
+          `File "${getXmfFilename()}" already exists. Do you want to overwrite it?`
+        );
+        if (confirmed) {
+          // Retry with overwrite=true
+          await saveXmfInternal(true);
+        } else {
+          setStatus({ type: 'info', message: 'Save cancelled by user' });
+        }
+        return;
+      }
+
+      setStatus({
+        type: 'error',
+        message: `Failed to save XMF: ${error.message || error}`,
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /**
+   * Save XMF file to Sapro filesystem (does NOT load to simulator)
+   * Only validates filename and endpoint, not simulator selection
+   */
   const handleSaveToXmf = async () => {
-    // Validate only filename and endpoint (not simulators)
+    // Validate only filename and endpoints (not simulators)
     if (!xmfFilename || !xmfFilename.trim()) {
       setStatus({ type: 'error', message: 'XMF filename is required' });
       return;
@@ -435,37 +523,89 @@ export const PollingPage: React.FC = () => {
       setStatus({ type: 'error', message: 'Please add at least one endpoint configuration' });
       return;
     }
-    if (!endpoints[activeEndpointIndex]?.data_key) {
-      setStatus({ type: 'error', message: 'Please configure the data key for the endpoint' });
+
+    // Validate that all endpoints have data_key configured
+    const unconfiguredEndpoints = endpoints
+      .map((ep, idx) => ({ ep, idx }))
+      .filter(({ ep }) => !ep.data_key);
+
+    if (unconfiguredEndpoints.length > 0) {
+      const indices = unconfiguredEndpoints.map(({ idx }) => idx + 1).join(', ');
+      setStatus({
+        type: 'error',
+        message: `Please configure the endpoint name for endpoint(s): ${indices}`
+      });
       return;
     }
 
+    await saveXmfInternal(false);
+  };
+
+  /**
+   * Internal helper to set polling config with optional overwrite
+   */
+  const setOnSimulatorInternal = async (overwrite: boolean = false) => {
     setLoading(true);
-    setStatus({ type: 'info', message: 'Saving XMF file...' });
+    setStatus({
+      type: 'info',
+      message: 'Setting polling configuration on simulator(s)...',
+    });
 
     try {
-      // Clean up structure for backend compatibility
-      const cleanedEndpoint = {
-        ...endpoints[activeEndpointIndex],
-        data_structure: cleanStructureForBackend(endpoints[activeEndpointIndex].data_structure),
-      };
+      // Clean up structure for ALL endpoints for backend compatibility
+      const cleanedEndpoints = endpoints.map((endpoint) => ({
+        ...endpoint,
+        data_structure: cleanStructureForBackend(endpoint.data_structure),
+      }));
 
+      // Build map dict for all simulators (matches SNMP pattern)
+      const mapDict: Record<string, string> = {};
+      for (const simulatorIp of selectedSimulators) {
+        const saproSim = saproSimulators.find((sim) => sim.ip_address === simulatorIp);
+        if (!saproSim || !saproSim.map) {
+          setStatus({
+            type: 'error',
+            message: `No map found for simulator ${simulatorIp}`,
+          });
+          return;
+        }
+        mapDict[simulatorIp] = saproSim.map;
+      }
+
+      // Call API once with comma-separated simulator IPs (same pattern as SNMP)
+      const simulatorIpsString = selectedSimulators.join(',');
       const payload: PollingPayload = {
-        endpoint_config: cleanedEndpoint,
+        endpoints: cleanedEndpoints,
         xmf_filename: getXmfFilename(),
+        map: mapDict,  // Dict mapping all simulator IPs to their maps
+        overwrite,
       };
 
-      // Save once using currentCC as routing (no simulator selection needed)
-      await saveXmfToSimulator(currentCC!, currentCC!, payload);
+      await setPollingConfig(currentCC!, simulatorIpsString, payload);
 
       setStatus({
         type: 'success',
-        message: `XMF file "${getXmfFilename()}" saved successfully to Sapro`,
+        message: `Polling configuration set successfully on ${selectedSimulators.length} simulator(s)`,
       });
     } catch (error: any) {
+      // Check if file exists (409 Conflict)
+      if (error.response?.status === 409 && error.response?.data?.detail?.startsWith('FILE_EXISTS:')) {
+        setLoading(false);
+        const confirmed = window.confirm(
+          `File "${getXmfFilename()}" already exists. Do you want to overwrite it?`
+        );
+        if (confirmed) {
+          // Retry with overwrite=true
+          await setOnSimulatorInternal(true);
+        } else {
+          setStatus({ type: 'info', message: 'Operation cancelled by user' });
+        }
+        return;
+      }
+
       setStatus({
         type: 'error',
-        message: `Failed to save XMF: ${error.message || error}`,
+        message: `Failed to set configuration: ${error.message || error}`,
       });
     } finally {
       setLoading(false);
@@ -482,55 +622,7 @@ export const PollingPage: React.FC = () => {
       return;
     }
 
-    setLoading(true);
-    setStatus({
-      type: 'info',
-      message: 'Setting polling configuration on simulator(s)...',
-    });
-
-    try {
-      // Clean up structure for backend compatibility
-      const cleanedEndpoint = {
-        ...endpoints[activeEndpointIndex],
-        data_structure: cleanStructureForBackend(endpoints[activeEndpointIndex].data_structure),
-      };
-
-      const payload: PollingPayload = {
-        endpoint_config: cleanedEndpoint,
-        xmf_filename: getXmfFilename(),
-      };
-
-      const results = await Promise.allSettled(
-        selectedSimulators.map((simulatorIp) => setPollingConfig(currentCC!, simulatorIp, payload))
-      );
-
-      const successes = results.filter((r) => r.status === 'fulfilled').length;
-      const failures = results.filter((r) => r.status === 'rejected').length;
-
-      if (failures === 0) {
-        setStatus({
-          type: 'success',
-          message: `Polling configuration set successfully on ${successes} simulator(s)`,
-        });
-      } else if (successes > 0) {
-        setStatus({
-          type: 'warning',
-          message: `Configuration set on ${successes} simulator(s), failed for ${failures} simulator(s)`,
-        });
-      } else {
-        setStatus({
-          type: 'error',
-          message: `Failed to set configuration on all simulators`,
-        });
-      }
-    } catch (error: any) {
-      setStatus({
-        type: 'error',
-        message: `Failed to set configuration: ${error.message || error}`,
-      });
-    } finally {
-      setLoading(false);
-    }
+    await setOnSimulatorInternal(false);
   };
 
   /**

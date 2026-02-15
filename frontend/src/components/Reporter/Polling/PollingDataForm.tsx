@@ -92,7 +92,9 @@ export const PollingDataForm: React.FC<PollingDataFormProps> = ({
       lowerName.includes('bdos') ||
       lowerName.includes('tls-fingerprint') ||
       lowerName.includes('dns-protection') ||
-      lowerName.includes('web-ddos')
+      lowerName.includes('web-ddos') ||
+      lowerName.includes('policy_traffic') ||
+      lowerName.includes('policy-traffic')
     ) {
       return 'Add Policy';
     }
@@ -624,6 +626,27 @@ export const PollingDataForm: React.FC<PollingDataFormProps> = ({
                     {itemTemplate.type === FieldType.OBJECT && itemTemplate.properties ? (
                       Object.keys(itemTemplate.properties).map((propKey) => {
                         const propTemplate = itemTemplate.properties![propKey];
+
+                        // Check if tcp-flag should be disabled (when protocol is not TCP)
+                        let isDisabled = false;
+                        if (propKey === 'tcp-flag') {
+                          const protocolValue = item['protocol'];
+
+                          // Extract actual protocol string value
+                          let actualProtocol: string | null = null;
+                          if (!protocolValue) {
+                            actualProtocol = null;
+                          } else if (typeof protocolValue === 'string') {
+                            actualProtocol = protocolValue;
+                          } else if (typeof protocolValue === 'object' && protocolValue.value !== undefined) {
+                            actualProtocol = protocolValue.value;
+                          }
+
+                          // Disable tcp-flag if protocol is not TCP
+                          const isTcp = actualProtocol === 'tcp' || actualProtocol === '6';
+                          isDisabled = !isTcp;
+                        }
+
                         return renderNestedField(
                           propKey,
                           propTemplate,
@@ -635,7 +658,8 @@ export const PollingDataForm: React.FC<PollingDataFormProps> = ({
                               [propKey]: updatedValue,
                             };
                             onUpdate(newArray);
-                          }
+                          },
+                          isDisabled
                         );
                       })
                     ) : (
@@ -657,6 +681,40 @@ export const PollingDataForm: React.FC<PollingDataFormProps> = ({
             ))
           )}
         </Box>
+      );
+    }
+
+    // OBJECT (nested object with properties)
+    if (fieldTemplate.type === FieldType.OBJECT && fieldTemplate.properties) {
+      const objValue = currentValue || {};
+
+      return (
+        <Accordion key={key} sx={{ mt: 1, border: '1px solid #ddd' }}>
+          <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+            <Typography variant="subtitle2" fontWeight="bold">
+              {fieldName}
+            </Typography>
+          </AccordionSummary>
+          <AccordionDetails>
+            <Box sx={{ pl: 2 }}>
+              {Object.keys(fieldTemplate.properties).map((propKey) => {
+                const propTemplate = fieldTemplate.properties![propKey];
+                return renderNestedField(
+                  propKey,
+                  propTemplate,
+                  objValue[propKey],
+                  (updatedValue) => {
+                    const updatedObj = {
+                      ...objValue,
+                      [propKey]: updatedValue,
+                    };
+                    onUpdate(updatedObj);
+                  }
+                );
+              })}
+            </Box>
+          </AccordionDetails>
+        </Accordion>
       );
     }
 
@@ -1120,8 +1178,10 @@ export const PollingDataForm: React.FC<PollingDataFormProps> = ({
 
       /**
        * Initialize a new item from template
+       * @param template - The field template
+       * @param itemIndex - Index of the new item in the array (for incrementing timestamps)
        */
-      const initializeItemFromTemplate = (template: FieldValue): any => {
+      const initializeItemFromTemplate = (template: FieldValue, itemIndex: number): any => {
         if (template.type === FieldType.OBJECT && template.properties) {
           const newItem: any = {};
           Object.keys(template.properties).forEach((key) => {
@@ -1133,7 +1193,20 @@ export const PollingDataForm: React.FC<PollingDataFormProps> = ({
             } else if (prop.type === FieldType.BOOLEAN) {
               newItem[key] = prop.value || false;
             } else if (prop.type === FieldType.TIMESTAMP) {
-              newItem[key] = prop.offset || 0;
+              // Auto-increment offsets for time_from and time_to based on array index
+              // Store as object with 'offset' property for proper rendering
+              let offsetValue: number;
+              if (key === 'time_from') {
+                // First: 120, Second: 180, Third: 240, etc.
+                offsetValue = 120 + (itemIndex * 60);
+              } else if (key === 'time_to') {
+                // First: 60, Second: 120, Third: 180, etc.
+                offsetValue = 60 + (itemIndex * 60);
+              } else {
+                // Other timestamp fields use template default
+                offsetValue = prop.offset || 0;
+              }
+              newItem[key] = { offset: offsetValue };
             } else if (prop.type === FieldType.TEMPLATE) {
               newItem[key] = prop.value || '';
             } else if (prop.type === FieldType.RANDOM_COMPOSITE) {
@@ -1161,7 +1234,7 @@ export const PollingDataForm: React.FC<PollingDataFormProps> = ({
       let arrayValue: any[] = Array.isArray(fieldValue.value) ? fieldValue.value : [];
 
       const handleAddIteration = () => {
-        const newItem = initializeItemFromTemplate(itemTemplate);
+        const newItem = initializeItemFromTemplate(itemTemplate, arrayValue.length);
         const newArray = [...arrayValue, newItem];
 
         // Update the FieldValue.value property, preserving the structure
@@ -1235,21 +1308,29 @@ export const PollingDataForm: React.FC<PollingDataFormProps> = ({
                         if (propKey === 'tcp-flag') {
                           const protocolValue = item['protocol'];
 
-                          console.log('TCP-flag check:', { propKey, protocolValue, item });
+                          // Extract actual protocol string value from various possible structures
+                          let actualProtocol: string | null = null;
 
-                          // Check if protocol is TCP
-                          let isTcp = false;
                           if (!protocolValue) {
-                            // No protocol set yet - disable tcp-flag
-                            isTcp = false;
-                          } else if (typeof protocolValue === 'object' && protocolValue?.value) {
-                            isTcp = protocolValue.value === 'tcp' || protocolValue.value === '6';
+                            // No protocol set - disable tcp-flag
+                            actualProtocol = null;
                           } else if (typeof protocolValue === 'string') {
-                            isTcp = protocolValue === 'tcp' || protocolValue === '6';
+                            // Direct string value
+                            actualProtocol = protocolValue;
+                          } else if (typeof protocolValue === 'object') {
+                            // Object with value property: { mode: 'fixed', value: 'tcp' }
+                            if (protocolValue.value !== undefined) {
+                              actualProtocol = protocolValue.value;
+                            }
+                            // Fallback: check if object has type field and nested value
+                            else if (protocolValue.type && protocolValue.value !== undefined) {
+                              actualProtocol = protocolValue.value;
+                            }
                           }
 
+                          // Check if protocol is TCP (accept both 'tcp' and '6')
+                          const isTcp = actualProtocol === 'tcp' || actualProtocol === '6';
                           isDisabled = !isTcp;
-                          console.log('TCP-flag disabled:', isDisabled, 'isTcp:', isTcp);
                         }
 
                         return renderNestedField(

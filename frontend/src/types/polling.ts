@@ -107,14 +107,14 @@ export interface EndpointConfig {
 }
 
 /**
- * Full polling template with metadata and endpoint config.
+ * Full polling template with metadata and endpoint configs.
  */
 export interface PollingTemplate {
   _id: string; // MongoDB ObjectId as string
   name: string;
   description: string;
   created_at: string; // ISO format datetime
-  endpoint: EndpointConfig;
+  endpoints: EndpointConfig[]; // Multiple endpoints per template
 }
 
 /**
@@ -134,7 +134,7 @@ export interface PollingTemplateSummary {
 export interface PollingTemplateCreate {
   name: string;
   description: string;
-  endpoint: EndpointConfig;
+  endpoints: EndpointConfig[]; // Multiple endpoints per template
 }
 
 /**
@@ -142,15 +142,22 @@ export interface PollingTemplateCreate {
  *
  * User provides either:
  * - template_id: to load and use a saved template
- * - endpoint_config: to generate on-the-fly without saving
+ * - endpoints: array of endpoint configurations to generate on-the-fly
  *
  * Always required:
  * - xmf_filename: user-provided XMF filename (e.g., 'attack_data.xmf')
+ *
+ * Optional:
+ * - map: required for set polling operation (loading to simulator)
+ *   Can be a string (single map) or object mapping simulator IPs to map names
  */
 export interface PollingPayload {
   template_id?: string; // Load from saved template
-  endpoint_config?: EndpointConfig; // Or generate on-the-fly
+  endpoints?: EndpointConfig[]; // Or generate on-the-fly (array of endpoints)
   xmf_filename: string; // User-provided filename (required)
+  overwrite?: boolean; // Whether to overwrite existing file (default: false)
+  write_xmf?: boolean; // Whether to write XMF file (default: true). Set to false when XMF already written.
+  map?: string | Record<string, string>; // Map name(s) for set polling (optional for save-xmf)
 }
 
 /**

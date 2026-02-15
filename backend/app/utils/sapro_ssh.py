@@ -241,6 +241,7 @@ class SaproSSHClient:
         command: str,
         timeout: Optional[int] = None,
         check_stderr: bool = True,
+        get_pty: bool = False,
     ) -> Tuple[bool, str]:
         """Execute a command on the remote server.
 
@@ -248,6 +249,7 @@ class SaproSSHClient:
             command: Shell command to execute
             timeout: Command timeout in seconds (defaults to instance timeout)
             check_stderr: If True, treat stderr output as error
+            get_pty: If True, allocate a pseudo-terminal (fixes buffering issues)
 
         Returns:
             Tuple of (success: bool, output: str)
@@ -271,8 +273,15 @@ class SaproSSHClient:
             try:
                 logger.debug(f"Executing SSH command: {command[:100]}{'...' if len(command) > 100 else ''}")
 
-                # Execute command
-                stdin, stdout, stderr = self._client.exec_command(command, timeout=timeout)
+                # Execute command with optional PTY allocation
+                stdin, stdout, stderr = self._client.exec_command(
+                    command,
+                    timeout=timeout,
+                    get_pty=get_pty
+                )
+
+                # Set channel timeout for read operations to prevent indefinite blocking
+                stdout.channel.settimeout(timeout)
 
                 # Read output
                 stdout_text = stdout.read().decode('utf-8', errors='ignore').strip()

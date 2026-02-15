@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { ccService } from '../api/services/cc.service';
-import { CCState, CCAddDeviceRequest, CCDevice } from '../types/cc.types';
+import { CCState, CCDevice } from '../types/cc.types';
 import { Simulator } from '../types/simulator.types';
 import useFormStore from './useFormStore';
 
@@ -212,19 +212,6 @@ export const useCCStore = create<CCState>((set, get) => ({
     }
   },
 
-  addDevice: async (cc_ip: string, data: CCAddDeviceRequest) => {
-    set({ isLoading: true, error: null });
-    try {
-      await ccService.addDevice(cc_ip, data);
-      // Invalidate cache and refresh from server
-      await get().fetchDevices(cc_ip, true); // Force refresh
-    } catch (error: any) {
-      const message = error?.response?.data?.detail || error?.message || 'Failed to add device';
-      set({ error: message, isLoading: false });
-      throw error;
-    }
-  },
-
   deleteDevice: async (cc_ip: string, device_id: string) => {
     set({ isLoading: true, error: null });
     try {
@@ -233,7 +220,8 @@ export const useCCStore = create<CCState>((set, get) => ({
       // Wait 2 seconds before refreshing from server
       setTimeout(() => {
         // Invalidate cache and refresh from server
-        get().fetchDevices(cc_ip, true); // Force refresh
+        get().fetchSaproSimulators(true); // Force refresh Sapro simulators
+        get().fetchDevices(cc_ip, true); // Force refresh CC devices
       }, 2000);
 
     } catch (error: any) {

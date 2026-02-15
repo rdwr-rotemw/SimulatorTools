@@ -65,17 +65,15 @@ export const listStructureTemplates = async (
  * for later manual use or review.
  *
  * @param ccIp - CyberController IP address
- * @param simulatorIp - Target simulator IP address (for routing only)
  * @param payload - Polling payload with template_id or endpoint_config and xmf_filename
  * @returns Promise with success status and file path
  */
 export const saveXmfToSimulator = async (
   ccIp: string,
-  simulatorIp: string,
   payload: PollingPayload
 ): Promise<PollingResponse> => {
   const response = await apiClient.post<PollingResponse>(
-    `${API_BASE_URL}/cc/${ccIp}/simulators/${simulatorIp}/reporter/polling/save-xmf`,
+    `${API_BASE_URL}/cc/${ccIp}/reporter/polling/save-xmf`,
     payload
   );
   return response.data;
@@ -101,9 +99,11 @@ export const setPollingConfig = async (
   simulatorIp: string,
   payload: PollingPayload
 ): Promise<PollingResponse> => {
+  // Extended timeout: Supports multiple simulators (comma-separated IPs), each update_device takes up to 90s
   const response = await apiClient.post<PollingResponse>(
     `${API_BASE_URL}/cc/${ccIp}/simulators/${simulatorIp}/reporter/polling`,
-    payload
+    payload,
+    { timeout: 600000 }
   );
   return response.data;
 };

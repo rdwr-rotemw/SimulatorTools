@@ -57,6 +57,10 @@ export const parseStructureTemplate = (mongoStructure: any): FieldValue => {
   // Handle ENUM type - set options for dropdown
   if (fieldType === 'enum' && mongoStructure._options) {
     parsed.options = mongoStructure._options;
+    // Set default value if provided
+    if (mongoStructure._value !== undefined) {
+      parsed.value = mongoStructure._value;
+    }
   }
 
   // Handle NUMBER type - set min/max constraints
@@ -67,6 +71,15 @@ export const parseStructureTemplate = (mongoStructure: any): FieldValue => {
     if (mongoStructure._max !== undefined) {
       parsed.max = mongoStructure._max;
     }
+    // Set default value if provided
+    if (mongoStructure._value !== undefined) {
+      parsed.value = mongoStructure._value;
+    }
+  }
+
+  // Handle STRING type - set default value if provided
+  if (fieldType === 'string' && mongoStructure._value !== undefined) {
+    parsed.value = mongoStructure._value;
   }
 
   // Handle TIMESTAMP type - extract offset

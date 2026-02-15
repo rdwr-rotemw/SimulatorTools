@@ -273,8 +273,14 @@ def create_simulator(
         # Get workspace for device creation - use "default" for super admin
         workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
 
+        # Get full map path once at route level
+        try:
+            map_path = sapro_handler.get_full_map_path(payload.map, workspace)
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get map path: {e}")
+
         # Call Sapro to create device
-        success, message = sapro_handler.create_device(ip, xml_content, payload.map, workspace=workspace)
+        success, message = sapro_handler.create_device(ip, xml_content, map_path)
         if not success:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
 
@@ -294,14 +300,14 @@ def create_simulator(
         except IntegrityError:
             db.rollback()
             try:
-                sapro_handler.delete_device(payload.map, ip, workspace=workspace)
+                sapro_handler.delete_device(ip, map_path)
             except Exception:
                 logger.exception("Failed to cleanup Sapro device after DB integrity error for %s", ip)
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Simulator with this IP already exists")
         except SQLAlchemyError as exc:
             db.rollback()
             try:
-                ok, msg = sapro_handler.delete_device(payload.map, ip, workspace=workspace)
+                ok, msg = sapro_handler.delete_device(ip, map_path)
                 if ok:
                     logger.info("Cleaned up Sapro device %s after DB failure", ip)
                     raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -341,11 +347,16 @@ def create_simulator(
         # Get workspace for device creation
         workspace = current_user.workspace if current_user.workspace else "default"
 
+        # Get full map path once at route level
+        try:
+            map_path = sapro_handler.get_full_map_path(payload.map, workspace)
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get map path: {e}")
+
         for ip in ip_list:
             try:
                 customized_xml = base_xml.replace("{{IP_ADDRESS}}", ip)
-                success_flag, message = sapro_handler.create_device(ip, customized_xml, payload.map,
-                                                                    workspace=workspace)
+                success_flag, message = sapro_handler.create_device(ip, customized_xml, map_path)
 
                 if success_flag:
                     successful += 1
@@ -398,7 +409,7 @@ def create_simulator(
             # Best-effort cleanup in Sapro
             for ip in successful_ips:
                 try:
-                    sapro_handler.delete_device(payload.map, ip, workspace=workspace)
+                    sapro_handler.delete_device(ip, map_path)
                 except Exception as cleanup_exc:
                     logger.exception(f"Failed to cleanup Sapro device {ip} after DB failure: {cleanup_exc}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -456,13 +467,20 @@ async def create_simulator_stream(
             # Get workspace for device creation
             workspace = current_user.workspace if current_user.workspace else "default"
 
+            # Get full map path once at route level
+            try:
+                map_path = sapro_handler.get_full_map_path(payload.map, workspace)
+            except Exception as e:
+                error_event = {"type": "error", "message": f"Failed to get map path: {e}"}
+                yield f"data: {json.dumps(error_event)}\n\n"
+                return
+
             try:
                 # Create devices sequentially (1 by 1) with progress updates
                 for index, ip in enumerate(ip_list, start=1):
                     try:
                         customized_xml = base_xml.replace("{{IP_ADDRESS}}", ip)
-                        success_flag, message = sapro_handler.create_device(ip, customized_xml, payload.map,
-                                                                            workspace=workspace)
+                        success_flag, message = sapro_handler.create_device(ip, customized_xml, map_path)
 
                         if success_flag:
                             successful += 1
@@ -525,7 +543,7 @@ async def create_simulator_stream(
                         # Best-effort cleanup in Sapro
                         for ip in successful_ips:
                             try:
-                                sapro_handler.delete_device(payload.map, ip, workspace=workspace)
+                                sapro_handler.delete_device(ip, map_path)
                             except Exception as cleanup_exc:
                                 logger.exception(f"Failed to cleanup Sapro device {ip} after DB failure: {cleanup_exc}")
 
@@ -705,13 +723,19 @@ def update_simulator(
     # Get workspace from user - use "default" for super admin
     workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
 
+    # Get full map path once at route level
+    try:
+        map_path = sapro_handler.get_full_map_path(map_name, workspace)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get map path: {e}")
+
     # 3) Load template and convert to XML
     logger.info(f"Updating device {simulator_ip} with template {template_id} on map {map_name}")
     tpl_doc, xml_content = _load_template_and_convert_to_xml(mongo_db, template_id, simulator_ip)
 
     # 4) Call sapro_handler.update_device() to handle all Sapro operations
     try:
-        success, message = sapro_handler.update_device(simulator_ip, xml_content, map_name, workspace=workspace)
+        success, message = sapro_handler.update_device(simulator_ip, xml_content, map_path)
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -773,8 +797,14 @@ def delete_simulator(
     # Get workspace from user - use "default" for super admin
     workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
 
-    # Attempt to delete from Sapro first (method handles path lookup internally)
-    success, message = sapro_handler.delete_device(map_name, simulator_ip, workspace=workspace)
+    # Get full map path once at route level
+    try:
+        map_path = sapro_handler.get_full_map_path(map_name, workspace)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get map path: {e}")
+
+    # Attempt to delete from Sapro first
+    success, message = sapro_handler.delete_device(simulator_ip, map_path)
     if not success:
         # Sapro deletion failed
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)

@@ -148,10 +148,10 @@ class XMFGenerator:
         nl = self._json_newline()
         ind1 = self._json_indent(1)
         ind2 = self._json_indent(2)
-        tcl = f'    SA_xml_append_plain_text "{ind1}\\\\"data_source\\\\": {{{nl}"\n'
-        tcl += f'    SA_xml_append_plain_text "{ind2}\\\\"type\\\\": \\\\"defensepro\\\\",{nl}"\n'
-        tcl += f'    SA_xml_append_plain_text "{ind2}\\\\"ip\\\\": \\\\"$myIP\\\\",{nl}"\n'
-        tcl += f'    SA_xml_append_plain_text "{ind2}\\\\"version\\\\": \\\\"10.6.0.0\\\\"{nl}"\n'
+        tcl = f'    SA_xml_append_plain_text "{ind1}\\"data_source\\": {{{nl}"\n'
+        tcl += f'    SA_xml_append_plain_text "{ind2}\\"type\\": \\"defensepro\\",{nl}"\n'
+        tcl += f'    SA_xml_append_plain_text "{ind2}\\"ip\\": \\"$myIP\\",{nl}"\n'
+        tcl += f'    SA_xml_append_plain_text "{ind2}\\"version\\": \\"10.6.0.0\\"{nl}"\n'
         tcl += f'    SA_xml_append_plain_text "{ind1}}},{nl}"\n'
         return tcl
 
@@ -160,11 +160,11 @@ class XMFGenerator:
         nl = self._json_newline()
         ind1 = self._json_indent(1)
         ind2 = self._json_indent(2)
-        tcl = f'    SA_xml_append_plain_text "{ind1}\\\\"transaction\\\\": {{{nl}"\n'
-        tcl += f'    SA_xml_append_plain_text "{ind2}\\\\"request_url\\\\": \\\\"https://$myIP:8790{endpoint_path}\\\\",{nl}"\n'
-        tcl += f'    SA_xml_append_plain_text "{ind2}\\\\"response_type\\\\": \\\\"complete\\\\",{nl}"\n'
-        tcl += f'    SA_xml_append_plain_text "{ind2}\\\\"last_update\\\\": \\\\"$last_update\\\\",{nl}"\n'
-        tcl += f'    SA_xml_append_plain_text "{ind2}\\\\"next_request_time\\\\": \\\\"$next_request_time\\\\"{nl}"\n'
+        tcl = f'    SA_xml_append_plain_text "{ind1}\\"transaction\\": {{{nl}"\n'
+        tcl += f'    SA_xml_append_plain_text "{ind2}\\"request_url\\": \\"https://$myIP:8790{endpoint_path}\\",{nl}"\n'
+        tcl += f'    SA_xml_append_plain_text "{ind2}\\"response_type\\": \\"complete\\",{nl}"\n'
+        tcl += f'    SA_xml_append_plain_text "{ind2}\\"last_update\\": \\"$last_update\\",{nl}"\n'
+        tcl += f'    SA_xml_append_plain_text "{ind2}\\"next_request_time\\": \\"$next_request_time\\"{nl}"\n'
         tcl += f'    SA_xml_append_plain_text "{ind1}}},{nl}"\n'
         return tcl
 
@@ -177,8 +177,6 @@ class XMFGenerator:
         Returns:
             TCL code for user's data structure
         """
-        tcl = f'    SA_xml_append_plain_text "\\"{endpoint.data_key}\\": {{"\n'
-
         # Filter out empty arrays (repeat=0)
         non_empty_fields = []
         for key in endpoint.data_structure.keys():
@@ -193,14 +191,23 @@ class XMFGenerator:
 
             non_empty_fields.append((key, field_value))
 
-        # Generate TCL for non-empty fields only
-        for i, (key, field_value) in enumerate(non_empty_fields):
-            tcl += self._generate_field_value(key, field_value, indent=1)
+        # Check if single field with same name as data_key (avoid duplication)
+        nl = self._json_newline()
+        if len(non_empty_fields) == 1 and non_empty_fields[0][0] == endpoint.data_key:
+            # Generate field directly without wrapper
+            tcl = self._generate_field_value(non_empty_fields[0][0], non_empty_fields[0][1], indent=1, json_level=1, trailing_comma=False)
+        else:
+            # Multiple fields or different name - wrap in data_key object
+            ind1 = self._json_indent(1)
+            tcl = f'    SA_xml_append_plain_text "{ind1}\\"{endpoint.data_key}\\": {{{nl}"\n'
 
-            if i < len(non_empty_fields) - 1:
-                tcl += '    SA_xml_append_plain_text ","\n'
+            # Generate TCL for non-empty fields only
+            for i, (key, field_value) in enumerate(non_empty_fields):
+                has_comma = i < len(non_empty_fields) - 1
+                tcl += self._generate_field_value(key, field_value, indent=1, json_level=2, trailing_comma=has_comma)
 
-        tcl += '    SA_xml_append_plain_text "}"\n'  # Close data_key
+            tcl += f'    SA_xml_append_plain_text "{nl}{ind1}}}"\n'  # Close data_key
+
         return tcl
 
     # ...existing code...
@@ -211,7 +218,8 @@ class XMFGenerator:
         field_value: FieldValue,
         indent: int = 0,
         array_index_var: str = None,
-        json_level: int = 2
+        json_level: int = 2,
+        trailing_comma: bool = False
     ) -> str:
         """Generate TCL code for a field value (recursive).
 
@@ -221,10 +229,12 @@ class XMFGenerator:
             indent: Current TCL indentation level
             array_index_var: Variable name for array index (e.g., "i", "j")
             json_level: Current JSON indentation level
+            trailing_comma: Whether to include a trailing comma after this field
         """
         ind = "    " * indent
         json_ind = self._json_indent(json_level)
         nl = self._json_newline()
+        comma = f",{nl}" if trailing_comma else ""
         tcl = ""
 
         if field_value.type == FieldType.STRING:
@@ -234,14 +244,14 @@ class XMFGenerator:
             if hasattr(field_value, 'options') and field_value.options:
                 # Enum field - use fixed value if set, otherwise pick randomly from options
                 if mode == 'fixed' and field_value.value:
-                    tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"{field_value.value}\\""\n'
+                    tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"{field_value.value}\\"{comma}"\n'
                 else:
                     # Pick random option
                     options_str = " ".join(field_value.options)
                     tcl += f'{ind}set options [list {options_str}]\n'
                     tcl += f'{ind}set idx [random_int 0 [expr {{[llength $options] - 1}}]]\n'
                     tcl += f'{ind}set val [lindex $options $idx]\n'
-                    tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"$val\\""\n'
+                    tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"$val\\"{comma}"\n'
             elif mode == 'random':
                 # Check if field name suggests it's an attack_id
                 if 'attack' in field_name.lower() and 'id' in field_name.lower():
@@ -250,19 +260,19 @@ class XMFGenerator:
                     tcl += f'{ind}set ctime [clock seconds]\n'
                     tcl += f'{ind}set part2 [expr {{$ctime + [random_int -1000 1000]}}]\n'
                     tcl += f'{ind}set attack_id "$part1-$part2"\n'
-                    tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"$attack_id\\""\n'
+                    tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"$attack_id\\"{comma}"\n'
                 elif 'ip' in field_name.lower():
                     # IP address fields (src-ip, dst-ip, etc.)
                     tcl += f'{ind}set val [random_ipv4]\n'
-                    tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"$val\\""\n'
+                    tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"$val\\"{comma}"\n'
                 elif 'fqdn' in field_name.lower() or 'domain' in field_name.lower():
                     # FQDN fields
                     tcl += f'{ind}set val [random_fqdn ".com"]\n'
-                    tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"$val\\""\n'
+                    tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"$val\\"{comma}"\n'
                 elif 'policy' in field_name.lower() and 'name' in field_name.lower():
                     # Policy name fields - use pol{1-200} format
                     tcl += f'{ind}set val [random_policy_name]\n'
-                    tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"$val\\""\n'
+                    tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"$val\\"{comma}"\n'
                 else:
                     # Generic random string (alphanumeric)
                     tcl += f'{ind}set chars "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"\n'
@@ -270,30 +280,30 @@ class XMFGenerator:
                     tcl += f'{ind}for {{set n 0}} {{$n < [random_int 5 15]}} {{incr n}} {{\n'
                     tcl += f'{ind}    append val [string index $chars [random_int 0 [expr {{[string length $chars] - 1}}]]]\n'
                     tcl += f'{ind}}}\n'
-                    tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"$val\\""\n'
+                    tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"$val\\"{comma}"\n'
             else:
                 # Fixed value
                 value = field_value.value or ""
-                tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"{value}\\""\n'
+                tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"{value}\\"{comma}"\n'
 
         elif field_value.type == FieldType.NUMBER:
             mode = getattr(field_value, 'mode', 'fixed')
 
             if mode == 'random':
-                min_val = field_value.min or 0
-                max_val = field_value.max or 100
+                min_val = field_value.min if field_value.min is not None else 0
+                max_val = field_value.max if field_value.max is not None else 100
                 tcl += f'{ind}set val [random_int {min_val} {max_val}]\n'
-                tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": $val"\n'
+                tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": $val{comma}"\n'
             else:
                 # Fixed value
-                tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": {field_value.value}"\n'
+                tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": {field_value.value}{comma}"\n'
 
         elif field_value.type == FieldType.BOOLEAN:
             bool_str = "true" if field_value.value else "false"
-            tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": {bool_str}"\n'
+            tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": {bool_str}{comma}"\n'
 
         elif field_value.type == FieldType.NULL:
-            tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": null"\n'
+            tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": null{comma}"\n'
 
         elif field_value.type == FieldType.TIMESTAMP:
             # Generate timestamp using helper function
@@ -302,26 +312,28 @@ class XMFGenerator:
 
             if offset == 0:
                 # Current time - use pre-generated variable
-                tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"$last_update\\""\n'
+                tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"$last_update\\"{comma}"\n'
             else:
                 # Use helper function with unique variable name based on field
                 # get_timestamp_offset 120 → current_time - 120
                 ts_var = f'ts_{field_name.replace("-", "_")}'
                 tcl += f'{ind}set {ts_var} [get_timestamp_offset {offset}]\n'
-                tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"${ts_var}\\""\n'
+                tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"${ts_var}\\"{comma}"\n'
 
         elif field_value.type == FieldType.RANDOM:
-            tcl += f'{ind}set val [random_int {field_value.min} {field_value.max}]\n'
-            tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": $val"\n'
+            min_val = field_value.min if field_value.min is not None else 0
+            max_val = field_value.max if field_value.max is not None else 100
+            tcl += f'{ind}set val [random_int {min_val} {max_val}]\n'
+            tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": $val{comma}"\n'
 
         elif field_value.type == FieldType.RANDOM_IPV4:
             tcl += f'{ind}set ip [random_ipv4]\n'
-            tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"$ip\\""\n'
+            tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"$ip\\"{comma}"\n'
 
         elif field_value.type == FieldType.RANDOM_FQDN:
             suffix = field_value.suffix or ".com"
             tcl += f'{ind}set fqdn [random_fqdn "{suffix}"]\n'
-            tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"$fqdn\\""\n'
+            tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"$fqdn\\"{comma}"\n'
 
         elif field_value.type == FieldType.TEMPLATE:
             # Replace {{INDEX}} with array index variable
@@ -329,22 +341,24 @@ class XMFGenerator:
             if "{{INDEX}}" in template and array_index_var:
                 # Use TCL variable substitution
                 template_expr = template.replace("{{INDEX}}", f"${array_index_var}")
-                tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"{template_expr}\\""\n'
+                tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"{template_expr}\\"{comma}"\n'
             else:
-                tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"{template}\\""\n'
+                tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"{template}\\"{comma}"\n'
 
         elif field_value.type == FieldType.RANDOM_COMPOSITE:
             # Generate composite value from parts
             tcl += f'{ind}set composite ""\n'
             for part in field_value.parts or []:
                 if part["type"] == "random":
-                    tcl += f'{ind}append composite [random_int {part["min"]} {part["max"]}]\n'
+                    part_min = part.get("min", 0) if part.get("min") is not None else 0
+                    part_max = part.get("max", 100) if part.get("max") is not None else 100
+                    tcl += f'{ind}append composite [random_int {part_min} {part_max}]\n'
                 elif part["type"] == "literal":
                     tcl += f'{ind}append composite "{part["value"]}"\n'
-            tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": \\"$composite\\""\n'
+            tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\"$composite\\"{comma}"\n'
 
         elif field_value.type == FieldType.OBJECT:
-            tcl += f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": {{"\n'
+            tcl += f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": {{{nl}"\n'
 
             # Filter out empty arrays from properties
             props = field_value.properties or {}
@@ -361,15 +375,14 @@ class XMFGenerator:
 
             # Generate TCL for non-empty properties only
             for i, (prop_key, prop_value) in enumerate(non_empty_props):
-                tcl += self._generate_field_value(prop_key, prop_value, indent + 1, array_index_var)
+                has_comma = i < len(non_empty_props) - 1
+                tcl += self._generate_field_value(prop_key, prop_value, indent + 1, array_index_var, json_level + 1, trailing_comma=has_comma)
 
-                if i < len(non_empty_props) - 1:
-                    tcl += f'{ind}    SA_xml_append_plain_text ","\n'
-
-            tcl += f'{ind}SA_xml_append_plain_text "}}"\n'
+            next_ind = self._json_indent(json_level)
+            tcl += f'{ind}SA_xml_append_plain_text "{nl}{next_ind}}}{comma}"\n'
 
         elif field_value.type == FieldType.ARRAY:
-            tcl += self._generate_array_field(field_name, field_value, indent)
+            tcl += self._generate_array_field(field_name, field_value, indent, json_level, trailing_comma)
 
         return tcl
 
@@ -409,17 +422,24 @@ class XMFGenerator:
         self,
         field_name: str,
         field_value: FieldValue,
-        indent: int
+        indent: int,
+        json_level: int = 2,
+        trailing_comma: bool = False
     ) -> str:
         """Generate TCL code for array field."""
         ind = "    " * indent
-        tcl = f'{ind}SA_xml_append_plain_text "\\"\\"{field_name}\\": ["\n'
+        json_ind = self._json_indent(json_level)
+        nl = self._json_newline()
+        comma = f",{nl}" if trailing_comma else ""
+        tcl = f'{ind}SA_xml_append_plain_text "{json_ind}\\"{field_name}\\": \\[{nl}"\n'
 
         # Determine repeat count
         if field_value.repeat:
             count_expr = str(field_value.repeat)
         else:
-            count_expr = f'[random_int {field_value.repeat_min} {field_value.repeat_max}]'
+            repeat_min = field_value.repeat_min if field_value.repeat_min is not None else 1
+            repeat_max = field_value.repeat_max if field_value.repeat_max is not None else 10
+            count_expr = f'[random_int {repeat_min} {repeat_max}]'
 
         # Choose unique loop variable based on indent level
         loop_var = chr(ord('i') + indent)  # i, j, k, l, etc.
@@ -431,7 +451,8 @@ class XMFGenerator:
         if field_value.item:
             if field_value.item.type == FieldType.OBJECT:
                 # Array of objects
-                tcl += f'{ind}    SA_xml_append_plain_text "{{"\n'
+                item_ind = self._json_indent(json_level + 1)
+                tcl += f'{ind}    SA_xml_append_plain_text "{item_ind}{{{nl}"\n'
 
                 props = field_value.item.properties or {}
                 prop_keys = list(props.keys())
@@ -449,44 +470,42 @@ class XMFGenerator:
 
                 # Generate all fields with proper comma handling
                 generated_count = 0
-                for prop_key in prop_keys:
+                for i, prop_key in enumerate(prop_keys):
                     prop_value = props[prop_key]
+                    has_comma = i < len(prop_keys) - 1
 
                     # Skip protocol if already generated
                     if prop_key == 'protocol' and has_protocol:
-                        if generated_count > 0:
-                            tcl += f'{ind}        SA_xml_append_plain_text ","\n'
-                        tcl += f'{ind}        SA_xml_append_plain_text "\\"\\"{prop_key}\\": \\"${protocol_var}\\""\n'
+                        prop_ind = self._json_indent(json_level + 2)
+                        comma_str = f",{nl}" if has_comma else ""
+                        tcl += f'{ind}        SA_xml_append_plain_text "{prop_ind}\\"{prop_key}\\": \\"${protocol_var}\\"{comma_str}"\n'
                         generated_count += 1
                         continue
 
                     # Skip tcp-flag if protocol is not TCP
                     if prop_key == 'tcp-flag' and has_tcp_flag and has_protocol:
                         tcl += f'{ind}        if {{${protocol_var} == "tcp"}} {{\n'
-                        if generated_count > 0:
-                            tcl += f'{ind}            SA_xml_append_plain_text ","\n'
-                        tcl += self._generate_field_value(prop_key, prop_value, indent + 3, loop_var)
+                        tcl += self._generate_field_value(prop_key, prop_value, indent + 3, loop_var, json_level + 2, trailing_comma=has_comma)
                         tcl += f'{ind}        }}\n'
                         generated_count += 1
                         continue
 
                     # Regular field
-                    if generated_count > 0:
-                        tcl += f'{ind}        SA_xml_append_plain_text ","\n'
-                    tcl += self._generate_field_value(prop_key, prop_value, indent + 2, loop_var)
+                    tcl += self._generate_field_value(prop_key, prop_value, indent + 2, loop_var, json_level + 2, trailing_comma=has_comma)
                     generated_count += 1
 
-                tcl += f'{ind}    SA_xml_append_plain_text "}}"\n'
+                # Use TCL variable to conditionally add comma in single append call
+                tcl += f'{ind}    set item_suffix ""\n'
+                tcl += f'{ind}    if {{${loop_var} < [expr $arr_count_{loop_var} - 1]}} {{\n'
+                tcl += f'{ind}        set item_suffix ","\n'
+                tcl += f'{ind}    }}\n'
+                tcl += f'{ind}    SA_xml_append_plain_text "{nl}{item_ind}}}$item_suffix{nl}"\n'
             else:
                 # Array of primitives (not common but supported)
-                tcl += self._generate_field_value("", field_value.item, indent + 1, loop_var)
+                tcl += self._generate_field_value("", field_value.item, indent + 1, loop_var, json_level + 1, trailing_comma=False)
 
-        # Add comma between array items
-        tcl += f'{ind}    if {{${loop_var} < [expr $arr_count_{loop_var} - 1]}} {{\n'
-        tcl += f'{ind}        SA_xml_append_plain_text ","\n'
-        tcl += f'{ind}    }}\n'
         tcl += f'{ind}}}\n'
 
-        tcl += f'{ind}SA_xml_append_plain_text "]"\n'
+        tcl += f'{ind}SA_xml_append_plain_text "{nl}{json_ind}\\]{comma}"\n'
 
         return tcl

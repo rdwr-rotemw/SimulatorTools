@@ -64,7 +64,6 @@ class Settings(BaseSettings):
     # Sapro integration settings
     SAPRO_IP: str = Field("172.17.166.10", description="Sapro server IP (use localhost on production Sapro machine)")
     SAPRO_PORT: int = Field(2100, description="Sapro server port")
-    SAPRO_MAP_DIR: str = Field("/opt/sapro/map/", description="Sapro maps directory path")
     SAPRO_SSH_HOST: str = Field(default="172.17.166.10", env="SAPRO_SSH_HOST")
     SAPRO_SSH_USER: str = Field(default="root", env="SAPRO_SSH_USER")
     SAPRO_SSH_PASSWORD: str = Field(default="", env="SAPRO_SSH_PASSWORD")

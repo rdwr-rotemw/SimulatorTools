@@ -62,10 +62,25 @@ class ReporterIRPPayload(BaseModel):
 
 
 class ReporterPollingPayload(BaseModel):
-    """Polling configuration payload."""
-    poll_interval: int = 60
-    oids: list[str] = []
-    enabled: bool = True
+    """Polling configuration payload.
+
+    Either template_id OR endpoints must be provided.
+
+    map can be:
+    - str: single map name used for all simulators (backward compatible)
+    - Dict[str, str]: map of simulator_ip -> map_name for multi-simulator support
+    """
+    # Template or endpoint configuration (mutually exclusive)
+    template_id: Optional[str] = Field(None, description="MongoDB template ID to use")
+    endpoints: Optional[List[Dict[str, Any]]] = Field(None, description="List of endpoint configurations")
+
+    # XMF file configuration
+    xmf_filename: str = Field(..., description="XMF filename (e.g., 'attack_data.xmf')")
+    overwrite: bool = Field(False, description="Whether to overwrite existing file (default: False)")
+    write_xmf: bool = Field(True, description="Whether to write XMF file (default: True). Set to False when XMF already written.")
+
+    # Simulator configuration (required for set polling, optional for save-xmf)
+    map: Optional[Union[str, Dict[str, str]]] = Field(None, description="Map name(s) for simulator(s)")
 
 
 class ReporterResponse(BaseModel):

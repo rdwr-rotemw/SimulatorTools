@@ -19,7 +19,8 @@ export const simulatorService = {
       map: data.map,
       template_id: (data as any).template_id || data.template_id,
     };
-    const response = await apiClient.post<Simulator>('/simulators', payload);
+    // Extended timeout: create_device verifies device is running (up to 90s)
+    const response = await apiClient.post<Simulator>('/simulators', payload, { timeout: 120000 });
     return response.data;
   },
 
@@ -122,7 +123,8 @@ export const simulatorService = {
     if (data.map !== undefined) payload.map = data.map;
     if (data.template_id !== undefined) payload.template_id = data.template_id;
 
-    const response = await apiClient.put<Simulator>(`/simulators/${ip}`, payload);
+    // Extended timeout: update_device (delete + create) verifies device is running (up to 90s)
+    const response = await apiClient.put<Simulator>(`/simulators/${ip}`, payload, { timeout: 120000 });
     return response.data;
   },
 
