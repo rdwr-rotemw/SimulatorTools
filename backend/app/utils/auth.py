@@ -266,6 +266,19 @@ async def require_cc_access(
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
 
 
+def normalize_workspace_for_paths(workspace: Optional[str]) -> str:
+    """Normalize workspace for use in file paths.
+
+    Converts special workspace values to safe directory names:
+    - None or empty string → "default"
+    - "*" (all workspaces) → "default"
+    - Any other value → returned as-is
+    """
+    if not workspace or workspace == "*":
+        return "default"
+    return workspace
+
+
 __all__ = [
     "hash_password",
     "verify_password",
