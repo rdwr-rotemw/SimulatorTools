@@ -988,7 +988,7 @@ def create_map(
 def start_simulator(
         simulator_ip: str,
         db: Session = Depends(get_db),
-        _current_user=Depends(require_sapro_access),
+        current_user: User = Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler)
 ) -> SuccessResponse:
     """Start a simulator device.
@@ -1003,10 +1003,17 @@ def start_simulator(
     if not map_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
 
+    # Get workspace for starting device
+    # Super admin (workspace='*') should auto-detect workspace from map
+    if current_user.workspace == "*":
+        workspace = "*"  # Auto-detect in get_full_map_path
+    else:
+        workspace = current_user.workspace
+
     try:
         # Get full map path first
         try:
-            map_path = sapro_handler.get_full_map_path(map_name)
+            map_path = sapro_handler.get_full_map_path(map_name, workspace)
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1029,7 +1036,7 @@ def start_simulator(
 def stop_simulator(
         simulator_ip: str,
         db: Session = Depends(get_db),
-        _current_user=Depends(require_sapro_access),
+        current_user: User = Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler)
 ) -> SuccessResponse:
     """Stop a simulator device.
@@ -1044,10 +1051,17 @@ def stop_simulator(
     if not map_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
 
+    # Get workspace for stopping device
+    # Super admin (workspace='*') should auto-detect workspace from map
+    if current_user.workspace == "*":
+        workspace = "*"  # Auto-detect in get_full_map_path
+    else:
+        workspace = current_user.workspace
+
     try:
         # Get full map path first
         try:
-            map_path = sapro_handler.get_full_map_path(map_name)
+            map_path = sapro_handler.get_full_map_path(map_name, workspace)
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

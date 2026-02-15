@@ -270,7 +270,7 @@ class SaproCommunicationHandler:
             logger.error(f"SNMP query failed for {device_ip}: {type(e).__name__}: {e}")
             return None, None
 
-    def get_all_maps(self, workspace: str = "default") -> List[Dict[str, str]]:
+    def get_all_maps(self, workspace: str) -> List[Dict[str, str]]:
         """Get list of all available maps from specified Sapro workspace with their status.
 
         IMPORTANT: Check if workspace has any maps BEFORE running wspstats command,
@@ -468,7 +468,7 @@ class SaproCommunicationHandler:
         # Default workspace if no subdirectory
         return "default"
 
-    def get_full_map_path(self, map_name: str, workspace: str = "default") -> str:
+    def get_full_map_path(self, map_name: str, workspace: str) -> str:
         """Return the full path to a map file on the sapro server.
 
         Args:
@@ -476,10 +476,10 @@ class SaproCommunicationHandler:
             workspace: Workspace to search in. Use "*" to auto-detect workspace.
 
         Returns:
-            Full path string from get_all_maps().
+            Full path to map file.
 
         Raises:
-            Exception: If map not found.
+            Exception: If workspace not found or invalid.
         """
         # Auto-detect workspace if "*" is provided
         if workspace == "*":
@@ -488,11 +488,15 @@ class SaproCommunicationHandler:
                 raise Exception(f"Map '{map_name}' not found in any workspace")
             workspace = detected_workspace
 
-        maps = self.get_all_maps(workspace=workspace)
-        map_info = next((m for m in maps if m["name"] == map_name), None)
-        if not map_info:
-            raise Exception(f"Map '{map_name}' not found in workspace '{workspace}'")
-        return map_info["full_path"]
+        # Get the map directory for this workspace
+        # For default: /opt/sapro/map/
+        # For custom: reads LocalMappedDir from .wsp file
+        map_dir = self._get_local_map_dir(workspace)
+
+        # Construct the full path
+        map_path = f"{map_dir}{map_name}.map"
+
+        return map_path
 
     def _get_local_map_dir(self, workspace: str) -> str:
         """Extract LocalMappedDir from workspace file.
