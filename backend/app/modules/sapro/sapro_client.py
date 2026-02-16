@@ -672,7 +672,7 @@ class SaproCommunicationHandler:
             logger.error(f"Failed to stop map {map_name}: {e}", exc_info=True)
             return False, f"Failed to stop map: {e}"
 
-    def create_map(self, map_name: str, workspace: str = "default") -> Tuple[bool, str]:
+    def create_map(self, map_name: str, workspace: str) -> Tuple[bool, str]:
         """Create a new map file and add it to workspace using SSH.
 
         Creates the physical map file in the location specified by LocalMappedDir,
@@ -680,7 +680,7 @@ class SaproCommunicationHandler:
 
         Args:
             map_name: Map name (without .map extension)
-            workspace: Workspace name (defaults to "default")
+            workspace: Workspace name
 
         Returns:
             (success, message)
@@ -905,61 +905,84 @@ class SaproCommunicationHandler:
 
             was_map_running = map_info["status"] == "running"
 
-            # If map is not running, start it first (this will start all devices)
-            if not was_map_running:
+            # Step 1: Read map file to check if it's empty BEFORE doing anything else
+            read_map_cmd = f"cat {map_path}"
+            success, map_content = ssh_client.execute_command(
+                read_map_cmd, check_stderr=False
+            )
+
+            if not success:
+                return False, f"Failed to read map file: {map_content}"
+
+            # Check if map is empty (no <Device> tags)
+            is_empty_map = "<Device>" not in map_content
+            logger.info(f"Map {map_name} is {'empty' if is_empty_map else 'not empty'}")
+
+            # CRITICAL: If map is empty AND running, we must STOP it first before writing
+            # because Sapro caches the map content in memory when running
+            if is_empty_map and was_map_running:
+                logger.info(f"Map {map_name} is empty but running, stopping it first to write device")
+                stop_ok, stop_msg = self.stop_map_and_wait(map_path)
+                if not stop_ok:
+                    return False, f"Failed to stop empty map {map_name}: {stop_msg}"
+                was_map_running = False  # Update status after stopping
+
+            # If map is not empty and not running, start it to check device list
+            if not is_empty_map and not was_map_running:
                 logger.info(f"Map {map_name} is not running, starting it")
                 ok, msg = self.start_map_and_wait(map_path)
                 if not ok:
                     return False, f"Failed to start map {map_name}: {msg}"
+                was_map_running = True  # Update status after starting
 
-            # Check if device already exists using SSH devlist command
-            devlist_cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c devlist"
-            logger.debug(f"Checking if device {device_ip} exists: {devlist_cmd}")
-
-            success, output = ssh_client.execute_command(
-                devlist_cmd, check_stderr=False
-            )
-
+            # Check if device already exists (only if map is not empty)
             device_exists = False
             device_status = None
-            if success and output:
-                # Parse devlist output to check if device exists and get its status
-                lines = output.split("\n")
-                in_table = False
-                for line in lines:
-                    # Skip header separators
-                    if line.strip().startswith("---"):
-                        in_table = True
-                        continue
 
-                    # Stop at footer separator
-                    if in_table and line.strip().startswith("---"):
-                        break
+            if not is_empty_map:
+                devlist_cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c devlist"
+                logger.debug(f"Checking if device {device_ip} exists: {devlist_cmd}")
 
-                    # Skip non-table lines
-                    if not in_table or not line.strip():
-                        continue
+                success, output = ssh_client.execute_command(
+                    devlist_cmd, check_stderr=False
+                )
 
-                    parts = line.split()
-                    if parts:
-                        device_name = parts[0]
-                        if "//" in device_name:
-                            ip = device_name.split("//")[0]
-                        else:
-                            ip = device_name
+                if success and output:
+                    # Parse devlist output to check if device exists and get its status
+                    lines = output.split("\n")
+                    in_table = False
+                    for line in lines:
+                        # Skip header separators
+                        if line.strip().startswith("---"):
+                            in_table = True
+                            continue
 
-                        if ip == device_ip:
-                            device_exists = True
-                            # Get device status from second column (R=running, ' '=stopped, etc.)
-                            if len(parts) > 1:
-                                device_status = parts[1]
+                        # Stop at footer separator
+                        if in_table and line.strip().startswith("---"):
                             break
 
-            if device_exists:
-                if was_map_running:
-                    # Map was already running - check device status
+                        # Skip non-table lines
+                        if not in_table or not line.strip():
+                            continue
+
+                        parts = line.split()
+                        if parts:
+                            device_name = parts[0]
+                            if "//" in device_name:
+                                ip = device_name.split("//")[0]
+                            else:
+                                ip = device_name
+
+                            if ip == device_ip:
+                                device_exists = True
+                                # Get device status from second column (R=running, ' '=stopped, etc.)
+                                if len(parts) > 1:
+                                    device_status = parts[1]
+                                break
+
+                if device_exists:
+                    # Device already exists - check status and start if needed
                     if device_status == "R":
-                        # Device already running - no need to start
                         logger.info(f"Device {device_ip} already exists and is running")
                         return (
                             True,
@@ -974,15 +997,6 @@ class SaproCommunicationHandler:
                         if ok:
                             return True, f"Simulator {device_ip} was started"
                         return False, f"Simulator {device_ip} failed to start: {msg}"
-                else:
-                    # Map was started by us - device is already running
-                    logger.info(
-                        f"Device {device_ip} already exists and was started with map"
-                    )
-                    return (
-                        True,
-                        f"Simulator {device_ip} already exists and was started with map",
-                    )
 
             # Device doesn't exist - need to add it
             logger.info(f"Device {device_ip} doesn't exist, adding to map {map_name}")
@@ -993,20 +1007,6 @@ class SaproCommunicationHandler:
             except Exception as e:
                 logger.error(f"Failed to get map directory: {e}")
                 return False, f"Failed to get map directory: {e}"
-
-            # Step 1: Read map file to check if it's empty
-            read_map_cmd = f"cat {map_path}"
-            success, map_content = ssh_client.execute_command(
-                read_map_cmd, check_stderr=False
-            )
-
-            if not success:
-                return False, f"Failed to read map file: {map_content}"
-
-            # Check if map is empty (no <Device> tags)
-            is_empty_map = "<Device>" not in map_content
-
-            logger.info(f"Map {map_name} is {'empty' if is_empty_map else 'not empty'}")
 
             if is_empty_map:
                 # EMPTY MAP: Add device XML directly into map file
@@ -1049,15 +1049,14 @@ class SaproCommunicationHandler:
                 logger.info(f"Added device {device_ip} directly to map file {map_path}")
 
                 # Start map after adding device to empty map
-                if not was_map_running:
-                    logger.info(f"Map {map_name} was not running, starting it now...")
-                    start_ok, start_msg = self.start_map_and_wait(map_path)
-                    if not start_ok:
-                        return (
-                            False,
-                            f"Device {device_ip} added but failed to start map: {start_msg}",
-                        )
-                    logger.info(f"Map {map_name} started successfully")
+                logger.info(f"Starting map {map_name} after adding device...")
+                start_ok, start_msg = self.start_map_and_wait(map_path)
+                if not start_ok:
+                    return (
+                        False,
+                        f"Device {device_ip} added but failed to start map: {start_msg}",
+                    )
+                logger.info(f"Map {map_name} started successfully")
             else:
                 # NON-EMPTY MAP: Use normal adddev command
                 logger.info(f"Adding device to non-empty map using adddev command")
