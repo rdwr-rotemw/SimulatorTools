@@ -970,7 +970,6 @@ export const IRPSenderPage: React.FC = () => {
     // Attack-ID configuration dialog state
     const [attackIdDialogOpen, setAttackIdDialogOpen] = useState(false)
     const [pendingAction, setPendingAction] = useState<'send' | 'loop' | null>(null)
-    const [configuredMessages, setConfiguredMessages] = useState<Record<string, any[]> | null>(null)
 
     // PCAP Import state
     const [pcapDialogOpen, setPcapDialogOpen] = useState(false)
@@ -1960,39 +1959,6 @@ export const IRPSenderPage: React.FC = () => {
         }
     }
 
-    // Send messages once (used by loop)
-    const sendMessagesOnce = async () => {
-        if (selectedSimulators.length === 0 || !selectedDestinationPort || messages.length === 0) {
-            return false
-        }
-
-        try {
-            const formattedMessages = messages.map((msg) => {
-                const backendData = transformFromAttackId(msg.data, msg.originalSchema)
-                return {
-                    message: msg.messageName,
-                    ...backendData,
-                }
-            })
-
-            const payload = {
-                mongo_id: schemaId!,
-                // IRP doesn't use map folder (sends raw UDP), but include for API consistency
-                map: '',
-                message_data: {
-                    messages: formattedMessages,
-                },
-            }
-
-            await irpSchemaService.sendMessages(selectedDestinationPort, selectedSimulators, payload)
-            return true
-        } catch (error: any) {
-            const errorMsg = error?.response?.data?.detail || error?.message || 'Failed to send messages'
-            setSnackbar({open: true, message: errorMsg, severity: 'error'})
-            return false
-        }
-    }
-
     // Auto-save form state to localStorage on every change
     useEffect(() => {
         if (messages.length > 0) {
@@ -2067,8 +2033,7 @@ export const IRPSenderPage: React.FC = () => {
                 severity: 'success'
             });
 
-            // Clear configured messages and pending action
-            setConfiguredMessages(null);
+            // Clear pending action
             setPendingAction(null);
 
         } catch (error: any) {
@@ -2161,7 +2126,7 @@ export const IRPSenderPage: React.FC = () => {
                     }
 
                     try {
-                        // Capture current counts to avoid no-loop-func warnings
+                        // Capture current counts for progress display
                         const currentSuccessCount = successCount;
                         const currentFailedCount = failedCount;
                         const messageCount = simMessages.length;
@@ -2173,10 +2138,12 @@ export const IRPSenderPage: React.FC = () => {
                             (current, total, messageName, status) => {
                                 setCurrentMessage(currentSuccessCount + currentFailedCount + current);
                             },
+                            // eslint-disable-next-line no-loop-func
                             (simSuccessCount, simFailedCount, totalCount) => {
                                 successCount += simSuccessCount;
                                 failedCount += simFailedCount;
                             },
+                            // eslint-disable-next-line no-loop-func
                             (error) => {
                                 failedCount += messageCount;
                             }
@@ -2217,12 +2184,9 @@ export const IRPSenderPage: React.FC = () => {
                 setTotalMessages(0);
             }
             setPendingAction(null);
-        } else if (pendingAction === 'loop') {
-            // Save configured messages and open loop dialog
-            setConfiguredMessages(attackIdConfig);
-            setLoopDialogOpen(true);
-            // Don't reset pendingAction yet - we need it in handleStartLoop
         }
+        // Note: Multi-simulator loops are not supported (see handleStartLoop validation)
+        // so the pendingAction === 'loop' branch is not needed
     }
 
     return (

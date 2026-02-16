@@ -144,7 +144,6 @@ const CCManagementPage: React.FC = () => {
         setDeviceProgress(null);
 
         let addSuccessCount = 0;
-        let addFailedCount = 0;
         let validateSuccessCount = 0;
         let validateFailedCount = 0;
 
@@ -170,9 +169,8 @@ const CCManagementPage: React.FC = () => {
                         message
                     });
                 },
-                (successCount, failedCount, totalCount) => {
+                (successCount, _failedCount, totalCount) => {
                     addSuccessCount = successCount;
-                    addFailedCount = failedCount;
                 },
                 (error) => {
                     throw new Error(error);

@@ -229,13 +229,6 @@ export const SNMPPage: React.FC = () => {
         }
     };
 
-    // Generate a random attack-ID
-    const generateRandomAttackId = (): string => {
-        const prefix = Math.floor(Math.random() * 9000) + 100; // 100-9999
-        const suffix = Math.floor(Math.random() * 9000000000) + 1000000000; // 10 digits
-        return `${prefix}-${suffix}`;
-    };
-
     const deleteTrap = (index: number) => {
         if (traps.length === 1) {
             setSnackbar({open: true, message: 'Must have at least one trap', severity: 'error'});
@@ -619,7 +612,7 @@ export const SNMPPage: React.FC = () => {
                     }));
 
                     try {
-                        // Capture current counts to avoid no-loop-func warnings
+                        // Capture current counts for progress display
                         const currentSuccessCount = successCount;
                         const currentFailedCount = failedCount;
                         const trapCount = modifiedTraps.length;
@@ -631,10 +624,12 @@ export const SNMPPage: React.FC = () => {
                             (current, total, trapName, status) => {
                                 setCurrentTrap(currentSuccessCount + currentFailedCount + current);
                             },
+                            // eslint-disable-next-line no-loop-func
                             (simSuccessCount, simFailedCount, totalCount) => {
                                 successCount += simSuccessCount;
                                 failedCount += simFailedCount;
                             },
+                            // eslint-disable-next-line no-loop-func
                             (error) => {
                                 // Error for this simulator
                                 failedCount += trapCount;
