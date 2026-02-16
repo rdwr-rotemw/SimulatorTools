@@ -26,6 +26,7 @@ import {ccService} from '../api/services/cc.service';
 
 import {CCDeviceDriverDialog} from '../components/cc/CCDeviceDriverDialog';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
+import {deviceDriverService} from '../api/services/deviceDriver.service';
 
 const CCManagementPage: React.FC = () => {
     const navigate = useNavigate();
@@ -33,7 +34,7 @@ const CCManagementPage: React.FC = () => {
     const [addDialogOpen, setAddDialogOpen] = useState(false);
     const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
     const [deviceToDelete, setDeviceToDelete] = useState<string | null>(null);
-    const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
+    const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' | 'warning' }>({
         open: false,
         message: '',
         severity: 'success',
@@ -47,13 +48,13 @@ const CCManagementPage: React.FC = () => {
     const [isAdding, setIsAdding] = useState(false);
     const [currentDevice, setCurrentDevice] = useState(0);
     const [totalDevices, setTotalDevices] = useState(0);
-    const [currentPhase, setCurrentPhase] = useState<'adding' | 'waiting' | null>(null);
+    const [currentPhase, setCurrentPhase] = useState<'drivers' | 'adding' | 'validating' | null>(null);
     const [deviceProgress, setDeviceProgress] = useState<{
         current: number;
         total: number;
         ip: string;
         name: string;
-        status: 'adding' | 'added' | 'checking' | 'success' | 'failed';
+        success: boolean;
         message: string;
     } | null>(null);
 
@@ -94,82 +95,252 @@ const CCManagementPage: React.FC = () => {
 
     const handleDeviceDriverClick = () => setDeviceDriverDialogOpen(true);
 
-    const handleAddDeviceSubmit = async (data: CCAddDeviceRequest) => {
+    // Helper to parse IP range and extract all IPs
+    const parseIPRange = (managementIP: string): string[] => {
+        const trimmedValue = managementIP.trim();
+
+        // Check if it's a range
+        if (trimmedValue.includes('-')) {
+            const [startIP, endIP] = trimmedValue.split('-').map(s => s.trim());
+
+            // Generate all IPs in range
+            const parseIP = (ip: string): number[] => ip.split('.').map(Number);
+            const start = parseIP(startIP);
+            const end = parseIP(endIP);
+
+            const ips: string[] = [];
+            const current = [...start];
+
+            while (true) {
+                ips.push(current.join('.'));
+                if (current.every((val, idx) => val === end[idx])) break;
+
+                for (let i = 3; i >= 0; i--) {
+                    if (current[i] < 255) {
+                        current[i]++;
+                        break;
+                    } else {
+                        current[i] = 0;
+                    }
+                }
+
+                if (ips.length > 254) break; // Safety
+            }
+
+            return ips;
+        } else {
+            // Single IP
+            return [trimmedValue];
+        }
+    };
+
+    const handleAddDeviceSubmit = async (data: CCAddDeviceRequest, autoInstallDriver: boolean) => {
         if (!currentCC) return;
 
-        // Use streaming with status check for both single IPs and ranges
+        setAddDialogOpen(false); // Close dialog immediately
         setIsAdding(true);
         setCurrentDevice(0);
         setTotalDevices(0);
         setDeviceProgress(null);
-        setAddDialogOpen(false); // Close dialog immediately for streaming
+
+        let addSuccessCount = 0;
+        let addFailedCount = 0;
+        let validateSuccessCount = 0;
+        let validateFailedCount = 0;
 
         try {
-            await ccService.addDeviceWithStatusCheck(
+            // PHASE 1: Add devices
+            setCurrentPhase('adding');
+            setCurrentDevice(0);
+            setTotalDevices(0);
+            setDeviceProgress(null);
+
+            await ccService.addDevicesBatch(
                 currentCC,
                 data,
-                (current, total, ip, name, status, message) => {
+                (current, total, ip, name, success, message) => {
                     setCurrentDevice(current);
                     setTotalDevices(total);
-
-                    // Detect phase from status
-                    if (status === 'adding' || status === 'added') {
-                        setCurrentPhase('adding');
-                    } else if (status === 'checking' || status === 'success' || status === 'failed') {
-                        setCurrentPhase('waiting');
-                    }
-
                     setDeviceProgress({
                         current,
                         total,
                         ip,
                         name,
-                        status,
+                        success,
                         message
                     });
                 },
                 (successCount, failedCount, totalCount) => {
-                    setIsAdding(false);
-                    setDeviceProgress(null);
-                    setCurrentPhase(null);
-                    if (failedCount === 0) {
-                        setSnackbar({
-                            open: true,
-                            message: `Successfully added all ${successCount} device(s)`,
-                            severity: 'success'
-                        });
-                    } else if (successCount === 0) {
-                        setSnackbar({
-                            open: true,
-                            message: `Failed to add all ${failedCount} device(s)`,
-                            severity: 'error'
-                        });
-                    } else {
-                        setSnackbar({
-                            open: true,
-                            message: `Added ${successCount} device(s), ${failedCount} failed`,
-                            severity: 'success'
-                        });
-                    }
-                    // Refresh devices and Sapro simulators after completion
-                    fetchSaproSimulators(true); // Force refresh
-                    fetchDevices(currentCC);
+                    addSuccessCount = successCount;
+                    addFailedCount = failedCount;
                 },
                 (error) => {
-                    setIsAdding(false);
-                    setDeviceProgress(null);
-                    setCurrentPhase(null);
-                    setSnackbar({
-                        open: true,
-                        message: `Error: ${error}`,
-                        severity: 'error'
-                    });
+                    throw new Error(error);
                 }
             );
+
+            // PHASE 2: Install drivers (if enabled)
+            if (autoInstallDriver) {
+                setCurrentPhase('drivers');
+
+                try {
+                    // 1. Extract IP addresses from management_ip field
+                    const ipAddresses = parseIPRange(data.management_ip);
+
+                    // 2. Get unique device versions from saproSimulators for these IPs
+                    const uniqueVersions = new Map<string, { device_type: string; device_version: string }>();
+
+                    ipAddresses.forEach(ip => {
+                        const simulator = saproSimulators.find(sim => sim.ip_address === ip);
+                        if (simulator && simulator.type && simulator.version) {
+                            const key = `${simulator.type}-${simulator.version}`;
+                            if (!uniqueVersions.has(key)) {
+                                uniqueVersions.set(key, {
+                                    device_type: simulator.type,
+                                    device_version: simulator.version
+                                });
+                            }
+                        }
+                    });
+
+                    // 3. Get available drivers and match to versions
+                    if (uniqueVersions.size > 0) {
+                        const allDrivers = await deviceDriverService.listDrivers(currentCC);
+                        const matchedDriverFilenames: string[] = [];
+
+                        uniqueVersions.forEach(({ device_type, device_version }) => {
+                            const matchedDriver = allDrivers.find(
+                                driver => driver.device_type === device_type && driver.device_version === device_version
+                            );
+                            if (matchedDriver) {
+                                matchedDriverFilenames.push(matchedDriver.filename);
+                            }
+                        });
+
+                        // 4. Deploy matched drivers if any
+                        if (matchedDriverFilenames.length > 0) {
+                            // Update progress to show driver installation
+                            setCurrentDevice(0);
+                            setTotalDevices(matchedDriverFilenames.length);
+                            setDeviceProgress({
+                                current: 0,
+                                total: matchedDriverFilenames.length,
+                                ip: '',
+                                name: `Installing ${matchedDriverFilenames.length} driver(s)...`,
+                                success: true,
+                                message: 'Installing device drivers...'
+                            });
+
+                            const deployResult = await deviceDriverService.deployDrivers(currentCC, matchedDriverFilenames);
+
+                            setCurrentDevice(deployResult.total);
+                            setDeviceProgress({
+                                current: deployResult.succeeded,
+                                total: deployResult.total,
+                                ip: '',
+                                name: `Installed ${deployResult.succeeded}/${deployResult.total} driver(s)`,
+                                success: deployResult.failed === 0,
+                                message: deployResult.failed === 0 ? 'All drivers installed successfully' : `${deployResult.failed} driver(s) failed`
+                            });
+
+                            if (deployResult.failed > 0) {
+                                setSnackbar({
+                                    open: true,
+                                    message: `Driver installation: ${deployResult.succeeded}/${deployResult.total} succeeded`,
+                                    severity: 'warning'
+                                });
+                            }
+                        }
+                    }
+                } catch (err: any) {
+                    // Driver installation failed - show error but continue with validation
+                    const msg = err?.response?.data?.detail || err?.message || 'Driver installation failed';
+                    setSnackbar({
+                        open: true,
+                        message: `${msg}. Continuing with validation...`,
+                        severity: 'warning'
+                    });
+                }
+            }
+
+            // PHASE 3: Validate devices
+            setCurrentPhase('validating');
+            setCurrentDevice(0);
+            setTotalDevices(0);
+            setDeviceProgress(null);
+
+            await ccService.validateDevicesBatch(
+                currentCC,
+                data,
+                (current, total, ip, name, success, message) => {
+                    setCurrentDevice(current);
+                    setTotalDevices(total);
+                    setDeviceProgress({
+                        current,
+                        total,
+                        ip,
+                        name,
+                        success,
+                        message
+                    });
+                },
+                (successCount, failedCount, totalCount) => {
+                    validateSuccessCount = successCount;
+                    validateFailedCount = failedCount;
+                },
+                (error) => {
+                    throw new Error(error);
+                }
+            );
+
+            // All phases complete - keep dialog open for 2 seconds while refreshing
+            setDeviceProgress({
+                current: validateSuccessCount,
+                total: validateSuccessCount + validateFailedCount,
+                ip: '',
+                name: 'Refreshing device list...',
+                success: true,
+                message: 'Waiting for CyberController to update...'
+            });
+
+            // Refresh devices and Sapro simulators (force refresh like manual button)
+            fetchSaproSimulators(true);
+            fetchDevices(currentCC, true);
+
+            // Wait 2 seconds before closing dialog
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            // Close dialog
+            setIsAdding(false);
+            setDeviceProgress(null);
+            setCurrentPhase(null);
+
+            // Show final summary
+            if (validateFailedCount === 0) {
+                setSnackbar({
+                    open: true,
+                    message: `Successfully added and validated all ${validateSuccessCount} device(s)`,
+                    severity: 'success'
+                });
+            } else if (validateSuccessCount === 0) {
+                setSnackbar({
+                    open: true,
+                    message: `All ${validateFailedCount} device(s) failed validation`,
+                    severity: 'error'
+                });
+            } else {
+                setSnackbar({
+                    open: true,
+                    message: `Added ${addSuccessCount} device(s), ${validateSuccessCount} validated successfully, ${validateFailedCount} failed`,
+                    severity: 'warning'
+                });
+            }
+
         } catch (err: any) {
             setIsAdding(false);
             setDeviceProgress(null);
-            const msg = err?.response?.data?.detail || err?.message || 'Failed to add devices';
+            setCurrentPhase(null);
+            const msg = err?.response?.data?.detail || err?.message || 'Operation failed';
             setSnackbar({open: true, message: msg, severity: 'error'});
         }
     };
@@ -349,23 +520,25 @@ const CCManagementPage: React.FC = () => {
                         <Box sx={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3}}>
                             <CircularProgress size={60}/>
                             <Typography variant="h6">
-                                {currentPhase === 'adding' ? 'Adding Devices to CyberController...' :
-                                    currentPhase === 'waiting' ? 'Waiting for All Devices to be Up...' :
-                                        deviceProgress?.status === 'success' ? 'All Devices Ready!' :
-                                            deviceProgress?.status === 'failed' ? 'Some Devices Failed' :
-                                                'Processing...'}
+                                {currentPhase === 'drivers' ? 'Installing Device Drivers...' :
+                                    currentPhase === 'adding' ? 'Adding Devices to CyberController...' :
+                                        currentPhase === 'validating' ? 'Validating Devices Are Up...' :
+                                            'Processing...'}
                             </Typography>
 
                             {/* Phase-aware counter */}
-                            {currentDevice > 0 && (
+                            {currentDevice > 0 && totalDevices > 0 && (
                                 <Box sx={{textAlign: 'center'}}>
                                     <Typography variant="h5" fontWeight="bold" color="primary">
-                                        {currentPhase === 'adding' ? 'Adding: ' : currentPhase === 'waiting' ? 'Waiting: ' : ''}
+                                        {currentPhase === 'drivers' ? 'Drivers: ' :
+                                            currentPhase === 'adding' ? 'Adding: ' :
+                                                currentPhase === 'validating' ? 'Validating: ' : ''}
                                         {currentDevice}/{totalDevices}
                                     </Typography>
                                     <Typography variant="caption" color="textSecondary">
+                                        {currentPhase === 'drivers' && 'Installing device drivers...'}
                                         {currentPhase === 'adding' && 'Adding devices to CyberController...'}
-                                        {currentPhase === 'waiting' && 'Waiting for all devices to be up...'}
+                                        {currentPhase === 'validating' && 'Validating devices are up...'}
                                     </Typography>
                                 </Box>
                             )}
@@ -374,14 +547,13 @@ const CCManagementPage: React.FC = () => {
                             {deviceProgress && (
                                 <Box sx={{textAlign: 'center', mt: 2}}>
                                     <Typography variant="body1" fontWeight="medium">
-                                        {deviceProgress.ip} - {deviceProgress.name}
+                                        {deviceProgress.ip && `${deviceProgress.ip} - `}{deviceProgress.name}
                                     </Typography>
                                     <Typography
                                         variant="body2"
                                         sx={{
-                                            color: deviceProgress.status === 'failed' ? 'error.main' :
-                                                deviceProgress.status === 'success' ? 'success.main' :
-                                                    'text.secondary',
+                                            color: !deviceProgress.success ? 'error.main' :
+                                                'success.main',
                                             mt: 1
                                         }}
                                     >

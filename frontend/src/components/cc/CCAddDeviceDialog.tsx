@@ -13,6 +13,8 @@ import {
   Tooltip,
   Autocomplete,
   Typography,
+  FormControlLabel,
+  Checkbox,
 } from '@mui/material';
 import { HelpOutline } from '@mui/icons-material';
 import { useForm, Controller } from 'react-hook-form';
@@ -23,7 +25,7 @@ import { Simulator } from '../../types/simulator.types';
 interface CCAddDeviceDialogProps {
   open: boolean;
   onClose: () => void;
-  onSubmit: (data: CCAddDeviceRequest) => Promise<void>;
+  onSubmit: (data: CCAddDeviceRequest, autoInstallDriver: boolean) => Promise<void>;
   ccIp: string;
 }
 
@@ -52,6 +54,7 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [managementIPError, setManagementIPError] = useState<string | null>(null);
   const [lastProcessedValue, setLastProcessedValue] = useState('');
+  const [autoInstallDriver, setAutoInstallDriver] = useState(true); // Default to enabled
 
   // Get management ports from CC store
   const managementPorts = useCCStore((state) => state.managementPorts);
@@ -233,6 +236,7 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
       setErrorMessage(null);
       setManagementIPError(null);
       setLastProcessedValue('');
+      setAutoInstallDriver(true); // Reset to default
     }
   }, [open, reset]);
 
@@ -240,9 +244,10 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
     setIsLoading(true);
     setErrorMessage(null);
     try {
-      await onSubmit(data);
+      await onSubmit(data, autoInstallDriver);
       onClose();
       reset();
+      setAutoInstallDriver(true); // Reset to default
     } catch (err: any) {
       const message = err?.response?.data?.detail || err?.message || 'An error occurred';
       setErrorMessage(message);
@@ -513,6 +518,36 @@ export const CCAddDeviceDialog: React.FC<CCAddDeviceDialogProps> = ({ open, onCl
               <MenuItem value={false as any}>False</MenuItem>
               <MenuItem value={true as any}>True</MenuItem>
             </TextField>
+          </Box>
+
+          {/* Auto Install Device Driver Checkbox */}
+          <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={autoInstallDriver}
+                  onChange={(e) => setAutoInstallDriver(e.target.checked)}
+                />
+              }
+              label="Auto Install Device Driver"
+            />
+            <Tooltip
+              title={
+                <Box sx={{ whiteSpace: 'pre-line', fontSize: '12px', p: 0.5 }}>
+                  {'When enabled:\n\n1. Adds devices to CyberController\n2. Gets device versions and installs matching drivers\n3. Validates devices are up\n\nIf driver not found, devices will still be added and validated.'}
+                </Box>
+              }
+              placement="right"
+              arrow
+            >
+              <HelpOutline
+                sx={{
+                  fontSize: 18,
+                  color: 'text.secondary',
+                  cursor: 'help',
+                }}
+              />
+            </Tooltip>
           </Box>
         </form>
       </DialogContent>

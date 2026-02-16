@@ -769,6 +769,214 @@ async def add_cc_simulator_stream_with_status(
         )
 
 
+@router.post(
+    "/cc/{cc_ip}/simulators/add-batch",
+    status_code=status.HTTP_200_OK,
+)
+async def add_devices_batch(
+        cc_ip: str,
+        payload: CCAddDevicePayload,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
+):
+    """Add devices to CyberController in batch (without validation).
+
+    Returns streaming progress for each device addition.
+    Does NOT wait for devices to be up - use /validate-batch for that.
+
+    Event format:
+        - progress: {"type": "progress", "current": N, "total": M, "ip": "X.X.X.X", "name": "...", "success": bool, "message": "..."}
+        - complete: {"type": "complete", "success_count": N, "failed_count": M, "total_count": T}
+        - error: {"type": "error", "message": "..."}
+    """
+    try:
+        # Query for active session
+        cc_session = db.query(CCSession).filter(
+            CCSession.cc_ip == cc_ip,
+            CCSession.user_id == current_user.user_id
+        ).first()
+
+        if not cc_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
+            )
+
+        handler = CCHandler(cc_ip, "", "")
+        jsession_id = str(cc_session.jsession_id)
+        handler._creds = CCCredentials(jsession_id=jsession_id, cc_ip=cc_ip,
+                                       authenticated_at=getattr(cc_session, 'login_time', None))
+        try:
+            handler._session.cookies.set("JSESSIONID", jsession_id)
+        except Exception:
+            pass
+
+        # Parse IP range
+        ip_list = parse_ip_range(payload.management_ip)
+
+        async def event_generator():
+            successful = 0
+            failed = 0
+            total = len(ip_list)
+
+            try:
+                for index, ip in enumerate(ip_list, start=1):
+                    device_name = f"{payload.name}_{ip}" if len(ip_list) > 1 else payload.name
+
+                    try:
+                        ok, result = handler.add_device(
+                            name=device_name,
+                            management_ip=ip,
+                            device_type=payload.type,
+                            cli_username=payload.cli_username,
+                            cli_password=payload.cli_password,
+                            http_username=payload.http_username,
+                            https_password=payload.https_password,
+                            vision_mgt_port=payload.vision_mgt_port,
+                            register_device_events=payload.register_device_events,
+                        )
+
+                        if ok:
+                            successful += 1
+                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'success': True, 'message': 'Device added successfully'})}\n\n"
+                        else:
+                            failed += 1
+                            yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'success': False, 'message': f'Failed: {result}'})}\n\n"
+                    except Exception as exc:
+                        failed += 1
+                        yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'name': device_name, 'success': False, 'message': str(exc)})}\n\n"
+
+                # Send completion
+                yield f"data: {json.dumps({'type': 'complete', 'success_count': successful, 'failed_count': failed, 'total_count': total})}\n\n"
+
+            except Exception as exc:
+                logger.exception(f"Error during batch device addition: {exc}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(f"Failed to initialize batch device addition: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initialize batch device addition: {exc!s}"
+        )
+
+
+@router.post(
+    "/cc/{cc_ip}/simulators/validate-batch",
+    status_code=status.HTTP_200_OK,
+)
+async def validate_devices_batch(
+        cc_ip: str,
+        payload: CCAddDevicePayload,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_cc_access),
+):
+    """Validate that devices are up by checking their status.
+
+    Checks devices in parallel for performance.
+    Use this after add-batch to verify devices are ready.
+
+    Event format:
+        - progress: {"type": "progress", "current": N, "total": M, "ip": "X.X.X.X", "name": "...", "success": bool, "message": "..."}
+        - complete: {"type": "complete", "success_count": N, "failed_count": M, "total_count": T}
+        - error: {"type": "error", "message": "..."}
+    """
+    try:
+        # Query for active session
+        cc_session = db.query(CCSession).filter(
+            CCSession.cc_ip == cc_ip,
+            CCSession.user_id == current_user.user_id
+        ).first()
+
+        if not cc_session:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No active session for this CC"
+            )
+
+        handler = CCHandler(cc_ip, "", "")
+        jsession_id = str(cc_session.jsession_id)
+        handler._creds = CCCredentials(jsession_id=jsession_id, cc_ip=cc_ip,
+                                       authenticated_at=getattr(cc_session, 'login_time', None))
+        try:
+            handler._session.cookies.set("JSESSIONID", jsession_id)
+        except Exception:
+            pass
+
+        # Parse IP range
+        ip_list = parse_ip_range(payload.management_ip)
+
+        async def event_generator():
+            import asyncio
+
+            successful = 0
+            failed = 0
+            total = len(ip_list)
+            validated_count = 0
+
+            try:
+                # Create device list with names
+                devices = []
+                for ip in ip_list:
+                    device_name = f"{payload.name}_{ip}" if len(ip_list) > 1 else payload.name
+                    devices.append((ip, device_name))
+
+                # Validate all devices in parallel
+                async def check_and_report(ip, device_name):
+                    """Check device status and return result"""
+                    is_up = await wait_for_device_up(handler, ip, 5)
+                    return (ip, device_name, is_up)
+
+                # Create all tasks
+                tasks = [check_and_report(ip, name) for ip, name in devices]
+
+                # Process results as they complete
+                for coro in asyncio.as_completed(tasks):
+                    validated_count += 1
+                    try:
+                        ip, device_name, is_up = await coro
+
+                        if is_up:
+                            successful += 1
+                            yield f"data: {json.dumps({'type': 'progress', 'current': validated_count, 'total': total, 'ip': ip, 'name': device_name, 'success': True, 'message': 'Device is up and ready'})}\n\n"
+                        else:
+                            failed += 1
+                            yield f"data: {json.dumps({'type': 'progress', 'current': validated_count, 'total': total, 'ip': ip, 'name': device_name, 'success': False, 'message': 'Device failed to come up within 5 minutes'})}\n\n"
+                    except Exception as exc:
+                        failed += 1
+                        yield f"data: {json.dumps({'type': 'progress', 'current': validated_count, 'total': total, 'ip': 'unknown', 'name': 'unknown', 'success': False, 'message': f'Validation error: {str(exc)}'})}\n\n"
+
+                # Send completion
+                yield f"data: {json.dumps({'type': 'complete', 'success_count': successful, 'failed_count': failed, 'total_count': total})}\n\n"
+
+            except Exception as exc:
+                logger.exception(f"Error during batch device validation: {exc}")
+                yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(f"Failed to initialize batch device validation: {exc!s}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to initialize batch device validation: {exc!s}"
+        )
+
+
 @router.delete(
     "/cc/{cc_ip}/simulators/{device_id}",
     status_code=status.HTTP_200_OK,
