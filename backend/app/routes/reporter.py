@@ -54,6 +54,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.app.models.polling import PollingTemplateCreate, EndpointConfig
 from backend.app.models.snmp_loop import SNMPLoopConfig, SNMPLoopStatus, SNMPLoopStartRequest
+from backend.app.models.irp_loop import IRPLoopConfig, IRPLoopStatus, IRPLoopStartRequest
 from backend.app.models.user import User
 from backend.app.modules.reporter.irp.core.message_testing_coordinator import (
     MessageTestingCoordinator,
@@ -1999,6 +2000,133 @@ async def stop_snmp_loop(
         )
     except Exception as e:
         logger.error(f"Error stopping SNMP loop: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to stop loop: {str(e)}",
+        )
+
+
+# ============================================================================
+# IRP Loop Management Endpoints
+# ============================================================================
+
+
+@router.get(
+    "/reporter/irp/loop/status",
+    status_code=status.HTTP_200_OK,
+    response_model=IRPLoopStatus,
+)
+async def get_irp_loop_status(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> IRPLoopStatus:
+    """Get the current IRP loop status for the authenticated user."""
+    try:
+        from backend.app.modules.reporter.irp.irp_loop_manager import get_irp_loop_manager
+
+        loop_manager = get_irp_loop_manager()
+        user_id = current_user.get("sub")
+
+        status_result = await loop_manager.get_status(user_id)
+        return status_result
+
+    except Exception as e:
+        logger.error(f"Error getting IRP loop status: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get loop status: {str(e)}",
+        )
+
+
+@router.post(
+    "/reporter/irp/loop/start",
+    status_code=status.HTTP_200_OK,
+)
+async def start_irp_loop(
+    request: IRPLoopStartRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Start a new IRP loop for the authenticated user."""
+    try:
+        from backend.app.modules.reporter.irp.irp_loop_manager import get_irp_loop_manager
+
+        loop_manager = get_irp_loop_manager()
+        user_id = current_user.get("sub")
+
+        # Create loop config
+        config = IRPLoopConfig(
+            user_id=user_id,
+            cc_ip=request.cc_ip,
+            loop_delay=request.loop_delay,
+            loop_timeout=request.loop_timeout,
+            simulator=request.simulator,
+            destination_port=request.destination_port,
+            schema_id=request.schema_id,
+            messages=request.messages,
+        )
+
+        # Start the loop
+        await loop_manager.start_loop(user_id, config)
+
+        # Get initial status
+        initial_status = await loop_manager.get_status(user_id)
+
+        return {
+            "success": True,
+            "message": "IRP loop started successfully",
+            "loop_delay": request.loop_delay,
+            "loop_timeout": request.loop_timeout,
+            "batches_sent": initial_status.batches_sent,
+        }
+
+    except ValueError as e:
+        # Loop already running
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Error starting IRP loop: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start loop: {str(e)}",
+        )
+
+
+@router.post(
+    "/reporter/irp/loop/stop",
+    status_code=status.HTTP_200_OK,
+)
+async def stop_irp_loop(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Stop the current IRP loop for the authenticated user."""
+    try:
+        from backend.app.modules.reporter.irp.irp_loop_manager import get_irp_loop_manager
+
+        loop_manager = get_irp_loop_manager()
+        user_id = current_user.get("sub")
+
+        # Stop the loop
+        await loop_manager.stop_loop(user_id)
+
+        # Get final status
+        final_status = await loop_manager.get_status(user_id)
+
+        return {
+            "success": True,
+            "message": "IRP loop stopped successfully",
+            "batches_sent": final_status.batches_sent,
+            "elapsed_seconds": final_status.elapsed_seconds,
+        }
+
+    except ValueError as e:
+        # No loop running
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Error stopping IRP loop: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to stop loop: {str(e)}",

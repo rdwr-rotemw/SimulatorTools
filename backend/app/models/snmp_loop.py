@@ -1,0 +1,57 @@
+"""
+SNMP Loop model for storing user loop configurations in MongoDB.
+"""
+from datetime import datetime
+from typing import List, Dict, Optional, Any
+from pydantic import BaseModel, Field
+
+
+class SNMPLoopConfig(BaseModel):
+    """Configuration for SNMP loop stored in MongoDB."""
+    user_id: str = Field(..., description="User ID (username)")
+    cc_ip: str = Field(..., description="CyberController IP address")
+    is_active: bool = Field(default=False, description="Whether loop is currently running")
+    loop_delay: int = Field(..., description="Delay between sends in seconds")
+    loop_timeout: int = Field(..., description="Total loop duration in seconds")
+    start_time: Optional[datetime] = Field(None, description="When loop started")
+    batches_sent: int = Field(default=0, description="Number of batches sent so far")
+    simulators: List[str] = Field(..., description="Target simulator IPs")
+    simulator_maps: Dict[str, str] = Field(..., description="Map name for each simulator IP")
+    destination_port: str = Field(..., description="Destination port IP")
+    traps: List[Dict[str, Any]] = Field(..., description="SNMP trap configurations")
+    configured_attack_ids: Optional[Dict[str, List[str]]] = Field(
+        None,
+        description="Pre-configured attack IDs per simulator (multi-simulator case)"
+    )
+    regenerate_attack_id: bool = Field(
+        default=False,
+        description="Whether to regenerate attack-ID on each iteration"
+    )
+    created_at: datetime = Field(default_factory=lambda: datetime.now())
+    updated_at: datetime = Field(default_factory=lambda: datetime.now())
+
+
+class SNMPLoopStatus(BaseModel):
+    """Status response for SNMP loop."""
+    is_active: bool
+    loop_delay: Optional[int] = None
+    loop_timeout: Optional[int] = None
+    start_time: Optional[datetime] = None
+    batches_sent: int = 0
+    elapsed_seconds: int = 0
+    remaining_seconds: int = 0
+    simulators: List[str] = []
+    destination_port: Optional[str] = None
+
+
+class SNMPLoopStartRequest(BaseModel):
+    """Request to start SNMP loop."""
+    cc_ip: str
+    loop_delay: int = Field(..., ge=1, description="Delay between sends (minimum 1 second)")
+    loop_timeout: int = Field(..., ge=1, description="Total loop duration (minimum 1 second)")
+    simulators: List[str] = Field(..., min_items=1)
+    simulator_maps: Dict[str, str] = Field(..., description="Map name for each simulator IP")
+    destination_port: str
+    traps: List[Dict[str, Any]] = Field(..., min_items=1)
+    configured_attack_ids: Optional[Dict[str, List[str]]] = None
+    regenerate_attack_id: bool = False

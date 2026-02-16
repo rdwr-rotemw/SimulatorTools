@@ -230,6 +230,15 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.exception("Failed to initialize SNMP Loop Manager: %s", exc)
 
+    # Initialize IRP Loop Manager
+    try:
+        from backend.app.modules.reporter.irp.irp_loop_manager import initialize_irp_loop_manager
+        mongo_db = get_mongo_db()
+        await initialize_irp_loop_manager(mongo_db)
+        logger.info("IRP Loop Manager initialized successfully")
+    except Exception as exc:
+        logger.exception("Failed to initialize IRP Loop Manager: %s", exc)
+
     yield
 
     # Shutdown logic
@@ -242,6 +251,14 @@ async def lifespan(app: FastAPI):
         logger.info("SNMP Loop Manager shutdown completed")
     except Exception as exc:
         logger.exception("Failed to shutdown SNMP Loop Manager: %s", exc)
+
+    # Shutdown IRP Loop Manager
+    try:
+        from backend.app.modules.reporter.irp.irp_loop_manager import shutdown_irp_loop_manager
+        await shutdown_irp_loop_manager()
+        logger.info("IRP Loop Manager shutdown completed")
+    except Exception as exc:
+        logger.exception("Failed to shutdown IRP Loop Manager: %s", exc)
 
 
 # Create FastAPI app with lifespan handler
