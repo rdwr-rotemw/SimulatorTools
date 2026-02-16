@@ -10,7 +10,8 @@
       "Bash(del backendscriptscheck_structures.py)",
       "Bash(git checkout:*)",
       "Bash(mongosh --eval:*)",
-      "Bash(mongo:*)"
+      "Bash(mongo:*)",
+      "Bash(git commit:*)"
     ]
   }
 }

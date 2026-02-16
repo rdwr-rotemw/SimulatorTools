@@ -65,10 +65,10 @@ import {CSS} from '@dnd-kit/utilities'
 
 import Layout from '../components/common/Layout'
 import useCCStore from '../store/ccStore'
-import useLoopStore from '../store/useLoopStore'
 import useFormStore from '../store/useFormStore'
 import useAuthStore from '../store/authStore'
 import {irpSchemaService, SchemaMessage} from '../api/services/irpSchema.service'
+import {irpLoopService} from '../api/services/irpLoop.service'
 import IRPMessageForm from '../components/irp/IRPMessageForm'
 
 // ============================================================================
@@ -955,15 +955,17 @@ export const IRPSenderPage: React.FC = () => {
     const [testResult, setTestResult] = useState<any>(null)
     const [testingMessage, setTestingMessage] = useState(false)
 
-    // Loop functionality state
+    // Loop functionality state (now managed by backend)
     const [loopDialogOpen, setLoopDialogOpen] = useState(false)
+    const [loopStatusDialogOpen, setLoopStatusDialogOpen] = useState(false)
     const [loopDelay, setLoopDelay] = useState<number>(15)
     const [loopTimeout, setLoopTimeout] = useState<number>(600)
-    const isLooping = useLoopStore((state) => state.irp.isLooping)
-    const loopIntervalRef = React.useRef<NodeJS.Timeout | null>(null)
-    const loopTimeoutRef = React.useRef<NodeJS.Timeout | null>(null)
-
-    const sendMessagesOnceRef = React.useRef<() => Promise<boolean>>(async () => false)
+    const [isLooping, setIsLooping] = useState<boolean>(false) // Backend loop status
+    const [batchesSent, setBatchesSent] = useState<number>(0) // Number of batches sent
+    const [failedBatches, setFailedBatches] = useState<number>(0) // Number of failed batches
+    const [lastError, setLastError] = useState<string | null>(null) // Most recent error
+    const [remainingSeconds, setRemainingSeconds] = useState<number>(0) // Time remaining
+    const statusPollIntervalRef = React.useRef<NodeJS.Timeout | null>(null)
 
     // Attack-ID configuration dialog state
     const [attackIdDialogOpen, setAttackIdDialogOpen] = useState(false)
@@ -1022,55 +1024,48 @@ export const IRPSenderPage: React.FC = () => {
         }
     }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Restore loop on mount if it was running
+    // Poll loop status from backend every 10 seconds
     useEffect(() => {
-        const loopState = useLoopStore.getState().getIrpLoopState()
+        const fetchLoopStatus = async () => {
+            try {
+                const status = await irpLoopService.getStatus();
+                setIsLooping(status.is_active);
+                setBatchesSent(status.batches_sent);
+                setFailedBatches(status.failed_batches);
+                setLastError(status.last_error);
+                setRemainingSeconds(status.remaining_seconds);
 
-        if (loopState.isLooping && loopState.startTime) {
-            const remaining = useLoopStore.getState().getRemainingTime('irp')
-
-            if (remaining > 0) {
-                setLoopDelay(loopState.loopDelay)
-                setLoopTimeout(loopState.loopTimeout)
-                setSelectedSimulators(loopState.simulator)
-
-                setSnackbar({
-                    open: true,
-                    message: `Loop resumed - ${remaining} seconds remaining, ${loopState.batchesSent} batch(es) sent`,
-                    severity: 'info'
-                })
-
-                loopIntervalRef.current = setInterval(async () => {
-                    const success = await sendMessagesOnceRef.current()
-                    if (success) {
-                        useLoopStore.getState().incrementIrpBatches()
-                        const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
-                        setSnackbar({
-                            open: true,
-                            message: `Loop running - Sent batch #${currentBatches}`,
-                            severity: 'info'
-                        })
+                // If loop is active, restore UI state
+                if (status.is_active && status.simulator) {
+                    setSelectedSimulators([status.simulator]);
+                    if (status.destination_port) {
+                        setSelectedDestinationPort(status.destination_port);
                     }
-                }, loopState.loopDelay * 1000)
-
-                loopTimeoutRef.current = setTimeout(() => {
-                    handleStopLoop()
-                    const elapsed = useLoopStore.getState().getElapsedTime('irp')
-                    const finalBatches = useLoopStore.getState().getIrpLoopState().batchesSent
-                    setSnackbar({
-                        open: true,
-                        message: `Loop stopped after ${elapsed}s - Sent ${finalBatches} batch(es)`,
-                        severity: 'success'
-                    })
-                }, remaining * 1000)
-            } else {
-                useLoopStore.getState().clearIrpLoop()
+                    if (status.loop_delay) {
+                        setLoopDelay(status.loop_delay);
+                    }
+                    if (status.loop_timeout) {
+                        setLoopTimeout(status.loop_timeout);
+                    }
+                }
+            } catch (error: any) {
+                console.error('Failed to fetch IRP loop status:', error);
             }
-        }
+        };
 
+        // Fetch initial status
+        fetchLoopStatus();
+
+        // Set up polling every 10 seconds to update status
+        statusPollIntervalRef.current = setInterval(fetchLoopStatus, 10000);
+
+        // Cleanup on unmount
         return () => {
-            // DO NOT clear intervals - loop should persist
-        }
+            if (statusPollIntervalRef.current) {
+                clearInterval(statusPollIntervalRef.current);
+                statusPollIntervalRef.current = null;
+            }
+        };
     }, [])
 
     const compatibleSimulators = devices.filter((d) => {
@@ -1937,6 +1932,12 @@ export const IRPSenderPage: React.FC = () => {
                             message: `Successfully sent all ${successCount} message(s)`,
                             severity: 'success'
                         })
+                    } else if (successCount === 0) {
+                        setSnackbar({
+                            open: true,
+                            message: `Failed to send all ${failedCount} message(s)`,
+                            severity: 'error'
+                        })
                     } else {
                         setSnackbar({
                             open: true,
@@ -1992,11 +1993,6 @@ export const IRPSenderPage: React.FC = () => {
         }
     }
 
-    // Update ref whenever dependencies change
-    useEffect(() => {
-        sendMessagesOnceRef.current = sendMessagesOnce
-    }, [selectedDestinationPort, selectedSimulators, messages, schemaId])  // eslint-disable-line react-hooks/exhaustive-deps
-
     // Auto-save form state to localStorage on every change
     useEffect(() => {
         if (messages.length > 0) {
@@ -2004,7 +2000,7 @@ export const IRPSenderPage: React.FC = () => {
         }
     }, [messages, expandedMessages])
 
-    const handleStartLoop = () => {
+    const handleStartLoop = async () => {
         if (!selectedSimulators.length) {
             setSnackbar({open: true, message: 'Please select a simulator', severity: 'error'})
             return
@@ -2030,132 +2026,77 @@ export const IRPSenderPage: React.FC = () => {
             return
         }
 
+        // For now, only support single simulator loops
+        if (selectedSimulators.length > 1) {
+            setSnackbar({open: true, message: 'Backend loops currently support single simulator only', severity: 'error'})
+            return
+        }
+
         setLoopDialogOpen(false)
 
-        const startTime = Date.now()
-
-        useLoopStore.getState().setIrpLoopState({
-            isLooping: true,
-            loopDelay: loopDelay,
-            loopTimeout: loopTimeout,
-            startTime: startTime,
-            batchesSent: 0,
-            simulator: selectedSimulators,
-            destinationPort: selectedDestinationPort,
-        })
-
-        // Check if we have configured messages (multi-simulator case)
-        if (configuredMessages && selectedSimulators.length > 1) {
-            // Create send function that uses configured messages for each simulator
-            const sendWithConfiguredMessages = async () => {
-                try {
-                    for (const simulatorIp of selectedSimulators) {
-                        const simMessages = configuredMessages[simulatorIp];
-
-                        const formattedMessages = simMessages.map((msg: any) => {
-                            const backendData = transformFromAttackId(msg.data, msg.originalSchema)
-                            return {
-                                message: msg.messageName,
-                                pause: msg.pause,
-                                ...backendData,
-                            }
-                        })
-
-                        const payload = {
-                            mongo_id: schemaId!,
-                            map: '',
-                            message_data: {
-                                messages: formattedMessages,
-                            },
-                        }
-
-                        await irpSchemaService.sendMessages(selectedDestinationPort, [simulatorIp], payload)
-                    }
-                    return true
-                } catch (error: any) {
-                    const errorMsg = error?.response?.data?.detail || error?.message || 'Failed to send messages'
-                    setSnackbar({open: true, message: errorMsg, severity: 'error'})
-                    return false
-                }
-            }
-
-            // Send first batch
-            sendWithConfiguredMessages().then(success => {
-                if (success) {
-                    useLoopStore.getState().incrementIrpBatches()
-                    const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
-                    setSnackbar({open: true, message: `Loop started - Sent batch #${currentBatches}`, severity: 'info'})
+        try {
+            // Format messages for backend
+            const formattedMessages = messages.map((msg: any) => {
+                const backendData = transformFromAttackId(msg.data, msg.originalSchema)
+                return {
+                    message: msg.messageName,
+                    pause: msg.pause || 0,
+                    ...backendData,
                 }
             })
 
-            loopIntervalRef.current = setInterval(async () => {
-                const success = await sendWithConfiguredMessages()
-                if (success) {
-                    useLoopStore.getState().incrementIrpBatches()
-                    const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
-                    setSnackbar({open: true, message: `Loop running - Sent batch #${currentBatches}`, severity: 'info'})
-                }
-            }, loopDelay * 1000)
+            // Start loop via backend API
+            const result = await irpLoopService.startLoop({
+                cc_ip: currentCC!,
+                loop_delay: loopDelay,
+                loop_timeout: loopTimeout,
+                simulator: selectedSimulators[0],
+                destination_port: selectedDestinationPort,
+                schema_id: schemaId!,
+                messages: formattedMessages,
+            });
 
-            loopTimeoutRef.current = setTimeout(() => {
-                handleStopLoop()
-                const elapsedSeconds = useLoopStore.getState().getElapsedTime('irp')
-                const finalBatches = useLoopStore.getState().getIrpLoopState().batchesSent
-                setSnackbar({
-                    open: true,
-                    message: `Loop stopped after ${elapsedSeconds}s - Sent ${finalBatches} batch(es)`,
-                    severity: 'success'
-                })
-            }, loopTimeout * 1000)
+            // Update local state
+            setIsLooping(true);
+            setBatchesSent(result.batches_sent);
+            setRemainingSeconds(loopTimeout);
+
+            setSnackbar({
+                open: true,
+                message: `${result.message} - Loop will run for ${loopTimeout}s with ${loopDelay}s delay`,
+                severity: 'success'
+            });
 
             // Clear configured messages and pending action
             setConfiguredMessages(null);
             setPendingAction(null);
-        } else {
-            // Single simulator: use normal flow
-            sendMessagesOnce().then(success => {
-                if (success) {
-                    useLoopStore.getState().incrementIrpBatches()
-                    const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
-                    setSnackbar({open: true, message: `Loop started - Sent batch #${currentBatches}`, severity: 'info'})
-                }
-            })
 
-            loopIntervalRef.current = setInterval(async () => {
-                const success = await sendMessagesOnceRef.current()
-                if (success) {
-                    useLoopStore.getState().incrementIrpBatches()
-                    const currentBatches = useLoopStore.getState().getIrpLoopState().batchesSent
-                    setSnackbar({open: true, message: `Loop running - Sent batch #${currentBatches}`, severity: 'info'})
-                }
-            }, loopDelay * 1000)
-
-            loopTimeoutRef.current = setTimeout(() => {
-                handleStopLoop()
-                const elapsedSeconds = useLoopStore.getState().getElapsedTime('irp')
-                const finalBatches = useLoopStore.getState().getIrpLoopState().batchesSent
-                setSnackbar({
-                    open: true,
-                    message: `Loop stopped after ${elapsedSeconds}s - Sent ${finalBatches} batch(es)`,
-                    severity: 'success'
-                })
-            }, loopTimeout * 1000)
+        } catch (error: any) {
+            const errorMsg = error?.response?.data?.detail || error?.message || 'Failed to start loop';
+            setSnackbar({open: true, message: `Failed to start loop: ${errorMsg}`, severity: 'error'});
         }
     }
 
-    const handleStopLoop = () => {
-        if (loopIntervalRef.current) {
-            clearInterval(loopIntervalRef.current)
-            loopIntervalRef.current = null
-        }
-        if (loopTimeoutRef.current) {
-            clearTimeout(loopTimeoutRef.current)
-            loopTimeoutRef.current = null
-        }
+    const handleStopLoop = async () => {
+        try {
+            // Stop loop via backend API
+            const result = await irpLoopService.stopLoop();
 
-        useLoopStore.getState().setIrpLoopState({
-            isLooping: false,
-        })
+            // Update local state
+            setIsLooping(false);
+            setBatchesSent(result.batches_sent);
+            setRemainingSeconds(0);
+
+            setSnackbar({
+                open: true,
+                message: `${result.message} - Sent ${result.batches_sent} batch(es) in ${result.elapsed_seconds}s`,
+                severity: 'success'
+            });
+
+        } catch (error: any) {
+            const errorMsg = error?.response?.data?.detail || error?.message || 'Failed to stop loop';
+            setSnackbar({open: true, message: `Failed to stop loop: ${errorMsg}`, severity: 'error'});
+        }
     }
 
     const handleOpenLoopDialog = () => {
@@ -2250,6 +2191,12 @@ export const IRPSenderPage: React.FC = () => {
                         open: true,
                         message: `Successfully sent all ${successCount} message(s) to ${selectedSimulators.length} simulator(s)`,
                         severity: 'success'
+                    });
+                } else if (successCount === 0) {
+                    setSnackbar({
+                        open: true,
+                        message: `Failed to send all ${failedCount} message(s) to ${selectedSimulators.length} simulator(s)`,
+                        severity: 'error'
                     });
                 } else {
                     setSnackbar({
@@ -2509,6 +2456,15 @@ export const IRPSenderPage: React.FC = () => {
                         {isSending ? 'Sending...' : `Send Messages (${messages.length})`}
                     </Button>
 
+                    <Button
+                        variant="outlined"
+                        color="secondary"
+                        onClick={() => setLoopStatusDialogOpen(true)}
+                        disabled={!isLooping}
+                    >
+                        Loop Status
+                    </Button>
+
                     {!isLooping ? (
                         <Button
                             variant="contained"
@@ -2558,7 +2514,7 @@ export const IRPSenderPage: React.FC = () => {
                             inputProps={{min: 1, step: 1}}
                         />
                         <Alert severity="info" sx={{marginTop: 2}}>
-                            Note: Logging out will automatically stop the loop.
+                            Note: Loop runs on the backend and will continue even if you close the browser.
                         </Alert>
                     </DialogContent>
                     <DialogActions>
@@ -2566,6 +2522,49 @@ export const IRPSenderPage: React.FC = () => {
                         <Button onClick={handleStartLoop} variant="contained" color="secondary">
                             Start Loop
                         </Button>
+                    </DialogActions>
+                </Dialog>
+
+                {/* Loop Status Dialog */}
+                <Dialog open={loopStatusDialogOpen} onClose={() => setLoopStatusDialogOpen(false)} maxWidth="sm" fullWidth>
+                    <DialogTitle>Loop Status</DialogTitle>
+                    <DialogContent>
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 }}>
+                            <Box>
+                                <Typography variant="subtitle2" color="textSecondary">Status</Typography>
+                                <Typography variant="body1">{isLooping ? 'Running' : 'Stopped'}</Typography>
+                            </Box>
+                            <Box>
+                                <Typography variant="subtitle2" color="textSecondary">Batches Sent</Typography>
+                                <Typography variant="h4" color="primary">{batchesSent}</Typography>
+                            </Box>
+                            <Box>
+                                <Typography variant="subtitle2" color="textSecondary">Failed Batches</Typography>
+                                <Typography variant="h4" color={failedBatches > 0 ? "error" : "textSecondary"}>{failedBatches}</Typography>
+                            </Box>
+                            {lastError && (
+                                <Box>
+                                    <Typography variant="subtitle2" color="textSecondary">Last Error</Typography>
+                                    <Alert severity="error" sx={{ marginTop: 1 }}>
+                                        {lastError}
+                                    </Alert>
+                                </Box>
+                            )}
+                            <Box>
+                                <Typography variant="subtitle2" color="textSecondary">Time Remaining</Typography>
+                                <Typography variant="body1">{remainingSeconds} seconds</Typography>
+                            </Box>
+                            <Box>
+                                <Typography variant="subtitle2" color="textSecondary">Target Simulator</Typography>
+                                <Typography variant="body1">{selectedSimulators.length > 0 ? selectedSimulators[0] : 'N/A'}</Typography>
+                            </Box>
+                            <Alert severity="info">
+                                Status updates every 10 seconds automatically.
+                            </Alert>
+                        </Box>
+                    </DialogContent>
+                    <DialogActions>
+                        <Button onClick={() => setLoopStatusDialogOpen(false)}>Close</Button>
                     </DialogActions>
                 </Dialog>
 

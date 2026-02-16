@@ -190,6 +190,8 @@ class SNMPLoopManager:
             loop_timeout=config.loop_timeout,
             start_time=config.start_time,
             batches_sent=config.batches_sent,
+            failed_batches=config.failed_batches,
+            last_error=config.last_error,
             elapsed_seconds=elapsed_seconds,
             remaining_seconds=remaining_seconds,
             simulators=config.simulators,
@@ -292,12 +294,19 @@ class SNMPLoopManager:
             config: Loop configuration
         """
         try:
+            # Track overall success/failure across all simulators
+            total_success = 0
+            total_failed = 0
+            error_messages = []
+
             # Send to each simulator separately
             for simulator_ip in config.simulators:
                 # Get map for this simulator
                 map_name = config.simulator_maps.get(simulator_ip)
                 if not map_name:
-                    logger.error(f"No map found for simulator {simulator_ip}, skipping")
+                    error_msg = f"No map found for simulator {simulator_ip}"
+                    logger.error(error_msg)
+                    error_messages.append(error_msg)
                     continue
 
                 # Prepare traps with attack IDs if needed
@@ -322,30 +331,74 @@ class SNMPLoopManager:
                 }
 
                 # Call the synchronous send_attack_traps function in a thread
-                await asyncio.to_thread(
+                # Returns: (success_count, failed_count, total_count)
+                success_count, failed_count, total_count = await asyncio.to_thread(
                     send_attack_traps,
                     config.destination_port,  # cc_ip
                     simulator_ip,            # device_ip
                     payload                   # payload
                 )
 
-            # Increment batch counter in database
+                total_success += success_count
+                total_failed += failed_count
+
+                if failed_count > 0:
+                    error_messages.append(f"{simulator_ip}: {failed_count}/{total_count} traps failed")
+
+            # Check if there were any failures
+            if total_failed > 0:
+                error_msg = "; ".join(error_messages)
+                logger.error(f"SNMP batch had failures for user {config.user_id}: {error_msg}")
+
+                # Increment both counters and store error
+                await asyncio.to_thread(
+                    self.collection.update_one,
+                    {"user_id": config.user_id},
+                    {
+                        "$inc": {"batches_sent": 1, "failed_batches": 1},
+                        "$set": {"updated_at": datetime.now(), "last_error": error_msg}
+                    }
+                )
+
+                # Update local config
+                config.batches_sent += 1
+                config.failed_batches += 1
+                config.last_error = error_msg
+            else:
+                # All traps succeeded
+                await asyncio.to_thread(
+                    self.collection.update_one,
+                    {"user_id": config.user_id},
+                    {
+                        "$inc": {"batches_sent": 1},
+                        "$set": {"updated_at": datetime.now(), "last_error": None}
+                    }
+                )
+
+                # Update local config for next iteration
+                config.batches_sent += 1
+                config.last_error = None
+
+                logger.debug(f"Sent batch #{config.batches_sent} for user {config.user_id}")
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Error sending batch for user {config.user_id}: {e}", exc_info=True)
+
+            # Increment both counters and store error
             await asyncio.to_thread(
                 self.collection.update_one,
                 {"user_id": config.user_id},
                 {
-                    "$inc": {"batches_sent": 1},
-                    "$set": {"updated_at": datetime.now()}
+                    "$inc": {"batches_sent": 1, "failed_batches": 1},
+                    "$set": {"updated_at": datetime.now(), "last_error": error_msg}
                 }
             )
 
-            # Update local config for next iteration
+            # Update local config
             config.batches_sent += 1
-
-            logger.debug(f"Sent batch #{config.batches_sent} for user {config.user_id}")
-
-        except Exception as e:
-            logger.error(f"Error sending batch for user {config.user_id}: {e}", exc_info=True)
+            config.failed_batches += 1
+            config.last_error = error_msg
 
     @staticmethod
     def _generate_random_attack_id() -> str:

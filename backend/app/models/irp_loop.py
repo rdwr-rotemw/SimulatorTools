@@ -15,6 +15,8 @@ class IRPLoopConfig(BaseModel):
     loop_timeout: int = Field(..., description="Total loop duration in seconds")
     start_time: Optional[datetime] = Field(None, description="When loop started")
     batches_sent: int = Field(default=0, description="Number of batches sent so far")
+    failed_batches: int = Field(default=0, description="Number of batches that failed")
+    last_error: Optional[str] = Field(None, description="Most recent error message")
     simulator: str = Field(..., description="Target simulator IP")
     destination_port: str = Field(..., description="Destination port IP")
     schema_id: str = Field(..., description="MongoDB ObjectId of IRP schema")
@@ -30,6 +32,8 @@ class IRPLoopStatus(BaseModel):
     loop_timeout: Optional[int] = None
     start_time: Optional[datetime] = None
     batches_sent: int = 0
+    failed_batches: int = 0
+    last_error: Optional[str] = None
     elapsed_seconds: int = 0
     remaining_seconds: int = 0
     simulator: Optional[str] = None

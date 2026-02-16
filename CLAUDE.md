@@ -44,9 +44,11 @@
 ### Git Commits
 
 - **NEVER commit unless explicitly asked by user**
+- **ALWAYS ASK before adding new untracked files to git** - do not automatically stage new files
 - NEVER use `--amend` after hook failures (create NEW commits instead)
 - NEVER skip hooks with `--no-verify`
 - Always stage specific files, not `git add -A` or `git add .`
+- When user asks to commit, show them what files will be added and get confirmation first
 
 ### File and Folder Creation
 

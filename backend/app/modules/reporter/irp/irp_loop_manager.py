@@ -188,6 +188,8 @@ class IRPLoopManager:
             loop_timeout=config.loop_timeout,
             start_time=config.start_time,
             batches_sent=config.batches_sent,
+            failed_batches=config.failed_batches,
+            last_error=config.last_error,
             elapsed_seconds=elapsed_seconds,
             remaining_seconds=remaining_seconds,
             simulator=config.simulator,
@@ -303,7 +305,7 @@ class IRPLoopManager:
             }
 
             # Call the synchronous send_irp_messages function in a thread
-            await asyncio.to_thread(
+            results = await asyncio.to_thread(
                 send_irp_messages,
                 schema_obj,
                 payload,
@@ -311,23 +313,75 @@ class IRPLoopManager:
                 config.destination_port     # to_ip
             )
 
-            # Increment batch counter in database
+            # Check results - send_irp_messages returns dict of {message_name: (success, msg)} or (False, error) on exception
+            has_failures = False
+            error_messages = []
+
+            if isinstance(results, tuple):
+                # Exception occurred - results is (False, error_msg)
+                has_failures = True
+                error_messages.append(results[1])
+            elif isinstance(results, dict):
+                # Check each message result
+                for message_name, (success, msg) in results.items():
+                    if not success:
+                        has_failures = True
+                        error_messages.append(f"{message_name}: {msg}")
+
+            if has_failures:
+                # Some or all messages failed
+                error_msg = "; ".join(error_messages)
+                logger.error(f"IRP batch failed for user {config.user_id}: {error_msg}")
+
+                # Increment both counters and store error
+                await asyncio.to_thread(
+                    self.collection.update_one,
+                    {"user_id": config.user_id},
+                    {
+                        "$inc": {"batches_sent": 1, "failed_batches": 1},
+                        "$set": {"updated_at": datetime.now(), "last_error": error_msg}
+                    }
+                )
+
+                # Update local config
+                config.batches_sent += 1
+                config.failed_batches += 1
+                config.last_error = error_msg
+            else:
+                # All messages succeeded
+                await asyncio.to_thread(
+                    self.collection.update_one,
+                    {"user_id": config.user_id},
+                    {
+                        "$inc": {"batches_sent": 1},
+                        "$set": {"updated_at": datetime.now(), "last_error": None}
+                    }
+                )
+
+                # Update local config for next iteration
+                config.batches_sent += 1
+                config.last_error = None
+
+                logger.debug(f"Sent IRP batch #{config.batches_sent} for user {config.user_id}")
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Error sending IRP batch for user {config.user_id}: {e}", exc_info=True)
+
+            # Increment both counters and store error
             await asyncio.to_thread(
                 self.collection.update_one,
                 {"user_id": config.user_id},
                 {
-                    "$inc": {"batches_sent": 1},
-                    "$set": {"updated_at": datetime.now()}
+                    "$inc": {"batches_sent": 1, "failed_batches": 1},
+                    "$set": {"updated_at": datetime.now(), "last_error": error_msg}
                 }
             )
 
-            # Update local config for next iteration
+            # Update local config
             config.batches_sent += 1
-
-            logger.debug(f"Sent IRP batch #{config.batches_sent} for user {config.user_id}")
-
-        except Exception as e:
-            logger.error(f"Error sending IRP batch for user {config.user_id}: {e}", exc_info=True)
+            config.failed_batches += 1
+            config.last_error = error_msg
 
 
 # Global instance (will be initialized in main.py)

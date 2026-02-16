@@ -101,6 +101,8 @@ export const SNMPPage: React.FC = () => {
     const [regenerateAttackId, setRegenerateAttackId] = useState<boolean>(false); // New: regenerate attack-ID each iteration
     const [isLooping, setIsLooping] = useState<boolean>(false); // Backend loop status
     const [batchesSent, setBatchesSent] = useState<number>(0); // Number of batches sent
+    const [failedBatches, setFailedBatches] = useState<number>(0); // Number of failed batches
+    const [lastError, setLastError] = useState<string | null>(null); // Most recent error
     const [remainingSeconds, setRemainingSeconds] = useState<number>(0); // Time remaining
     const statusPollIntervalRef = useRef<NodeJS.Timeout | null>(null); // Poll status from backend
 
@@ -166,6 +168,8 @@ export const SNMPPage: React.FC = () => {
                 const status = await snmpLoopService.getStatus();
                 setIsLooping(status.is_active);
                 setBatchesSent(status.batches_sent);
+                setFailedBatches(status.failed_batches);
+                setLastError(status.last_error);
                 setRemainingSeconds(status.remaining_seconds);
 
                 // If loop is active, restore UI state
@@ -1057,6 +1061,18 @@ export const SNMPPage: React.FC = () => {
                             <Typography variant="subtitle2" color="textSecondary">Batches Sent</Typography>
                             <Typography variant="h4" color="primary">{batchesSent}</Typography>
                         </Box>
+                        <Box>
+                            <Typography variant="subtitle2" color="textSecondary">Failed Batches</Typography>
+                            <Typography variant="h4" color={failedBatches > 0 ? "error" : "textSecondary"}>{failedBatches}</Typography>
+                        </Box>
+                        {lastError && (
+                            <Box>
+                                <Typography variant="subtitle2" color="textSecondary">Last Error</Typography>
+                                <Alert severity="error" sx={{ marginTop: 1 }}>
+                                    {lastError}
+                                </Alert>
+                            </Box>
+                        )}
                         <Box>
                             <Typography variant="subtitle2" color="textSecondary">Time Remaining</Typography>
                             <Typography variant="body1">{remainingSeconds} seconds</Typography>
