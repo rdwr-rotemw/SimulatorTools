@@ -8,7 +8,9 @@
       "Bash(findstr:*)",
       "Bash(taskkill:*)",
       "Bash(del backendscriptscheck_structures.py)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(mongosh --eval:*)",
+      "Bash(mongo:*)"
     ]
   }
 }

@@ -43,7 +43,6 @@ import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 
 import Layout from '../components/common/Layout';
 import useCCStore from '../store/ccStore';
-import useLoopStore from '../store/useLoopStore';
 import useFormStore from '../store/useFormStore';
 import useAuthStore from '../store/authStore';
 import {SNMPTrapForm} from '../components/snmp/SNMPTrapForm';
@@ -58,6 +57,7 @@ import {
     mapPcapEnumsToFormValues
 } from '../utils/snmp.utils';
 import {snmpTemplateService} from '../api/services/snmpTemplate.service';
+import {snmpLoopService} from '../api/services/snmpLoop.service';
 import apiClient from '../api/client';
 
 export const SNMPPage: React.FC = () => {
@@ -93,14 +93,16 @@ export const SNMPPage: React.FC = () => {
     const [currentTrap, setCurrentTrap] = useState(0);
     const [totalTraps, setTotalTraps] = useState(0);
 
-    // Loop functionality state
+    // Loop functionality state (now managed by backend)
     const [loopDialogOpen, setLoopDialogOpen] = useState(false);
+    const [loopStatusDialogOpen, setLoopStatusDialogOpen] = useState(false);
     const [loopDelay, setLoopDelay] = useState<number>(15); // seconds - default 15s
     const [loopTimeout, setLoopTimeout] = useState<number>(600); // seconds - default 10 minutes, mandatory
     const [regenerateAttackId, setRegenerateAttackId] = useState<boolean>(false); // New: regenerate attack-ID each iteration
-    const isLooping = useLoopStore((state) => state.snmp.isLooping);
-    const loopIntervalRef = useRef<NodeJS.Timeout | null>(null);
-    const loopTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const [isLooping, setIsLooping] = useState<boolean>(false); // Backend loop status
+    const [batchesSent, setBatchesSent] = useState<number>(0); // Number of batches sent
+    const [remainingSeconds, setRemainingSeconds] = useState<number>(0); // Time remaining
+    const statusPollIntervalRef = useRef<NodeJS.Timeout | null>(null); // Poll status from backend
 
     // Attack-ID configuration dialog state
     const [attackIdDialogOpen, setAttackIdDialogOpen] = useState(false);
@@ -157,63 +159,45 @@ export const SNMPPage: React.FC = () => {
         }
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Restore loop on mount if it was running
+    // Fetch loop status from backend on mount and set up polling
     useEffect(() => {
-        const loopState = useLoopStore.getState().getSnmpLoopState();
+        const fetchLoopStatus = async () => {
+            try {
+                const status = await snmpLoopService.getStatus();
+                setIsLooping(status.is_active);
+                setBatchesSent(status.batches_sent);
+                setRemainingSeconds(status.remaining_seconds);
 
-        if (loopState.isLooping && loopState.startTime) {
-            // Check if loop hasn't expired
-            const remaining = useLoopStore.getState().getRemainingTime('snmp');
-
-            if (remaining > 0) {
-                // Restore state to local
-                setSelectedSimulators(loopState.simulator);
-                setSelectedDestinationPort(loopState.destinationPort);
-                setLoopDelay(loopState.loopDelay);
-                setLoopTimeout(loopState.loopTimeout);
-
-                // Show restoration message
-                setSnackbar({
-                    open: true,
-                    message: `Loop resumed - ${remaining} seconds remaining, ${loopState.batchesSent} batch(es) sent`,
-                    severity: 'info'
-                });
-
-                // Recreate interval for remaining sends
-                loopIntervalRef.current = setInterval(async () => {
-                    const success = await sendTrapsOnceRef.current();
-                    if (success) {
-                        useLoopStore.getState().incrementSnmpBatches();
-                        const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
-                        setSnackbar({
-                            open: true,
-                            message: `Loop running - Sent batch #${currentBatches}`,
-                            severity: 'info'
-                        });
+                // If loop is active, restore UI state
+                if (status.is_active && status.simulators.length > 0) {
+                    setSelectedSimulators(status.simulators);
+                    if (status.destination_port) {
+                        setSelectedDestinationPort(status.destination_port);
                     }
-                }, loopState.loopDelay * 1000);
-
-                // Recreate timeout for remaining duration
-                loopTimeoutRef.current = setTimeout(() => {
-                    handleStopLoop();
-                    const elapsed = useLoopStore.getState().getElapsedTime('snmp');
-                    const finalBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
-                    setSnackbar({
-                        open: true,
-                        message: `Loop stopped after ${elapsed}s - Sent ${finalBatches} batch(es)`,
-                        severity: 'success'
-                    });
-                }, remaining * 1000);
-            } else {
-                // Loop expired, clear it
-                useLoopStore.getState().clearSnmpLoop();
+                    if (status.loop_delay) {
+                        setLoopDelay(status.loop_delay);
+                    }
+                    if (status.loop_timeout) {
+                        setLoopTimeout(status.loop_timeout);
+                    }
+                }
+            } catch (error: any) {
+                console.error('Failed to fetch loop status:', error);
             }
-        }
+        };
 
-        // Cleanup on unmount - DO NOT stop loop, just clear local refs
+        // Fetch initial status
+        fetchLoopStatus();
+
+        // Set up polling every 10 seconds to update status
+        statusPollIntervalRef.current = setInterval(fetchLoopStatus, 10000);
+
+        // Cleanup on unmount
         return () => {
-            // DO NOT clear intervals - loop should persist
-            // Store state is preserved automatically in localStorage
+            if (statusPollIntervalRef.current) {
+                clearInterval(statusPollIntervalRef.current);
+                statusPollIntervalRef.current = null;
+            }
         };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -550,7 +534,7 @@ export const SNMPPage: React.FC = () => {
         useFormStore.getState().setSnmpFormState(traps, expandedTraps);
     }, [traps, expandedTraps]);
 
-    const handleStartLoop = () => {
+    const handleStartLoop = async () => {
         // Validation for loop parameters only (other validations done in handleOpenLoopDialog)
         if (loopDelay < 1) {
             setSnackbar({open: true, message: 'Loop delay must be at least 1 second', severity: 'error'});
@@ -564,145 +548,49 @@ export const SNMPPage: React.FC = () => {
 
         setLoopDialogOpen(false);
 
-        const startTime = Date.now();
-
-        // Save to store BEFORE creating interval
-        useLoopStore.getState().setSnmpLoopState({
-            isLooping: true,
-            loopDelay: loopDelay,
-            loopTimeout: loopTimeout,
-            startTime: startTime,
-            batchesSent: 0,
-            simulator: selectedSimulators,
-            destinationPort: selectedDestinationPort,
-        });
-
-        // Check if we have configured attack-IDs (multi-simulator case)
-        if (configuredAttackIds && selectedSimulators.length > 1) {
-            // Create a wrapper function that sends with modified attack-IDs
-            const sendWithModifiedIds = async () => {
-                try {
-                    for (const simulatorIp of selectedSimulators) {
-                        const modifiedTraps = traps.map((trap, index) => {
-                            // If regenerateAttackId is enabled, generate new random attack-ID each iteration
-                            const attackId = regenerateAttackId
-                                ? generateRandomAttackId()
-                                : configuredAttackIds[simulatorIp][index];
-
-                            return {
-                                ...trap,
-                                attackId: attackId
-                            };
-                        });
-
-                        await snmpTemplateService.sendTraps(
-                            selectedDestinationPort,
-                            [simulatorIp],
-                            modifiedTraps
-                        );
-                    }
-                    return true;
-                } catch (error: any) {
-                    const errorMsg = error.response?.data?.detail || error.message || 'Failed to send traps';
-                    setSnackbar({open: true, message: errorMsg, severity: 'error'});
-                    return false;
+        try {
+            // Build map dict for all simulators
+            const mapDict: Record<string, string> = {};
+            for (const simulatorIp of selectedSimulators) {
+                const saproSim = saproSimulators.find(sim => sim.ip_address === simulatorIp);
+                if (!saproSim || !saproSim.map) {
+                    setSnackbar({open: true, message: `No map found for simulator ${simulatorIp}`, severity: 'error'});
+                    return;
                 }
-            };
+                mapDict[simulatorIp] = saproSim.map;
+            }
 
-            // Send first batch immediately
-            sendWithModifiedIds().then(success => {
-                if (success) {
-                    useLoopStore.getState().incrementSnmpBatches();
-                    const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
-                    setSnackbar({open: true, message: `Loop started - Sent batch #${currentBatches}`, severity: 'info'});
-                }
+            // Start loop via backend API
+            const result = await snmpLoopService.startLoop({
+                cc_ip: currentCC!,
+                loop_delay: loopDelay,
+                loop_timeout: loopTimeout,
+                simulators: selectedSimulators,
+                simulator_maps: mapDict,
+                destination_port: selectedDestinationPort,
+                traps: traps,
+                configured_attack_ids: configuredAttackIds,
+                regenerate_attack_id: regenerateAttackId,
             });
 
-            // Set up interval for subsequent sends
-            loopIntervalRef.current = setInterval(async () => {
-                const success = await sendWithModifiedIds();
-                if (success) {
-                    useLoopStore.getState().incrementSnmpBatches();
-                    const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
-                    setSnackbar({open: true, message: `Loop running - Sent batch #${currentBatches}`, severity: 'info'});
-                }
-            }, loopDelay * 1000);
+            // Update local state
+            setIsLooping(true);
+            setBatchesSent(result.batches_sent);
+            setRemainingSeconds(result.loop_timeout);
 
-            // Set up timeout
-            loopTimeoutRef.current = setTimeout(() => {
-                handleStopLoop();
-                const elapsedSeconds = useLoopStore.getState().getElapsedTime('snmp');
-                const finalBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
-                setSnackbar({
-                    open: true,
-                    message: `Loop stopped after ${elapsedSeconds}s - Sent ${finalBatches} batch(es)`,
-                    severity: 'success'
-                });
-            }, loopTimeout * 1000);
+            setSnackbar({
+                open: true,
+                message: result.message,
+                severity: 'success'
+            });
 
             // Clear configured attack-IDs and pending action
             setConfiguredAttackIds(null);
             setPendingAction(null);
-        } else {
-            // Single simulator: use normal flow
 
-            // Create send function that handles regenerate attack-ID if enabled
-            const sendWithPossibleRegeneration = async () => {
-                if (regenerateAttackId) {
-                    // Generate new attack-IDs for each trap
-                    const trapsWithNewIds = traps.map(trap => ({
-                        ...trap,
-                        attackId: generateRandomAttackId()
-                    }));
-
-                    try {
-                        await snmpTemplateService.sendTraps(
-                            selectedDestinationPort,
-                            selectedSimulators,
-                            trapsWithNewIds
-                        );
-                        return true;
-                    } catch (error: any) {
-                        const errorMsg = error.response?.data?.detail || error.message || 'Failed to send traps';
-                        setSnackbar({open: true, message: errorMsg, severity: 'error'});
-                        return false;
-                    }
-                } else {
-                    // Use normal sendTrapsOnce
-                    return await sendTrapsOnceRef.current();
-                }
-            };
-
-            // Send first trap immediately
-            sendWithPossibleRegeneration().then(success => {
-                if (success) {
-                    useLoopStore.getState().incrementSnmpBatches();
-                    const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
-                    setSnackbar({open: true, message: `Loop started - Sent batch #${currentBatches}`, severity: 'info'});
-                }
-            });
-
-            // Set up interval for subsequent sends (convert seconds to milliseconds)
-            loopIntervalRef.current = setInterval(async () => {
-                const success = await sendWithPossibleRegeneration();
-                if (success) {
-                    useLoopStore.getState().incrementSnmpBatches();
-                    const currentBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
-                    setSnackbar({open: true, message: `Loop running - Sent batch #${currentBatches}`, severity: 'info'});
-                }
-            }, loopDelay * 1000);
-
-            // Set up timeout - always runs since timeout is mandatory
-            loopTimeoutRef.current = setTimeout(() => {
-                handleStopLoop();
-                const elapsedSeconds = useLoopStore.getState().getElapsedTime('snmp');
-                const finalBatches = useLoopStore.getState().getSnmpLoopState().batchesSent;
-                setSnackbar({
-                    open: true,
-                    message: `Loop stopped after ${elapsedSeconds}s - Sent ${finalBatches} batch(es)`,
-                    severity: 'success'
-                });
-            }, loopTimeout * 1000);
+        } catch (error: any) {
+            const errorMsg = error.response?.data?.detail || error.message || 'Failed to start loop';
+            setSnackbar({open: true, message: errorMsg, severity: 'error'});
         }
     };
 
@@ -786,20 +674,26 @@ export const SNMPPage: React.FC = () => {
         }
     };
 
-    const handleStopLoop = () => {
-        if (loopIntervalRef.current) {
-            clearInterval(loopIntervalRef.current);
-            loopIntervalRef.current = null;
-        }
-        if (loopTimeoutRef.current) {
-            clearTimeout(loopTimeoutRef.current);
-            loopTimeoutRef.current = null;
-        }
+    const handleStopLoop = async () => {
+        try {
+            // Stop loop via backend API
+            const result = await snmpLoopService.stopLoop();
 
-        // Update store to mark loop as stopped (keep startTime for reference)
-        useLoopStore.getState().setSnmpLoopState({
-            isLooping: false,
-        });
+            // Update local state
+            setIsLooping(false);
+            setBatchesSent(result.batches_sent);
+            setRemainingSeconds(0);
+
+            setSnackbar({
+                open: true,
+                message: `${result.message} - Sent ${result.batches_sent} batch(es) in ${result.elapsed_seconds}s`,
+                severity: 'success'
+            });
+
+        } catch (error: any) {
+            const errorMsg = error.response?.data?.detail || error.message || 'Failed to stop loop';
+            setSnackbar({open: true, message: errorMsg, severity: 'error'});
+        }
     };
 
     const handleOpenLoopDialog = () => {
@@ -1061,6 +955,15 @@ export const SNMPPage: React.FC = () => {
                         {isSending ? 'Sending...' : `Send Traps (${traps.length})`}
                     </Button>
 
+                    <Button
+                        variant="outlined"
+                        color="secondary"
+                        onClick={() => setLoopStatusDialogOpen(true)}
+                        disabled={!isLooping}
+                    >
+                        Loop Status
+                    </Button>
+
                     {!isLooping ? (
                         <Button
                             variant="contained"
@@ -1130,7 +1033,7 @@ export const SNMPPage: React.FC = () => {
                     </Tooltip>
 
                     <Alert severity="info" sx={{ marginTop: 2 }}>
-                        Note: Logging out will automatically stop the loop.
+                        Note: Loop runs on the backend and will continue even if you close the browser.
                     </Alert>
                 </DialogContent>
                 <DialogActions>
@@ -1138,6 +1041,37 @@ export const SNMPPage: React.FC = () => {
                     <Button onClick={handleStartLoop} variant="contained" color="secondary">
                         Start Loop
                     </Button>
+                </DialogActions>
+            </Dialog>
+
+            {/* Loop Status Dialog */}
+            <Dialog open={loopStatusDialogOpen} onClose={() => setLoopStatusDialogOpen(false)} maxWidth="sm" fullWidth>
+                <DialogTitle>Loop Status</DialogTitle>
+                <DialogContent>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 }}>
+                        <Box>
+                            <Typography variant="subtitle2" color="textSecondary">Status</Typography>
+                            <Typography variant="body1">{isLooping ? 'Running' : 'Stopped'}</Typography>
+                        </Box>
+                        <Box>
+                            <Typography variant="subtitle2" color="textSecondary">Batches Sent</Typography>
+                            <Typography variant="h4" color="primary">{batchesSent}</Typography>
+                        </Box>
+                        <Box>
+                            <Typography variant="subtitle2" color="textSecondary">Time Remaining</Typography>
+                            <Typography variant="body1">{remainingSeconds} seconds</Typography>
+                        </Box>
+                        <Box>
+                            <Typography variant="subtitle2" color="textSecondary">Target Simulators</Typography>
+                            <Typography variant="body1">{selectedSimulators.length} simulator(s)</Typography>
+                        </Box>
+                        <Alert severity="info">
+                            Status updates every 10 seconds automatically.
+                        </Alert>
+                    </Box>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setLoopStatusDialogOpen(false)}>Close</Button>
                 </DialogActions>
             </Dialog>
 

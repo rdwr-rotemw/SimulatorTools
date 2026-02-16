@@ -53,6 +53,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File,
 from fastapi.responses import StreamingResponse
 
 from backend.app.models.polling import PollingTemplateCreate, EndpointConfig
+from backend.app.models.snmp_loop import SNMPLoopConfig, SNMPLoopStatus, SNMPLoopStartRequest
 from backend.app.models.user import User
 from backend.app.modules.reporter.irp.core.message_testing_coordinator import (
     MessageTestingCoordinator,
@@ -83,6 +84,7 @@ from backend.app.schemas.reporter import (
     IRPSendPayload,
     IRPTemplatePayload,
 )
+from backend.app.modules.reporter.snmp.snmp_loop_manager import get_loop_manager
 from backend.app.utils.auth import require_cc_access, get_current_user
 from backend.app.utils.database import get_mongo_db
 from backend.app.utils.pcap_converter import pcap_to_traps, PcapParseError
@@ -1832,4 +1834,172 @@ async def send_snmp_trap_stream_endpoint(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to initialize SNMP trap streaming: {exc!s}",
+        )
+
+
+# ============================================================================
+# SNMP Loop Management Endpoints
+# ============================================================================
+
+
+@router.get(
+    "/reporter/snmp/loop/status",
+    status_code=status.HTTP_200_OK,
+    response_model=SNMPLoopStatus,
+)
+async def get_snmp_loop_status(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> SNMPLoopStatus:
+    """
+    Get the current SNMP loop status for the authenticated user.
+
+    Returns loop status including:
+    - is_active: Whether loop is currently running
+    - loop_delay: Delay between sends in seconds
+    - loop_timeout: Total loop duration in seconds
+    - start_time: When loop started
+    - batches_sent: Number of batches sent so far
+    - elapsed_seconds: Time elapsed since loop started
+    - remaining_seconds: Time remaining until loop timeout
+    - simulators: Target simulator IPs
+    - destination_port: Destination port IP
+
+    Requires authentication.
+    """
+    try:
+        loop_manager = get_loop_manager()
+        user_id = current_user.get("sub")
+        status_result = await loop_manager.get_status(user_id)
+        return status_result
+    except Exception as e:
+        logger.error(f"Error getting SNMP loop status: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get loop status: {str(e)}",
+        )
+
+
+@router.post(
+    "/reporter/snmp/loop/start",
+    status_code=status.HTTP_200_OK,
+)
+async def start_snmp_loop(
+    request: SNMPLoopStartRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Start a new SNMP loop for the authenticated user.
+
+    The loop will:
+    1. Send SNMP traps immediately
+    2. Continue sending at specified intervals (loop_delay)
+    3. Stop automatically after timeout duration (loop_timeout)
+    4. Run in background independent of client connection
+
+    Args:
+        request: Loop configuration including:
+            - cc_ip: CyberController IP
+            - loop_delay: Delay between sends (minimum 1 second)
+            - loop_timeout: Total loop duration (minimum 1 second)
+            - simulators: List of target simulator IPs
+            - destination_port: Destination port IP
+            - traps: List of SNMP trap configurations
+            - configured_attack_ids: Optional pre-configured attack IDs per simulator
+            - regenerate_attack_id: Whether to regenerate attack-ID on each iteration
+
+    Returns:
+        Success message with loop details
+
+    Raises:
+        HTTPException 400: If loop already running for user
+        HTTPException 500: If failed to start loop
+    """
+    try:
+        loop_manager = get_loop_manager()
+        user_id = current_user.get("sub")
+
+        # Create loop config
+        config = SNMPLoopConfig(
+            user_id=user_id,
+            cc_ip=request.cc_ip,
+            loop_delay=request.loop_delay,
+            loop_timeout=request.loop_timeout,
+            simulators=request.simulators,
+            simulator_maps=request.simulator_maps,
+            destination_port=request.destination_port,
+            traps=request.traps,
+            configured_attack_ids=request.configured_attack_ids,
+            regenerate_attack_id=request.regenerate_attack_id,
+        )
+
+        # Start the loop
+        await loop_manager.start_loop(user_id, config)
+
+        return {
+            "success": True,
+            "message": f"SNMP loop started successfully for {len(request.simulators)} simulator(s)",
+            "loop_delay": request.loop_delay,
+            "loop_timeout": request.loop_timeout,
+            "batches_sent": 0,
+        }
+
+    except ValueError as e:
+        # Loop already running
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Error starting SNMP loop: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to start loop: {str(e)}",
+        )
+
+
+@router.post(
+    "/reporter/snmp/loop/stop",
+    status_code=status.HTTP_200_OK,
+)
+async def stop_snmp_loop(
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Stop the SNMP loop for the authenticated user.
+
+    Returns:
+        Success message with final loop statistics
+
+    Raises:
+        HTTPException 400: If no loop is running for user
+        HTTPException 500: If failed to stop loop
+    """
+    try:
+        loop_manager = get_loop_manager()
+        user_id = current_user.get("sub")
+
+        # Get final status before stopping
+        final_status = await loop_manager.get_status(user_id)
+
+        # Stop the loop
+        await loop_manager.stop_loop(user_id)
+
+        return {
+            "success": True,
+            "message": "SNMP loop stopped successfully",
+            "batches_sent": final_status.batches_sent,
+            "elapsed_seconds": final_status.elapsed_seconds,
+        }
+
+    except ValueError as e:
+        # No loop running
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"Error stopping SNMP loop: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to stop loop: {str(e)}",
         )

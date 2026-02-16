@@ -48,6 +48,20 @@
 - NEVER skip hooks with `--no-verify`
 - Always stage specific files, not `git add -A` or `git add .`
 
+### File and Folder Creation
+
+- **NEVER CREATE NEW FOLDERS in project root without explicit user approval**
+- If file location is unclear, ASK the user where to place it
+- Follow existing project structure:
+  - Backend modules: `backend/app/modules/`
+  - Backend routes: `backend/app/routes/`
+  - Backend models: `backend/app/models/`
+  - Backend utilities: `backend/app/utils/`
+  - Frontend components: `frontend/src/components/`
+  - Frontend pages: `frontend/src/pages/`
+  - Frontend services: `frontend/src/api/services/`
+- Do not invent new folder structures or locations
+
 ## Project Architecture
 
 ### Backend (FastAPI + MongoDB)
