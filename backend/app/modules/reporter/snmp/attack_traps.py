@@ -86,6 +86,57 @@ class ATTACK_DIRECTION(str, Enum):
     OUT = "out"
 
 
+# Weighted random distributions derived from real traffic analysis (10,034 traps)
+_CATEGORY_CHOICES = [
+    ATTACK_CATEGORY.DNS_PROTECTION,
+    ATTACK_CATEGORY.BEHAVIORAL_DOS,
+    ATTACK_CATEGORY.TRAFFIC_FILTERS,
+    ATTACK_CATEGORY.ANTI_SCANNING,
+    ATTACK_CATEGORY.DOS,
+    ATTACK_CATEGORY.INTRUSIONS,
+    ATTACK_CATEGORY.ANOMALIES,
+]
+_CATEGORY_WEIGHTS = [33.3, 33.0, 11.5, 11.0, 6.1, 4.7, 0.3]
+
+_PROTOCOL_CHOICES = [
+    ATTACK_PROTOCOL.UDP,
+    ATTACK_PROTOCOL.TCP,
+    ATTACK_PROTOCOL.IP,
+    ATTACK_PROTOCOL.ICMP,
+]
+_PROTOCOL_WEIGHTS = [44.6, 33.4, 16.4, 5.5]
+
+_STATUS_RANDOM_CHOICES = [
+    ATTACK_STATUS.SAMPLED,
+    ATTACK_STATUS.ONGOING,
+    ATTACK_STATUS.OCCUR,
+    ATTACK_STATUS.TERM,
+    ATTACK_STATUS.START,
+]
+_STATUS_WEIGHTS = [1.0, 80.0, 4.0, 13.0, 2.0]
+
+_RISK_CHOICES = [
+    ATTACK_RISK.HIGH,
+    ATTACK_RISK.MEDIUM,
+    ATTACK_RISK.LOW,
+]
+_RISK_WEIGHTS = [77.7, 21.5, 0.9]
+
+_ACTION_CHOICES = [
+    ATTACK_ACTION.DROP,
+    ATTACK_ACTION.CHALLENGE,
+    ATTACK_ACTION.FORWARD,
+]
+_ACTION_WEIGHTS = [93.8, 5.4, 0.7]
+
+_DIRECTION_CHOICES = [
+    ATTACK_DIRECTION.IN,
+    ATTACK_DIRECTION.OUT,
+    ATTACK_DIRECTION.UNKNOWN,
+]
+_DIRECTION_WEIGHTS = [67.2, 27.8, 5.0]
+
+
 def _resolve_enum_field(trap, field_name, enum_class, default_member, legacy_field=None):
     """Resolve an enum field from trap dict: try enum member name, then direct value, then default.
 
@@ -121,6 +172,7 @@ def resolve_trap_fields(cc_ip, trap):
     """Resolve and validate all trap fields, applying defaults and enum conversion.
 
     Supports both enum member names (e.g., "BEHAVIORAL_DOS") and direct values (e.g., "Behavioral-DoS").
+    Fields listed in trap["randomFields"] receive a freshly generated random value each call.
 
     Args:
         cc_ip: CyberController IP address (used as trap manager)
@@ -130,33 +182,85 @@ def resolve_trap_fields(cc_ip, trap):
         Dictionary with all resolved field values
 
     Raises:
-        ValueError: If required fields are missing
+        ValueError: If required fields are missing (and not marked random)
     """
-    if "attackName" not in trap:
+    rf = set(trap.get("randomFields", []))
+
+    if "attackName" not in rf and "attackName" not in trap:
         raise ValueError("Missing required field: attackName")
-    if "policy" not in trap:
+    if "policy" not in rf and "policy" not in trap:
         raise ValueError("Missing required field: policy")
+
+    attack_name = f"Attack_{random.randint(1000, 9999)}" if "attackName" in rf else trap["attackName"]
+    policy = f"pol{random.randint(1, 200)}" if "policy" in rf else trap["policy"]
+    attack_id = generate_attack_id() if "attackId" in rf else trap.get("attackId", generate_attack_id())
+    radware_id = generate_radware_id() if "radwareId" in rf else trap.get("radwareId", generate_radware_id())
+    src_ip = _random_ip() if "srcIp" in rf else trap.get("srcIp", "0.0.0.0")
+    src_port = _random_port() if "srcPort" in rf else trap.get("srcPort", "80")
+    dst_ip = _random_ip() if "dstIp" in rf else trap.get("dstIp", "0.0.0.0")
+    dst_port = _random_port() if "dstPort" in rf else trap.get("dstPort", "80")
+    physical_port = str(random.randint(1, 8)) if "physicalPort" in rf else trap.get("physicalPort", "1")
+    packet_count = str(random.randint(100, 100000)) if "packetCount" in rf else trap.get("packetCount", "1000")
+    packet_bandwidth = str(random.randint(1000, 1000000)) if "packetBandwidth" in rf else trap.get("packetBandwidth", "2000")
+    # Status: weighted random based on real traffic distribution
+    status = (
+        random.choices(_STATUS_RANDOM_CHOICES, weights=_STATUS_WEIGHTS, k=1)[0].value
+        if "status" in rf
+        else _resolve_enum_field(trap, "status", ATTACK_STATUS, ATTACK_STATUS.ONGOING)
+    )
+    samples = (
+        f"{random.randint(0, 100)}-{random.randint(0, 100)}-{random.randint(0, 100)}"
+        if "samples" in rf else trap.get("samples", "0-0-0")
+    )
+    # Samples must be 0-0-0 unless status is 'sampled'
+    if status != ATTACK_STATUS.SAMPLED.value:
+        samples = "0-0-0"
+    category = (
+        random.choices(_CATEGORY_CHOICES, weights=_CATEGORY_WEIGHTS, k=1)[0].value
+        if "attackCategory" in rf
+        else _resolve_enum_field(trap, "attackCategory", ATTACK_CATEGORY, ATTACK_CATEGORY.BEHAVIORAL_DOS)
+    )
+    protocol = (
+        random.choices(_PROTOCOL_CHOICES, weights=_PROTOCOL_WEIGHTS, k=1)[0].value
+        if "protocol" in rf
+        else _resolve_enum_field(trap, "protocol", ATTACK_PROTOCOL, ATTACK_PROTOCOL.TCP)
+    )
+    risk = (
+        random.choices(_RISK_CHOICES, weights=_RISK_WEIGHTS, k=1)[0].value
+        if "risk" in rf
+        else _resolve_enum_field(trap, "risk", ATTACK_RISK, ATTACK_RISK.MEDIUM)
+    )
+    action = (
+        random.choices(_ACTION_CHOICES, weights=_ACTION_WEIGHTS, k=1)[0].value
+        if "action" in rf
+        else _resolve_enum_field(trap, "action", ATTACK_ACTION, ATTACK_ACTION.DROP, legacy_field="actions")
+    )
+    direction = (
+        random.choices(_DIRECTION_CHOICES, weights=_DIRECTION_WEIGHTS, k=1)[0].value
+        if "direction" in rf
+        else _resolve_enum_field(trap, "direction", ATTACK_DIRECTION, ATTACK_DIRECTION.IN)
+    )
 
     return {
         "trap_manager": cc_ip,
-        "attack_id": trap.get("attackId", generate_attack_id()),
-        "radware_id": trap.get("radwareId", generate_radware_id()),
-        "category": _resolve_enum_field(trap, "attackCategory", ATTACK_CATEGORY, ATTACK_CATEGORY.BEHAVIORAL_DOS),
-        "attack_name": trap["attackName"],
-        "protocol": _resolve_enum_field(trap, "protocol", ATTACK_PROTOCOL, ATTACK_PROTOCOL.TCP),
-        "src_ip": trap.get("srcIp", "0.0.0.0"),
-        "src_port": trap.get("srcPort", "80"),
-        "dst_ip": trap.get("dstIp", "0.0.0.0"),
-        "dst_port": trap.get("dstPort", "80"),
-        "physical_port": trap.get("physicalPort", "1"),
-        "policy": trap["policy"],
-        "status": _resolve_enum_field(trap, "status", ATTACK_STATUS, ATTACK_STATUS.ONGOING),
-        "packet_count": trap.get("packetCount", "1000"),
-        "packet_bandwidth": trap.get("packetBandwidth", "2000"),
-        "samples": trap.get("samples", "0-0-0"),
-        "risk": _resolve_enum_field(trap, "risk", ATTACK_RISK, ATTACK_RISK.MEDIUM),
-        "action": _resolve_enum_field(trap, "action", ATTACK_ACTION, ATTACK_ACTION.DROP, legacy_field="actions"),
-        "direction": _resolve_enum_field(trap, "direction", ATTACK_DIRECTION, ATTACK_DIRECTION.IN),
+        "attack_id": attack_id,
+        "radware_id": radware_id,
+        "category": category,
+        "attack_name": attack_name,
+        "protocol": protocol,
+        "src_ip": src_ip,
+        "src_port": src_port,
+        "dst_ip": dst_ip,
+        "dst_port": dst_port,
+        "physical_port": physical_port,
+        "policy": policy,
+        "status": status,
+        "packet_count": packet_count,
+        "packet_bandwidth": packet_bandwidth,
+        "samples": samples,
+        "risk": risk,
+        "action": action,
+        "direction": direction,
     }
 
 
@@ -168,6 +272,14 @@ def generate_attack_id():
     part1 = random.randint(100, 999)
     part2 = int(random.random() * 1_000_000_0000)
     return f"{part1}-{part2:010d}"
+
+
+def _random_ip():
+    return f"{random.randint(1, 254)}.{random.randint(0, 255)}.{random.randint(0, 255)}.{random.randint(1, 254)}"
+
+
+def _random_port():
+    return str(random.randint(1, 65535))
 
 
 def set_trap_string_to_send(cc_ip, trap):

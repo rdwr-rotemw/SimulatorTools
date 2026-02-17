@@ -1910,7 +1910,7 @@ async def get_snmp_loop_status(
 )
 async def start_snmp_loop(
     request: SNMPLoopStartRequest,
-    current_user: Dict[str, Any] = Depends(get_current_user),
+    current_user: User = Depends(require_cc_access),
     sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
 ) -> Dict[str, Any]:
     """
@@ -1942,8 +1942,8 @@ async def start_snmp_loop(
     """
     try:
         loop_manager = get_loop_manager()
-        user_id = current_user.get("sub")
-        workspace = current_user.get("workspace")
+        user_id = str(current_user.user_id)
+        workspace = current_user.workspace
         if workspace == "*":
             workspace = "default"
 

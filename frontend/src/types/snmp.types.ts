@@ -20,6 +20,7 @@ export interface SNMPTrap {
   action?: AttackAction;
   direction?: AttackDirection;
   pause?: number; // Optional pause in seconds (max 60)
+  randomFields?: string[]; // Fields that should use random values on send
 }
 
 export interface SNMPPayload {

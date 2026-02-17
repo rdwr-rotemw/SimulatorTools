@@ -40,6 +40,7 @@ import StopIcon from '@mui/icons-material/Stop';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
+import CasinoIcon from '@mui/icons-material/Casino';
 
 import Layout from '../components/common/Layout';
 import useCCStore from '../store/ccStore';
@@ -113,6 +114,12 @@ export const SNMPPage: React.FC = () => {
 
     // Ref to hold current send function to prevent stale closures
     const sendTrapsOnceRef = useRef<() => Promise<boolean>>(async () => false);
+
+    const ALL_RANDOM_FIELDS = [
+        'attackName', 'policy', 'attackId', 'radwareId', 'attackCategory', 'protocol',
+        'srcIp', 'srcPort', 'dstIp', 'dstPort', 'physicalPort', 'status',
+        'packetCount', 'packetBandwidth', 'samples', 'risk', 'action', 'direction',
+    ];
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const pcapFileInputRef = useRef<HTMLInputElement>(null);
@@ -482,16 +489,17 @@ export const SNMPPage: React.FC = () => {
         const newErrors: { [key: number]: SNMPFormErrors } = {};
         traps.forEach((t, idx) => {
             const e: SNMPFormErrors = {};
-            if (!t.attackName || !t.attackName.trim()) e.attackName = 'Attack Name is required';
-            if (!t.policy || !t.policy.trim()) e.policy = 'Policy is required';
-            if (t.srcIp && !validateIPAddress(t.srcIp)) e.srcIp = 'Invalid IP address';
-            if (t.dstIp && !validateIPAddress(t.dstIp)) e.dstIp = 'Invalid IP address';
-            if (t.srcPort && !validatePort(t.srcPort)) e.srcPort = 'Invalid port (0-65535)';
-            if (t.dstPort && !validatePort(t.dstPort)) e.dstPort = 'Invalid port (0-65535)';
-            if (t.physicalPort && !validatePositiveInteger(t.physicalPort)) e.physicalPort = 'Must be a positive integer';
-            if (t.packetCount && !validatePositiveInteger(t.packetCount)) e.packetCount = 'Must be a positive integer';
-            if (t.packetBandwidth && !validatePositiveInteger(t.packetBandwidth)) e.packetBandwidth = 'Must be a positive integer';
-            if (t.samples && !isValidSamplesFormat(t.samples)) e.samples = 'Invalid format (use 0-0-0)';
+            const rf = new Set(t.randomFields || []);
+            if (!rf.has('attackName') && (!t.attackName || !t.attackName.trim())) e.attackName = 'Attack Name is required';
+            if (!rf.has('policy') && (!t.policy || !t.policy.trim())) e.policy = 'Policy is required';
+            if (!rf.has('srcIp') && t.srcIp && !validateIPAddress(t.srcIp)) e.srcIp = 'Invalid IP address';
+            if (!rf.has('dstIp') && t.dstIp && !validateIPAddress(t.dstIp)) e.dstIp = 'Invalid IP address';
+            if (!rf.has('srcPort') && t.srcPort && !validatePort(t.srcPort)) e.srcPort = 'Invalid port (0-65535)';
+            if (!rf.has('dstPort') && t.dstPort && !validatePort(t.dstPort)) e.dstPort = 'Invalid port (0-65535)';
+            if (!rf.has('physicalPort') && t.physicalPort && !validatePositiveInteger(t.physicalPort)) e.physicalPort = 'Must be a positive integer';
+            if (!rf.has('packetCount') && t.packetCount && !validatePositiveInteger(t.packetCount)) e.packetCount = 'Must be a positive integer';
+            if (!rf.has('packetBandwidth') && t.packetBandwidth && !validatePositiveInteger(t.packetBandwidth)) e.packetBandwidth = 'Must be a positive integer';
+            if (!rf.has('samples') && t.samples && !isValidSamplesFormat(t.samples)) e.samples = 'Invalid format (use 0-0-0)';
             if (Object.keys(e).length > 0) newErrors[idx] = e;
         });
         setErrors(newErrors);
@@ -857,6 +865,17 @@ export const SNMPPage: React.FC = () => {
                             }}>
                                 <Typography variant="h6">Trap {index + 1}</Typography>
                                 <Box>
+                                    <Tooltip title={t.randomFields?.length === ALL_RANDOM_FIELDS.length ? 'Clear All Random' : 'Randomize All Fields'}>
+                                        <IconButton
+                                            onClick={() => updateTrap(index, {
+                                                ...t,
+                                                randomFields: t.randomFields?.length === ALL_RANDOM_FIELDS.length ? [] : ALL_RANDOM_FIELDS,
+                                            })}
+                                            color={t.randomFields?.length === ALL_RANDOM_FIELDS.length ? 'secondary' : 'default'}
+                                        >
+                                            <CasinoIcon/>
+                                        </IconButton>
+                                    </Tooltip>
                                     <IconButton onClick={() => toggleTrap(index)}>
                                         {expandedTraps.includes(index) ? <ExpandLessIcon/> : <ExpandMoreIcon/>}
                                     </IconButton>

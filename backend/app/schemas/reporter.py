@@ -40,6 +40,7 @@ class TrapConfig(BaseModel):
     action: str | None = None
     direction: str | None = None
     pause: int | None = Field(None, ge=0, le=60, description="Pause in seconds after sending trap (max 60)")
+    randomFields: List[str] | None = None
 
 
 class ReporterSNMPPayload(BaseModel):

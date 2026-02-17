@@ -12,7 +12,8 @@
       "Bash(mongosh --eval:*)",
       "Bash(mongo:*)",
       "Bash(git commit:*)",
-      "Bash(pdftotext:*)"
+      "Bash(pdftotext:*)",
+      "Bash(where:*)"
     ]
   }
 }
