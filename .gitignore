@@ -48,3 +48,4 @@ docker/nginx/ssl/*.crt
 tmp/
 *.tmp
 *.temp
+.claude/settings.local.json

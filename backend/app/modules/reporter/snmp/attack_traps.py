@@ -1,5 +1,7 @@
 import logging
 import random
+import time
+import uuid
 from enum import Enum
 
 from backend.app.modules.reporter.snmp.executor import execute_sapro_command
@@ -84,42 +86,78 @@ class ATTACK_DIRECTION(str, Enum):
     OUT = "out"
 
 
-def send_attack_traps(cc_ip, device_ip, payload):
-    """Send attack traps to CyberController.
+def _resolve_enum_field(trap, field_name, enum_class, default_member, legacy_field=None):
+    """Resolve an enum field from trap dict: try enum member name, then direct value, then default.
 
-    Supports optional 'pause' field in each trap to wait between traps.
+    Args:
+        trap: Trap dictionary
+        field_name: Key name in trap dict
+        enum_class: Enum class to resolve against
+        default_member: Default enum member to use
+        legacy_field: Optional legacy field name to check as fallback
+
     Returns:
-        Tuple of (success_count: int, failed_count: int, total_count: int)
+        Resolved string value
     """
-    import time
+    raw = trap.get(field_name)
+    if legacy_field and not raw and legacy_field in trap:
+        logger.warning(f"Found '{legacy_field}' field instead of '{field_name}' - using '{legacy_field}' value")
+        raw = trap.get(legacy_field)
 
-    success_count = 0
-    failed_count = 0
-    total_traps = len(payload['traps'])
-    device_map = payload['map']
-
-    for index, trap in enumerate(payload['traps'], start=1):
-        command_to_send = (f'/opt/sapro/bin/sapcnsl -m {device_map}.map -c tcl -d {device_ip} '
-                           f'-f /opt/sapro/util/send_attack.tcl -a '
-                           f'\"{set_trap_string_to_send(cc_ip, trap)}\"')
-        success, output = execute_sapro_command(command_to_send)
-        attack_name = trap['attackName']
-
-        if success and "Trap(s) Sent" in output:
-            logger.info(f"Successfully sent trap {index}/{total_traps} of attack: {attack_name} from: {device_ip} to: {cc_ip}")
-            success_count += 1
+    try:
+        if raw:
+            try:
+                return enum_class[raw].value
+            except KeyError:
+                return raw
         else:
-            logger.error(f"Failed to send trap {index}/{total_traps} of attack: {attack_name} from: {device_ip} to: {cc_ip}: {output}")
-            failed_count += 1
+            return default_member.value
+    except Exception as e:
+        logger.warning(f"Error processing {field_name} '{raw}': {e}, using default value")
+        return default_member.value
 
-        # Handle pause after sending trap (if not the last trap)
-        pause_seconds = trap.get('pause')
-        if pause_seconds is not None and pause_seconds > 0 and index < total_traps:
-            logger.info(f"Pausing for {pause_seconds} seconds before next trap ({index}/{total_traps})")
-            time.sleep(pause_seconds)
 
-    total_count = success_count + failed_count
-    return success_count, failed_count, total_count
+def resolve_trap_fields(cc_ip, trap):
+    """Resolve and validate all trap fields, applying defaults and enum conversion.
+
+    Supports both enum member names (e.g., "BEHAVIORAL_DOS") and direct values (e.g., "Behavioral-DoS").
+
+    Args:
+        cc_ip: CyberController IP address (used as trap manager)
+        trap: Dictionary containing trap data
+
+    Returns:
+        Dictionary with all resolved field values
+
+    Raises:
+        ValueError: If required fields are missing
+    """
+    if "attackName" not in trap:
+        raise ValueError("Missing required field: attackName")
+    if "policy" not in trap:
+        raise ValueError("Missing required field: policy")
+
+    return {
+        "trap_manager": cc_ip,
+        "attack_id": trap.get("attackId", generate_attack_id()),
+        "radware_id": trap.get("radwareId", generate_radware_id()),
+        "category": _resolve_enum_field(trap, "attackCategory", ATTACK_CATEGORY, ATTACK_CATEGORY.BEHAVIORAL_DOS),
+        "attack_name": trap["attackName"],
+        "protocol": _resolve_enum_field(trap, "protocol", ATTACK_PROTOCOL, ATTACK_PROTOCOL.TCP),
+        "src_ip": trap.get("srcIp", "0.0.0.0"),
+        "src_port": trap.get("srcPort", "80"),
+        "dst_ip": trap.get("dstIp", "0.0.0.0"),
+        "dst_port": trap.get("dstPort", "80"),
+        "physical_port": trap.get("physicalPort", "1"),
+        "policy": trap["policy"],
+        "status": _resolve_enum_field(trap, "status", ATTACK_STATUS, ATTACK_STATUS.ONGOING),
+        "packet_count": trap.get("packetCount", "1000"),
+        "packet_bandwidth": trap.get("packetBandwidth", "2000"),
+        "samples": trap.get("samples", "0-0-0"),
+        "risk": _resolve_enum_field(trap, "risk", ATTACK_RISK, ATTACK_RISK.MEDIUM),
+        "action": _resolve_enum_field(trap, "action", ATTACK_ACTION, ATTACK_ACTION.DROP, legacy_field="actions"),
+        "direction": _resolve_enum_field(trap, "direction", ATTACK_DIRECTION, ATTACK_DIRECTION.IN),
+    }
 
 
 def generate_radware_id():
@@ -133,10 +171,9 @@ def generate_attack_id():
 
 
 def set_trap_string_to_send(cc_ip, trap):
-    """
-    Build trap string with defaults and validation.
+    """Build comma-separated trap string for send_attack.tcl -a argument.
 
-    Supports both enum member names (e.g., "BEHAVIORAL_DOS") and direct values (e.g., "Behavioral-DoS").
+    Delegates field resolution to resolve_trap_fields() to avoid duplication.
 
     Args:
         cc_ip: CyberController IP address
@@ -148,185 +185,175 @@ def set_trap_string_to_send(cc_ip, trap):
     Raises:
         ValueError: If required fields are missing
     """
-    # Validate required fields
-    if "attackName" not in trap:
-        raise ValueError("Missing required field: attackName")
-    if "policy" not in trap:
-        raise ValueError("Missing required field: policy")
+    f = resolve_trap_fields(cc_ip, trap)
+    return (f'{f["trap_manager"]},{f["attack_id"]},{f["radware_id"]},{f["category"]},'
+            f'{f["attack_name"]},{f["protocol"]},'
+            f'{f["src_ip"]},{f["src_port"]},{f["dst_ip"]},{f["dst_port"]},'
+            f'{f["physical_port"]},{f["policy"]},{f["status"]},'
+            f'{f["packet_count"]},{f["packet_bandwidth"]},{f["samples"]},'
+            f'{f["risk"]},{f["action"]},{f["direction"]}')
 
-    # Generate or extract IDs
-    attack_id = trap.get("attackId", generate_attack_id())
-    radware_id = trap.get("radwareId", generate_radware_id())
 
-    # Get attack name (required)
-    attack_name = trap["attackName"]
+def build_sa_sendtrap_line(fields):
+    """Build a single SA_sendtrap TCL command line from resolved trap fields.
 
-    # Get policy (required)
-    policy = trap["policy"]
+    The varbind format matches the existing send_attack.tcl output exactly:
+    V_8 {attack_id} {radware_id} {category} \"{attack_name}\" {protocol}
+    {src_ip} {src_port} {dst_ip} {dst_port} {physical_port} Regular
+    \"{policy}\" {status} {packet_count} {packet_bandwidth} {samples}
+    {risk} {action} 0 0 19 N/A {direction} 0
 
-    # Get attackCategory with enum conversion (required, but has default)
+    Args:
+        fields: Dictionary from resolve_trap_fields()
+
+    Returns:
+        A complete SA_sendtrap TCL command string
+    """
+    # Sanitize fields that get quoted in the varbind (strip double-quotes)
+    attack_name = str(fields["attack_name"]).replace('"', '')
+    policy = str(fields["policy"]).replace('"', '')
+
+    return (
+        f'SA_sendtrap {{ 1.3.6.1.4.1.89.35.1.65.107 6 1 '
+        f'{{ rsIDSIntrusionErrorDesc.0 OctetString '
+        f'"V_8 {fields["attack_id"]} {fields["radware_id"]} {fields["category"]} '
+        f'\\"{attack_name}\\" {fields["protocol"]} '
+        f'{fields["src_ip"]} {fields["src_port"]} '
+        f'{fields["dst_ip"]} {fields["dst_port"]} '
+        f'{fields["physical_port"]} '
+        f'Regular '
+        f'\\"{policy}\\" {fields["status"]} '
+        f'{fields["packet_count"]} {fields["packet_bandwidth"]} '
+        f'{fields["samples"]} '
+        f'{fields["risk"]} {fields["action"]} '
+        f'0 0 19 N/A {fields["direction"]} 0" '
+        f'}} {{ rsIDSIntrusionErrorSeverity.0 Integer "2" }} }}'
+    )
+
+
+def build_batch_tcl_content(cc_ip, traps):
+    """Build complete TCL script content for batch trap sending.
+
+    Sets the trap manager once, then sends all traps sequentially.
+    Pauses between traps are converted to TCL 'after' commands (milliseconds).
+
+    Args:
+        cc_ip: CyberController IP address (trap manager destination)
+        traps: List of trap dictionaries from payload
+
+    Returns:
+        Complete TCL script content as a string
+
+    Raises:
+        ValueError: If any trap has invalid/missing required fields
+    """
+    lines = [f'SA_settrapmgrs {cc_ip}', '']
+
+    total_traps = len(traps)
+    for index, trap in enumerate(traps):
+        fields = resolve_trap_fields(cc_ip, trap)
+        lines.append(build_sa_sendtrap_line(fields))
+
+        # Add pause if specified and not the last trap
+        pause_seconds = trap.get('pause')
+        if pause_seconds is not None and pause_seconds > 0 and index < total_traps - 1:
+            lines.append(f'after {int(pause_seconds * 1000)}')
+
+    return '\n'.join(lines) + '\n'
+
+
+def send_attack_traps(cc_ip, device_ip, payload):
+    """Send attack traps to CyberController using batch execution.
+
+    Generates a single TCL script with all SA_sendtrap calls and executes
+    it in one sapcnsl invocation via a temp file, reducing N SSH round-trips to 1.
+
+    Supports optional 'pause' field in each trap (converted to TCL 'after' commands).
+
+    Returns:
+        Tuple of (success_count: int, failed_count: int, total_count: int)
+    """
+    total_traps = len(payload['traps'])
+    device_map = payload['map']
+
+    # Build batch TCL content
     try:
-        category_input = trap.get("attackCategory")
-        if category_input:
-            # Try to convert enum member name to value
-            try:
-                category = ATTACK_CATEGORY[category_input].value
-            except KeyError:
-                # Not an enum member name, use as-is (assume it's the direct value)
-                category = category_input
+        tcl_content = build_batch_tcl_content(cc_ip, payload['traps'])
+    except ValueError as e:
+        logger.error(f"Failed to build batch TCL content: {e}")
+        return 0, total_traps, total_traps
+
+    # Generate unique temp file path
+    batch_id = uuid.uuid4().hex[:12]
+    temp_tcl_path = f'/tmp/sapro_batch_{batch_id}.tcl'
+
+    # Scale timeout: base 30s + 2s per trap + explicit pause durations
+    total_pause = sum(trap.get('pause', 0) or 0 for trap in payload['traps'])
+    timeout = max(30, total_traps * 2) + int(total_pause)
+
+    # Step 1: Write TCL script to temp file via heredoc
+    # Single-quoted delimiter 'SAPRO_BATCH_EOF' prevents shell variable expansion.
+    write_command = (
+        f"cat > {temp_tcl_path} << 'SAPRO_BATCH_EOF'\n"
+        f"{tcl_content}"
+        f"SAPRO_BATCH_EOF"
+    )
+    logger.info(f"Writing batch TCL script to {temp_tcl_path} ({total_traps} traps)")
+    write_success, write_output = execute_sapro_command(write_command, timeout=30)
+    if not write_success:
+        logger.error(f"Failed to write batch TCL file: {write_output[:500]}")
+        return 0, total_traps, total_traps
+
+    # Step 2: Execute the batch TCL script via sapcnsl
+    exec_command = (
+        f"/opt/sapro/bin/sapcnsl -m {device_map} -c tcl -d {device_ip} "
+        f"-f {temp_tcl_path}"
+    )
+    logger.info(f"Executing batch of {total_traps} trap(s) from {device_ip} to {cc_ip} (timeout={timeout}s)")
+    success, output = execute_sapro_command(exec_command, timeout=timeout)
+    logger.info(f"Batch execution output: {output[:1000]}")
+
+    # Step 3: Cleanup temp file
+    cleanup_command = f"rm -f {temp_tcl_path}"
+    execute_sapro_command(cleanup_command, timeout=10)
+
+    if success:
+        # sapcnsl outputs a single "Trap(s) Sent" for the entire batch
+        if "Trap(s) Sent" in output:
+            logger.info(f"Batch sent all {total_traps} trap(s) from {device_ip} to {cc_ip}")
+            return total_traps, 0, total_traps
         else:
-            category = ATTACK_CATEGORY.BEHAVIORAL_DOS.value
-    except Exception as e:
-        category = trap.get("attackCategory", ATTACK_CATEGORY.BEHAVIORAL_DOS.value)
-        logger.warning(f"Error processing attackCategory '{trap.get('attackCategory')}': {e}, using raw/default value")
-
-    # Get protocol with enum conversion and default
-    try:
-        protocol_input = trap.get("protocol")
-        if protocol_input:
-            # Try to convert enum member name to value
-            try:
-                protocol = ATTACK_PROTOCOL[protocol_input].value
-            except KeyError:
-                # Not an enum member name, use as-is (assume it's the direct value)
-                protocol = protocol_input
-        else:
-            protocol = ATTACK_PROTOCOL.TCP.value
-    except Exception as e:
-        protocol = trap.get("protocol", ATTACK_PROTOCOL.TCP.value)
-        logger.warning(f"Error processing protocol '{trap.get('protocol')}': {e}, using raw/default value")
-
-    # Get IPs and ports with defaults
-    src_ip = trap.get("srcIp", "0.0.0.0")
-    src_port = trap.get("srcPort", "80")
-    dst_ip = trap.get("dstIp", "0.0.0.0")
-    dst_port = trap.get("dstPort", "80")
-    physical_port = trap.get("physicalPort", "1")
-
-    # Get status with enum conversion and default
-    try:
-        status_input = trap.get("status")
-        if status_input:
-            # Try to convert enum member name to value
-            try:
-                status = ATTACK_STATUS[status_input].value
-            except KeyError:
-                # Not an enum member name, use as-is (assume it's the direct value)
-                status = status_input
-        else:
-            status = ATTACK_STATUS.ONGOING.value
-    except Exception as e:
-        status = trap.get("status", ATTACK_STATUS.ONGOING.value)
-        logger.warning(f"Error processing status '{trap.get('status')}': {e}, using raw/default value")
-
-    # Get traffic metrics with defaults
-    packet_count = trap.get("packetCount", "1000")
-    packet_bandwidth = trap.get("packetBandwidth", "2000")
-    samples = trap.get("samples", "0-0-0")
-
-    # Get risk with enum conversion and default
-    try:
-        risk_input = trap.get("risk")
-        if risk_input:
-            # Try to convert enum member name to value
-            try:
-                risk = ATTACK_RISK[risk_input].value
-            except KeyError:
-                # Not an enum member name, use as-is (assume it's the direct value)
-                risk = risk_input
-        else:
-            risk = ATTACK_RISK.MEDIUM.value
-    except Exception as e:
-        risk = trap.get("risk", ATTACK_RISK.MEDIUM.value)
-        logger.warning(f"Error processing risk '{trap.get('risk')}': {e}, using raw/default value")
-
-    # Get action with enum conversion and default
-    # Note: handle legacy 'actions' vs 'action' field
-    action_input = trap.get("action")
-    if "actions" in trap and not action_input:
-        logger.warning("Found 'actions' field instead of 'action' - using 'actions' value")
-        action_input = trap.get("actions")
-
-    try:
-        if action_input:
-            # Try to convert enum member name to value
-            try:
-                action = ATTACK_ACTION[action_input].value
-            except KeyError:
-                # Not an enum member name, use as-is (assume it's the direct value)
-                action = action_input
-        else:
-            action = ATTACK_ACTION.DROP.value
-    except Exception as e:
-        action = trap.get("action", ATTACK_ACTION.DROP.value)
-        logger.warning(f"Error processing action '{action_input}': {e}, using raw/default value")
-
-    # Get direction with enum conversion and default
-    try:
-        direction_input = trap.get("direction")
-        if direction_input:
-            # Try to convert enum member name to value
-            try:
-                direction = ATTACK_DIRECTION[direction_input].value
-            except KeyError:
-                # Not an enum member name, use as-is (assume it's the direct value)
-                direction = direction_input
-        else:
-            direction = ATTACK_DIRECTION.IN.value
-    except Exception as e:
-        direction = trap.get("direction", ATTACK_DIRECTION.IN.value)
-        logger.warning(f"Error processing direction '{trap.get('direction')}': {e}, using raw/default value")
-
-
-    # Build comma-separated string
-    # Field order: trapManager, attackId, radwareId, attackCategory, attackName, protocol,
-    #              srcIp, srcPort, dstIp, dstPort, physicalPort, policy, status,
-    #              packetCount, packetBandwidth, samples, risk, action, direction
-    return (f'{cc_ip},{attack_id},{radware_id},{category},{attack_name},{protocol},'
-            f'{src_ip},{src_port},{dst_ip},{dst_port},{physical_port},{policy},{status},'
-            f'{packet_count},{packet_bandwidth},{samples},{risk},{action},{direction}')
+            logger.error(
+                f"Batch execution succeeded but no traps confirmed sent "
+                f"from {device_ip} to {cc_ip}. Output: {output[:500]}"
+            )
+            return 0, total_traps, total_traps
+    else:
+        logger.error(f"Batch execution failed from {device_ip} to {cc_ip}: {output[:500]}")
+        return 0, total_traps, total_traps
 
 
 def send_attack_traps_with_progress(cc_ip, device_ip, payload):
     """Send attack traps to CyberController with progress reporting.
 
-    Yields progress dictionaries for each trap and completion.
-
-    Supports optional 'pause' field in each trap to wait between traps.
+    Uses batch execution (single sapcnsl call) and yields progress events.
 
     Yields:
-        {"type": "progress", "current": index, "total": total_traps, "trap_name": attack_name, "status": "success" or "failed"}
+        {"type": "progress", "current": total, "total": total, "trap_name": "batch", "status": "success" or "failed"}
         {"type": "complete", "success_count": X, "failed_count": Y, "total_count": Z}
     """
-    import time
-
-    success_count = 0
-    failed_count = 0
     total_traps = len(payload['traps'])
-    device_map = payload['map']
-    for index, trap in enumerate(payload['traps'], start=1):
-        command_to_send = (f'/opt/sapro/bin/sapcnsl -m {device_map}.map -c tcl -d {device_ip} '
-                           f'-f /opt/sapro/util/send_attack.tcl -a '
-                           f'\"{set_trap_string_to_send(cc_ip, trap)}\"')
-        success, output = execute_sapro_command(command_to_send)
-        attack_name = trap['attackName']
 
-        if success and "Trap(s) Sent" in output:
-            logger.info(f"Successfully sent trap {index}/{total_traps} of attack: {attack_name} from: {device_ip} to: {cc_ip}")
-            success_count += 1
-            status = "success"
-        else:
-            logger.error(f"Failed to send trap {index}/{total_traps} of attack: {attack_name} from: {device_ip} to: {cc_ip}: {output}")
-            failed_count += 1
-            status = "failed"
+    yield {"type": "progress", "current": 0, "total": total_traps, "trap_name": "batch", "status": "sending"}
 
-        yield {"type": "progress", "current": index, "total": total_traps, "trap_name": attack_name, "status": status}
+    success_count, failed_count, total_count = send_attack_traps(cc_ip, device_ip, payload)
 
-        # Handle pause after sending trap (if not the last trap)
-        pause_seconds = trap.get('pause')
-        if pause_seconds is not None and pause_seconds > 0 and index < total_traps:
-            logger.info(f"Pausing for {pause_seconds} seconds before next trap ({index}/{total_traps})")
-            time.sleep(pause_seconds)
+    if failed_count == 0:
+        status = "success"
+    elif success_count > 0:
+        status = "partial"
+    else:
+        status = "failed"
 
-    total_count = success_count + failed_count
+    yield {"type": "progress", "current": total_traps, "total": total_traps, "trap_name": "batch", "status": status}
     yield {"type": "complete", "success_count": success_count, "failed_count": failed_count, "total_count": total_count}

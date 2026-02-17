@@ -107,6 +107,7 @@ async def send_snmp_trap_endpoint(
     simulator_ip: str,
     payload: ReporterSNMPPayload,
     _current_user: User = Depends(require_cc_access),
+    sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
 ) -> ReporterResponse:
     """Send SNMP trap to simulator(s) via CyberController.
 
@@ -142,6 +143,13 @@ async def send_snmp_trap_endpoint(
                 detail="Invalid trap data: 'traps' must be a non-empty list",
             )
 
+        # Resolve map names to full paths
+        # Admin users have workspace='*'; convert to 'default' to avoid
+        # find_map_workspace misidentifying the /opt/sapro/map/ directory as a workspace.
+        workspace = _current_user.workspace
+        if workspace == "*":
+            workspace = "default"
+
         # Check if multiple simulators (comma-separated)
         if "," in simulator_ip:
             simulator_ips = [ip.strip() for ip in simulator_ip.split(",")]
@@ -156,13 +164,16 @@ async def send_snmp_trap_endpoint(
                 for sim_ip in simulator_ips:
                     map_dict[sim_ip] = trap_data["map"]
 
+            # Resolve map names to full paths
+            for sim_ip in simulator_ips:
+                map_name = map_dict.get(sim_ip)
+                if map_name:
+                    map_dict[sim_ip] = sapro_handler.get_full_map_path(map_name, workspace)
+
             # Process all simulators in parallel
             async def send_to_simulator(sim_ip: str):
                 sim_trap_data = trap_data.copy()
-                sim_trap_data["map"] = map_dict.get(
-                    sim_ip,
-                    trap_data["map"] if isinstance(trap_data["map"], str) else "",
-                )
+                sim_trap_data["map"] = map_dict.get(sim_ip)
                 return attack_traps.send_attack_traps(cc_ip, sim_ip, sim_trap_data)
 
             # Execute in parallel
@@ -221,6 +232,9 @@ async def send_snmp_trap_endpoint(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=f"Map not found for simulator {simulator_ip}",
                     )
+
+            # Resolve map name to full path
+            trap_data["map"] = sapro_handler.get_full_map_path(trap_data["map"], workspace)
 
             # Call attack_traps module directly
             logger.info(
@@ -1675,6 +1689,7 @@ async def send_snmp_trap_stream_endpoint(
     simulator_ip: str,
     payload: ReporterSNMPPayload,
     _current_user: User = Depends(require_cc_access),
+    sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
 ):
     """Send SNMP traps with real-time progress via Server-Sent Events.
 
@@ -1701,6 +1716,13 @@ async def send_snmp_trap_stream_endpoint(
                 detail="Invalid trap data: 'traps' must be a non-empty list",
             )
 
+        # Resolve map names to full paths
+        # Admin users have workspace='*'; convert to 'default' to avoid
+        # find_map_workspace misidentifying the /opt/sapro/map/ directory as a workspace.
+        workspace = _current_user.workspace
+        if workspace == "*":
+            workspace = "default"
+
         # Check if multiple simulators (comma-separated)
         if "," in simulator_ip:
             simulator_ips = [ip.strip() for ip in simulator_ip.split(",")]
@@ -1715,20 +1737,19 @@ async def send_snmp_trap_stream_endpoint(
                 for sim_ip in simulator_ips:
                     map_dict[sim_ip] = trap_data["map"]
 
+            # Resolve map names to full paths
+            for sim_ip in simulator_ips:
+                map_name = map_dict.get(sim_ip)
+                if map_name:
+                    map_dict[sim_ip] = sapro_handler.get_full_map_path(map_name, workspace)
+
             async def event_generator():
                 try:
                     # Create async generators for each simulator
                     async def simulator_generator(sim_ip: str):
                         try:
                             sim_trap_data = trap_data.copy()
-                            sim_trap_data["map"] = map_dict.get(
-                                sim_ip,
-                                (
-                                    trap_data["map"]
-                                    if isinstance(trap_data["map"], str)
-                                    else ""
-                                ),
-                            )
+                            sim_trap_data["map"] = map_dict.get(sim_ip)
 
                             for progress in send_attack_traps_with_progress(
                                 cc_ip, sim_ip, sim_trap_data
@@ -1798,6 +1819,9 @@ async def send_snmp_trap_stream_endpoint(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=f"Map not found for simulator {simulator_ip}",
                     )
+
+            # Resolve map name to full path
+            trap_data["map"] = sapro_handler.get_full_map_path(trap_data["map"], workspace)
 
             async def event_generator():
                 try:
@@ -1887,6 +1911,7 @@ async def get_snmp_loop_status(
 async def start_snmp_loop(
     request: SNMPLoopStartRequest,
     current_user: Dict[str, Any] = Depends(get_current_user),
+    sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
 ) -> Dict[str, Any]:
     """
     Start a new SNMP loop for the authenticated user.
@@ -1918,6 +1943,14 @@ async def start_snmp_loop(
     try:
         loop_manager = get_loop_manager()
         user_id = current_user.get("sub")
+        workspace = current_user.get("workspace")
+        if workspace == "*":
+            workspace = "default"
+
+        # Resolve map names to full paths
+        resolved_maps = {}
+        for sim_ip, map_name in request.simulator_maps.items():
+            resolved_maps[sim_ip] = sapro_handler.get_full_map_path(map_name, workspace)
 
         # Create loop config
         config = SNMPLoopConfig(
@@ -1926,7 +1959,7 @@ async def start_snmp_loop(
             loop_delay=request.loop_delay,
             loop_timeout=request.loop_timeout,
             simulators=request.simulators,
-            simulator_maps=request.simulator_maps,
+            simulator_maps=resolved_maps,
             destination_port=request.destination_port,
             traps=request.traps,
             configured_attack_ids=request.configured_attack_ids,
