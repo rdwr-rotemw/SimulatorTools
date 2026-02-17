@@ -41,6 +41,8 @@ import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore';
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 import CasinoIcon from '@mui/icons-material/Casino';
+import FullscreenIcon from '@mui/icons-material/Fullscreen';
+import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
 
 import Layout from '../components/common/Layout';
 import useCCStore from '../store/ccStore';
@@ -106,6 +108,9 @@ export const SNMPPage: React.FC = () => {
     const [lastError, setLastError] = useState<string | null>(null); // Most recent error
     const [remainingSeconds, setRemainingSeconds] = useState<number>(0); // Time remaining
     const statusPollIntervalRef = useRef<NodeJS.Timeout | null>(null); // Poll status from backend
+
+    // Fullscreen mode (hides header, shows only trap list + action bar)
+    const [isFullscreen, setIsFullscreen] = useState(false);
 
     // Attack-ID configuration dialog state
     const [attackIdDialogOpen, setAttackIdDialogOpen] = useState(false);
@@ -738,9 +743,23 @@ export const SNMPPage: React.FC = () => {
 
     return (
         <Layout>
-            <Box sx={{height: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column'}}>
-                {/* Fixed Header */}
-                <Box sx={{padding: 3, borderBottom: '1px solid #E0E0E0'}}>
+            <Box sx={{
+                    ...(isFullscreen ? {
+                        position: 'fixed',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%',
+                        zIndex: 1200,
+                        bgcolor: 'background.paper',
+                    } : {
+                        height: 'calc(100vh - 64px)',
+                    }),
+                    display: 'flex',
+                    flexDirection: 'column',
+                }}>
+                {/* Fixed Header — hidden in fullscreen mode */}
+                {!isFullscreen && <Box sx={{padding: 3, borderBottom: '1px solid #E0E0E0'}}>
                     <Typography variant="h4" sx={{marginBottom: 1}}>SNMP Trap Sender</Typography>
                     <Typography variant="body2" sx={{color: '#666', marginBottom: 2}}>
                         Connected to CyberController at {currentCC}
@@ -851,6 +870,15 @@ export const SNMPPage: React.FC = () => {
                             ))}
                         </Select>
                     </FormControl>
+                </Box>}
+
+                {/* Trap list toolbar with fullscreen toggle */}
+                <Box sx={{display: 'flex', justifyContent: 'flex-end', px: 2, pt: 1}}>
+                    <Tooltip title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}>
+                        <IconButton size="small" onClick={() => setIsFullscreen(f => !f)}>
+                            {isFullscreen ? <FullscreenExitIcon/> : <FullscreenIcon/>}
+                        </IconButton>
+                    </Tooltip>
                 </Box>
 
                 {/* Scrollable Trap List */}

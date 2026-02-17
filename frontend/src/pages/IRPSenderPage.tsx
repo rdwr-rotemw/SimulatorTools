@@ -37,6 +37,8 @@ import StopIcon from '@mui/icons-material/Stop'
 import ScienceIcon from '@mui/icons-material/Science'
 import UnfoldMoreIcon from '@mui/icons-material/UnfoldMore'
 import UnfoldLessIcon from '@mui/icons-material/UnfoldLess'
+import FullscreenIcon from '@mui/icons-material/Fullscreen'
+import FullscreenExitIcon from '@mui/icons-material/FullscreenExit'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
 import UploadIcon from '@mui/icons-material/Upload'
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward'
@@ -977,6 +979,7 @@ export const IRPSenderPage: React.FC = () => {
     // JSON Import state
     const [importProgress, setImportProgress] = useState<number>(0)
     const [isImporting, setIsImporting] = useState<boolean>(false)
+    const [isFullscreen, setIsFullscreen] = useState(false)
     const jsonFileInputRef = React.useRef<HTMLInputElement>(null)
 
     // ========================================================================
@@ -2191,9 +2194,23 @@ export const IRPSenderPage: React.FC = () => {
 
     return (
         <Layout>
-            <Box sx={{height: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column'}}>
-                {/* Fixed Header */}
-                <Box sx={{padding: 3, borderBottom: '1px solid #E0E0E0'}}>
+            <Box sx={{
+                    ...(isFullscreen ? {
+                        position: 'fixed',
+                        top: 0,
+                        left: 0,
+                        width: '100%',
+                        height: '100%',
+                        zIndex: 1200,
+                        bgcolor: 'background.paper',
+                    } : {
+                        height: 'calc(100vh - 64px)',
+                    }),
+                    display: 'flex',
+                    flexDirection: 'column',
+                }}>
+                {/* Fixed Header — hidden in fullscreen mode */}
+                {!isFullscreen && <Box sx={{padding: 3, borderBottom: '1px solid #E0E0E0'}}>
                     <Typography variant="h4" sx={{marginBottom: 1}}>
                         IRP Message Sender
                     </Typography>
@@ -2306,6 +2323,15 @@ export const IRPSenderPage: React.FC = () => {
                             ))}
                         </Select>
                     </FormControl>
+                </Box>}
+
+                {/* Message list toolbar with fullscreen toggle */}
+                <Box sx={{display: 'flex', justifyContent: 'flex-end', px: 2, pt: 1}}>
+                    <Tooltip title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}>
+                        <IconButton size="small" onClick={() => setIsFullscreen(f => !f)}>
+                            {isFullscreen ? <FullscreenExitIcon/> : <FullscreenIcon/>}
+                        </IconButton>
+                    </Tooltip>
                 </Box>
 
                 {/* Scrollable Message List */}

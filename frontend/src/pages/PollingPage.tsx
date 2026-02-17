@@ -24,6 +24,7 @@ import {
   IconButton,
   Collapse,
   Typography,
+  Tooltip,
 } from '@mui/material';
 import {
   Add as AddIcon,
@@ -39,6 +40,8 @@ import {
   Delete as DeleteIcon,
   UnfoldMore as UnfoldMoreIcon,
   UnfoldLess as UnfoldLessIcon,
+  Fullscreen as FullscreenIcon,
+  FullscreenExit as FullscreenExitIcon,
 } from '@mui/icons-material';
 
 import Layout from '../components/common/Layout';
@@ -84,6 +87,7 @@ export const PollingPage: React.FC = () => {
     message: string;
   }>({ type: null, message: '' });
   const [loading, setLoading] = useState<boolean>(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Template dialog state
   const [saveTemplateDialogOpen, setSaveTemplateDialogOpen] = useState(false);
@@ -659,9 +663,23 @@ export const PollingPage: React.FC = () => {
 
   return (
     <Layout>
-      <Box sx={{ height: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column' }}>
-        {/* FIXED HEADER */}
-        <Box sx={{ padding: 3, borderBottom: '1px solid #E0E0E0' }}>
+      <Box sx={{
+          ...(isFullscreen ? {
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            zIndex: 1200,
+            bgcolor: 'background.paper',
+          } : {
+            height: 'calc(100vh - 64px)',
+          }),
+          display: 'flex',
+          flexDirection: 'column',
+        }}>
+        {/* FIXED HEADER — hidden in fullscreen mode */}
+        {!isFullscreen && <Box sx={{ padding: 3, borderBottom: '1px solid #E0E0E0' }}>
           <Typography variant="h4" sx={{ marginBottom: 1 }}>
             Polling Configuration
           </Typography>
@@ -740,7 +758,7 @@ export const PollingPage: React.FC = () => {
             sx={{ marginTop: 2 }}
             helperText="User-defined XMF filename"
           />
-        </Box>
+        </Box>}
 
         {/* Status Alert */}
         {status.type && (
@@ -752,6 +770,15 @@ export const PollingPage: React.FC = () => {
             {status.message}
           </Alert>
         )}
+
+        {/* Endpoint list toolbar with fullscreen toggle */}
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', px: 2, pt: 1 }}>
+          <Tooltip title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}>
+            <IconButton size="small" onClick={() => setIsFullscreen(f => !f)}>
+              {isFullscreen ? <FullscreenExitIcon/> : <FullscreenIcon/>}
+            </IconButton>
+          </Tooltip>
+        </Box>
 
         {/* SCROLLABLE CONTENT */}
         <Box sx={{ flex: 1, overflow: 'auto', padding: 3 }}>
