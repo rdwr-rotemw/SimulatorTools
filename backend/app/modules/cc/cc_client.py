@@ -538,13 +538,16 @@ class CCHandler:
             logger.exception("Request exception in add_device: %s", exc)
             return False, f"Exception in add_device: {exc!s}"
 
-    def delete_device(self, device_id: str) -> Tuple[bool, str]:
+    def delete_device(self, device_id: str, device_name: str) -> Tuple[bool, str]:
         """Delete a device from CyberController identified by device_id.
 
         This uses the CC API endpoint that deletes by device id (byid).
+        If the CC reports the device is in use by DefenseFlow, it removes the device
+        from DF's managing list first, then retries the delete.
 
         Args:
             device_id: device identifier as returned by CC (string)
+            device_name: device name as returned by CC (string), used for DF removal
 
         Returns:
             (True, 'success') on HTTP 200, or (False, error_message) on failure.
@@ -561,12 +564,38 @@ class CCHandler:
 
             if resp.status_code == 200:
                 return True, "success"
+
             # attempt to include response body for debugging
             body = ''
             try:
                 body = resp.text
             except Exception:
                 body = '<unreadable response body>'
+
+            # If device is in use by DefenseFlow, remove it from DF and retry
+            if "cannot be deleted because it is in use by DefenseFlow" in body:
+                logger.info("Device %s is in use by DefenseFlow, removing from DF managing list", device_name)
+                df_url = f"{self.base_url}/mgmt/v2/device/df/restv2/configure/mitigation-devices/{device_name}"
+                df_resp = self._session.delete(df_url, verify=self._verify_ssl, timeout=300)
+                if df_resp.status_code != 200:
+                    df_body = ''
+                    try:
+                        df_body = df_resp.text
+                    except Exception:
+                        df_body = '<unreadable response body>'
+                    return False, f"Failed to remove device from DefenseFlow: HTTP {df_resp.status_code} - {df_body}"
+
+                # Retry original delete
+                retry_resp = self._session.delete(url, verify=self._verify_ssl, timeout=300)
+                if retry_resp.status_code == 200:
+                    return True, "success"
+                retry_body = ''
+                try:
+                    retry_body = retry_resp.text
+                except Exception:
+                    retry_body = '<unreadable response body>'
+                return False, f"Failed to delete device after DF removal: HTTP {retry_resp.status_code} - {retry_body}"
+
             return False, f"Failed to delete device: HTTP {resp.status_code} - {body}"
         except requests.RequestException as exc:
             logger.exception("Exception in delete_device: %s", exc)

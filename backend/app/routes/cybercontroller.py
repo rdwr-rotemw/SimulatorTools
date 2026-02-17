@@ -985,6 +985,7 @@ async def validate_devices_batch(
 async def delete_cc_simulator(
         cc_ip: str,
         device_id: str,
+        device_name: str,
         db: Session = Depends(get_db),
         current_user: User = Depends(require_cc_access),
 ) -> CCDeleteResponse:
@@ -993,6 +994,7 @@ async def delete_cc_simulator(
     Args:
         cc_ip: CyberController IP address or hostname
         device_id: ID of the simulator to delete (as reported by the CC)
+        device_name: Name of the simulator (used for DefenseFlow removal if needed)
         db: Database session
         current_user: Authenticated user with cc_admin or admin role
 
@@ -1025,7 +1027,7 @@ async def delete_cc_simulator(
             pass
 
         # Delete device by device_id
-        ok, msg = handler.delete_device(device_id)
+        ok, msg = handler.delete_device(device_id, device_name)
 
         if not ok:
             raise HTTPException(

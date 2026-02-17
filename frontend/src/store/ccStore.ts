@@ -215,7 +215,8 @@ export const useCCStore = create<CCState>((set, get) => ({
   deleteDevice: async (cc_ip: string, device_id: string) => {
     set({ isLoading: true, error: null });
     try {
-      await ccService.deleteDevice(cc_ip, device_id);
+      const device = get().devices.find(d => d.device_id === device_id);
+      await ccService.deleteDevice(cc_ip, device_id, device!.name!);
 
       // Wait 2 seconds before refreshing from server
       setTimeout(() => {

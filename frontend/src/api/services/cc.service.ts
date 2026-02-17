@@ -124,8 +124,10 @@ export const ccService = {
     return response.data.ports;
   },
 
-  deleteDevice: async (cc_ip: string, device_id: string): Promise<CCDeleteResponse> => {
-    const response = await apiClient.delete<CCDeleteResponse>(`/cc/${cc_ip}/simulators/${device_id}`);
+  deleteDevice: async (cc_ip: string, device_id: string, device_name: string): Promise<CCDeleteResponse> => {
+    const response = await apiClient.delete<CCDeleteResponse>(`/cc/${cc_ip}/simulators/${device_id}`, {
+      params: { device_name },
+    });
     return response.data;
   },
 
