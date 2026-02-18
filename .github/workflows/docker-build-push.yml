@@ -18,7 +18,35 @@ env:
   FRONTEND_IMAGE_NAME: ${{ github.repository_owner }}/simtools-frontend
 
 jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            default-jre-headless \
+            tcl
+
+      - name: Install Python dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Run integration tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: pytest backend/tests/integration/ -v --tb=short
+
   build-and-push:
+    needs: integration-tests
     runs-on: ubuntu-latest
     permissions:
       contents: read

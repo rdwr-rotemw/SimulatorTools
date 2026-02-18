@@ -497,6 +497,88 @@ def load_schema_from_mongo(mongo_db, document_id) -> Any:
     return cx
 
 
+def schema_obj_from_xml_file(xml_file_path: str) -> Any:
+    """Build a send-ready schema_obj from a local XML file without MongoDB.
+
+    Equivalent to load_schema_from_mongo but sourced directly from an XML file.
+    The returned object has the same shape as what load_schema_from_mongo returns
+    (bitmap stored as dict, not as Enum instance), so it is safe to pass to
+    send_irp_message / IrpFormatter.
+
+    Args:
+        xml_file_path: Absolute path to IdsDataFormat XML file.
+
+    Returns:
+        ConvertXml-like object with properly serialized schema (same as load_schema_from_mongo).
+    """
+    from backend.app.modules.reporter.irp.models.data_format_models import Types, Message
+
+    schema_dict = convert_xml(xml_file_path)
+
+    messages_raw = _deserialize_object(schema_dict.get('messages'))
+    types_raw = _deserialize_object(schema_dict.get('types'))
+    templates_raw = _deserialize_object(schema_dict.get('templates'))
+
+    templates = _reconstruct_templates_object(templates_raw)
+
+    if templates and hasattr(templates, 'structs'):
+        structs = getattr(templates, 'structs') or {}
+        if isinstance(structs, dict):
+            for struct_obj in structs.values():
+                if hasattr(struct_obj, 'fields'):
+                    fields = getattr(struct_obj, 'fields')
+                    if isinstance(fields, list):
+                        struct_obj.fields = [
+                            _dict_to_convertxml_element(f) if isinstance(f, dict) else f
+                            for f in fields
+                        ]
+
+    messages = {}
+    if messages_raw and isinstance(messages_raw, dict):
+        for msg_id, msg_data in messages_raw.items():
+            if isinstance(msg_data, dict) and 'name' in msg_data and 'data' in msg_data:
+                msg_data_list = msg_data['data']
+                if isinstance(msg_data_list, list):
+                    msg_data_typed = [
+                        _dict_to_convertxml_element(item) if isinstance(item, dict) else item
+                        for item in msg_data_list
+                    ]
+                else:
+                    msg_data_typed = msg_data_list
+                messages[msg_id] = Message(msg_data['name'], msg_data_typed)
+            else:
+                messages[msg_id] = msg_data
+    else:
+        messages = messages_raw
+
+    types_obj = Types()
+    if isinstance(types_raw, dict):
+        types_obj.set_primitives(types_raw.get('primitives') or {})
+        types_obj.set_fixed_strings(types_raw.get('fixed_strings') or {})
+        types_obj.set_ip_address(types_raw.get('ip_addresses') or types_raw.get('ip_address') or {})
+        types_obj.set_enums(types_raw.get('enums') or {})
+        types_obj.set_bitmap(types_raw.get('bitmap'))
+        types_obj.set_namespaces(types_raw.get('namespaces') or {})
+    else:
+        types_obj = types_raw
+
+    Schema = type('Schema', (), {})
+    schema_inner = Schema()
+    setattr(schema_inner, 'messages', messages)
+    setattr(schema_inner, 'types', types_obj)
+    setattr(schema_inner, 'templates', templates)
+
+    try:
+        cx = object.__new__(ConvertXml)
+    except Exception:
+        cx = type('ConvertXmlLike', (), {})()
+
+    setattr(cx, 'schema', schema_inner)
+    setattr(cx, 'xml_file_path', xml_file_path)
+    setattr(cx, 'xml_dict', None)
+    return cx
+
+
 def send_irp_message(schema_obj, message_id, message_data, from_ip: str, to_ip: str) -> Tuple[bool, str]:
     """Build and send a binary IRP message via UDP.
 

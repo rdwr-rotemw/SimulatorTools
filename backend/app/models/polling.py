@@ -49,6 +49,9 @@ class FieldValue(BaseModel):
         description="Mode for string/number generation: 'fixed' or 'random'"
     )
 
+    # For string enum fields (random pick from list)
+    options: Optional[List[str]] = None
+
     # For random numbers
     min: Optional[int] = None
     max: Optional[int] = None

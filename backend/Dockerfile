@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     default-jre-headless \
     tshark \
+    tcl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python requirements

@@ -1,16 +1,15 @@
 # SimulatorTools
 
-A comprehensive web application for managing and monitoring network security simulators, including Sapro, CyberController, and IRP Reporter systems.
-
+A web application for managing and operating Sapro simulators — Sapro, CyberController, and Reporting systems.
 
 ## Features
 
-- **Multi-Simulator Support**: Manage Sapro, CyberController, and IRP Reporter systems
-- **User Management**: Role-based access control with authentication
-- **Real-time Monitoring**: Track simulator status and sessions
-- **RESTful API**: FastAPI-based backend with OpenAPI documentation
-- **Database Support**: PostgreSQL for relational data, MongoDB for document storage
-- **Docker Support**: Fully containerized deployment
+- **Multi-Simulator Support**: Manage Sapro simulators and CyberController sessions
+- **Reporter Modules**: SNMP trap generation, IRP binary message sending, and Polling XMF configuration
+- **User Management**: Role-based access control with JWT authentication
+- **Real-time Monitoring**: Track simulator status, loop progress, and session state
+- **RESTful API**: FastAPI backend with interactive OpenAPI documentation
+- **Docker Support**: Containerized deployment via GitHub Container Registry
 
 ## Architecture
 
@@ -19,96 +18,203 @@ A comprehensive web application for managing and monitoring network security sim
   - PyMongo for MongoDB
   - JWT-based authentication
   - Async request handling
-  
-- **Frontend**: Modern web interface
-  - Responsive design
-  - Real-time updates
-  
+
+- **Frontend**: React (TypeScript)
+  - Material-UI component library
+  - Real-time progress and status updates
+
 - **Databases**:
-  - PostgreSQL 15 for user data, roles, permissions
-  - MongoDB 7 for session data and logs
+  - PostgreSQL — users, roles, permissions, audit logs (SQLAlchemy ORM)
+  - MongoDB — templates, IRP schemas, polling configs, and session state (PyMongo)
 
-- **Reverse Proxy**: Nginx with SSL/TLS support
+- **Reverse Proxy**: Nginx with SSL/TLS
 
-## Documentation
+## Modules
 
-- **[Contributing Guidelines](CONTRIBUTING.md)** - How to contribute to the project
+### Sapro Integration
+- Map and device management
+- Device create / update / delete via Sapro commands (`adddev`, `deldev`)
+- SSH connectivity and session handling
+
+### CyberController
+- Session and credential management
+- Device management: delete / add single devices or IP ranges
+- Device driver installation
+
+### Reporter
+
+#### SNMP
+- Generate TCL scripts with `SA_sendtrap` / `SA_settrapmgrs` commands
+- Batch trap sending with configurable varbinds
+
+#### IRP
+- Template generation from IdsDataFormat XML schemas
+- Binary message building and UDP sending
+- Round-trip validation: send → capture PCAP → extract bytes → parse with Java parser
+
+#### Polling
+- XMF (TCL) file generation for HTTP polling endpoints
+- Configurable data structures with field types: random IP, timestamp, composite, arrays, objects
+- Protocol-aware tcp-flag conditional generation
+
+---
+
+## Development Setup
+
+### Prerequisites
+
+- Python 3.11+
+- Node.js 18+
+- PostgreSQL (for users, roles, permissions)
+- MongoDB (for templates, schemas, session data)
+- Java JRE (for IRP parser — optional for non-IRP work)
+
+### Backend
+
+```bash
+# From project root
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r backend/requirements.txt
+
+# Start backend
+python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+API docs available at: http://127.0.0.1:8000/docs
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm start
+```
+
+Frontend available at: http://localhost:3000
+
+---
+
+## Integration Tests
+
+Integration tests validate the three core reporting modules **without requiring a live Sapro or CyberController connection**. They run against local fixtures and loopback UDP.
+
+### What is tested
+
+| Test file | What it covers |
+|-----------|---------------|
+| `test_snmp_script_generation.py` | TCL script structure, varbind field placement, `SA_sendtrap` syntax, samples consistency |
+| `test_irp_message_validation.py` | Template generation for messages 1, 4, 7, 19, 20, 52 — full round-trip: UDP send → PCAP capture → byte extraction → Java parser (no errors) |
+| `test_polling_xmf_generation.py` | XMF/TCL file generation — proc definitions, field types, array loops, protocol conditionals, JSON content |
+
+### Requirements
+
+| Requirement | Used by | Notes |
+|-------------|---------|-------|
+| Python 3.11+ | All tests | Standard |
+| Java JRE | IRP tests | Needed to run `parser.jar` |
+| `tclsh` | Polling TCL syntax tests | **Optional** — tests are skipped gracefully if not installed |
+
+### Running locally (Windows dev)
+
+```bash
+# From project root, with virtualenv active
+pytest backend/tests/integration/ -v --tb=short
+
+# Run a single module
+pytest backend/tests/integration/test_snmp_script_generation.py -v
+pytest backend/tests/integration/test_irp_message_validation.py -v
+pytest backend/tests/integration/test_polling_xmf_generation.py -v
+```
+
+> **Note**: `tclsh` is not typically installed on Windows. The 3 TCL syntax tests are automatically skipped — this is expected.
+
+### Running in Docker (production image)
+
+The backend Docker image includes Java and `tclsh`, so all tests run including TCL syntax validation:
+
+```bash
+# Build the image first (or pull from GHCR)
+docker build -t simulator-backend ./backend
+
+# Run integration tests inside the container
+docker run --rm simulator-backend pytest backend/tests/integration/ -v --tb=short
+```
+
+### CI/CD — GitHub Actions
+
+Integration tests run automatically on every push to `main` or `dev` and on pull requests to `main`. The Docker build is **gated** — images are only built and pushed to GHCR if all integration tests pass.
+
+Pipeline: `.github/workflows/docker-build-push.yml`
+
+```
+push / PR
+  └─► integration-tests (ubuntu-latest)
+        ├── Install Java + tclsh
+        ├── pip install -r backend/requirements.txt
+        └── pytest backend/tests/integration/
+              └─► (pass) ─► build-and-push (Docker images to GHCR)
+              └─► (fail) ─► build blocked
+```
+
+---
 
 ## Deployment
 
-### Production Deployment Using Pre-Built Images (Recommended)
+### Production — Pre-Built Images (Recommended)
 
-This project uses GitHub Actions to automatically build Docker images and publish them to GitHub Container Registry (GHCR). You don't need to build images manually on the server.
+GitHub Actions automatically builds and publishes Docker images to GHCR on every push. No manual builds needed on the server.
 
-**Workflow:**
-1. Push code to GitHub → GitHub Actions builds images → Images published to GHCR
-2. On server: Pull images and deploy with `docker compose pull && docker compose up -d`
-
-**On your Rocky Linux 9 server:**
+**On your server:**
 
 ```bash
 cd /opt/simtools
 
-# One-time setup: Create these files
-# 1. docker-compose.yml (copy from docker-compose.ghcr.yml in repo)
-# 2. .env (use .env.production.example as template)
-# 3. nginx.conf (copy from nginx.conf.example)
-# 4. ssl/ directory with certificates
+# One-time setup:
+# 1. docker-compose.yml  (copy from docker-compose.ghcr.yml in repo)
+# 2. .env                (use .env.production.example as template)
+# 3. nginx.conf          (copy from nginx.conf.example)
+# 4. ssl/                (directory with SSL certificates)
 
-# Deploy/Update workflow:
-docker compose pull    # Pull latest images from GHCR
-docker compose up -d   # Start/update containers
+# Authenticate with GHCR (one-time):
+echo YOUR_GITHUB_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin
 
-# That's it! No git pull, no builds!
+# Deploy / update:
+docker compose pull
+docker compose up -d
 ```
+
+### Updating
+
+```bash
+cd /opt/simtools
+docker compose pull && docker compose up -d
+```
+
+No `git pull`, no rebuilds — GitHub Actions handles everything.
 
 ### Initial Server Setup
 
-1. **Install Docker** (see `scripts/install-docker-rocky.sh`)
+1. **Install Docker** — see `scripts/install-docker-rocky.sh`
 
-2. **Create project directory:**
+2. **Create directories:**
    ```bash
    mkdir -p /opt/simtools/{ssl,logs}
    cd /opt/simtools
    ```
 
-3. **Create configuration files:**
+3. **Configure `.env`** — copy `.env.production.example` and set:
+   - `PG_PASSWORD` — `openssl rand -base64 32`
+   - `MONGO_PASSWORD` — `openssl rand -base64 32`
+   - `JWT_SECRET_KEY`
+   - `CORS_ORIGINS` — `https://YOUR_SERVER_IP`
 
-   **a) `docker-compose.yml`** - Copy from `docker-compose.ghcr.yml`:
-   ```bash
-   curl -o docker-compose.yml https://raw.githubusercontent.com/YOUR_USERNAME/SimulatorTools/dev/docker-compose.ghcr.yml
-   ```
-
-   **b) `.env`** - Use `.env.production.example` as template:
-   ```bash
-   nano .env
-   ```
-   Update these critical values:
-   - `GITHUB_REPO_OWNER` - Your GitHub username/org
-   - `PG_PASSWORD` - Generate: `openssl rand -base64 32`
-   - `MONGO_PASSWORD` - Generate: `openssl rand -base64 32`
-   - `JWT_SECRET_KEY` - Already set in example
-   - `CORS_ORIGINS` - `https://YOUR_SERVER_IP`
-   - `API_BASE_URL` - `https://YOUR_SERVER_IP/api`
-
-   Then: `chmod 600 .env`
-
-   **c) `nginx.conf`** - Copy from `nginx.conf.example`:
-   ```bash
-   curl -o nginx.conf https://raw.githubusercontent.com/YOUR_USERNAME/SimulatorTools/dev/nginx.conf.example
-   ```
-
-   **d) SSL Certificates:**
+4. **SSL certificates:**
    ```bash
    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
      -keyout ssl/privkey.pem \
      -out ssl/fullchain.pem \
      -subj "/C=US/ST=State/L=City/O=Org/CN=YOUR_SERVER_IP"
-   ```
-
-4. **Login to GitHub Container Registry:**
-   ```bash
-   echo YOUR_GITHUB_TOKEN | docker login ghcr.io -u YOUR_USERNAME --password-stdin
    ```
 
 5. **Deploy:**
@@ -117,197 +223,79 @@ docker compose up -d   # Start/update containers
    docker compose up -d
    ```
 
-### Updating the Application
-
-When you push new code to GitHub:
-
-```bash
-# On server - just pull new images and restart
-cd /opt/simtools
-docker compose pull
-docker compose up -d
-```
-
-**No git pull, no rebuilds needed!** GitHub Actions handles everything.
-
-### Development vs Production
-
-- **Development** (your machine): Use `docker-compose.yml` - builds locally
-- **Production** (server): Use `docker-compose.ghcr.yml` - pulls pre-built images from GHCR
-
-
-## Quick Start (Development)
-
-### Prerequisites
-
-- Python 3.11+
-- Docker and Docker Compose
-- Git
-
-### Local Development
-
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd SimulatorTools
-   ```
-
-2. **Set up Python environment**
-   ```bash
-   cd backend
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-
-3. **Create development environment file**
-   ```bash
-   # Create .env file with your settings
-   nano .env
-   ```
-
-4. **Run with Docker Compose**
-   ```bash
-   docker compose up -d
-   ```
-
-5. **Access the application**
-   - Frontend: http://localhost:3000
-   - Backend API: http://localhost:8000
-   - API Docs: http://localhost:8000/docs
-
-
-## API Documentation
-
-Once running, interactive API documentation is available at:
-
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+---
 
 ## Project Structure
 
 ```
 SimulatorTools/
-├── backend/                 # FastAPI backend application
+├── backend/
 │   ├── app/
-│   │   ├── models/         # SQLAlchemy models
-│   │   ├── modules/        # Business logic modules
-│   │   ├── routes/         # API route handlers
-│   │   ├── schemas/        # Pydantic schemas
-│   │   └── utils/          # Utilities (auth, config, database)
+│   │   ├── models/                  # Pydantic models
+│   │   ├── modules/
+│   │   │   └── reporter/
+│   │   │       ├── snmp/            # SNMP trap generation (TCL)
+│   │   │       ├── irp/             # IRP binary message building + validation
+│   │   │       └── polling/         # XMF/TCL file generation
+│   │   ├── routes/                  # API route handlers
+│   │   └── utils/                   # Auth, config, database helpers
+│   ├── tests/
+│   │   └── integration/             # Integration test suite
+│   │       ├── test_snmp_script_generation.py
+│   │       ├── test_irp_message_validation.py
+│   │       └── test_polling_xmf_generation.py
 │   ├── Dockerfile
 │   └── requirements.txt
-├── frontend/               # Frontend application
+├── frontend/
 │   ├── src/
+│   │   ├── components/
+│   │   │   └── Reporter/            # SNMP, IRP, Polling UI components
+│   │   ├── pages/
+│   │   └── api/services/
 │   ├── Dockerfile
 │   └── package.json
-├── scripts/                # Helper scripts
-│   ├── check_imports.py   # Import validation
-│   └── compile_backend.py # Backend compilation check
-├── docker-compose.yml      # Local development
-└── docker-compose.ghcr.yml # Production with GHCR images
+├── .github/
+│   └── workflows/
+│       └── docker-build-push.yml    # CI/CD pipeline
+├── docker-compose.yml               # Local development
+└── docker-compose.ghcr.yml          # Production (GHCR images)
 ```
-
-## Modules
-
-### Sapro Integration
-- Map management
-- Device configuration
-- SSH connectivity
-
-### CyberController
-- Session management
-- Credentials handling
-- IRP message processing
-
-### Reporter (IRP)
-- Template generation
-- Message parsing
-- Data format handling
-
-## Management Commands
-
-### Local Development
-
-```bash
-# View logs
-docker compose logs -f
-
-# View logs (specific service)
-docker compose logs -f backend
-
-# Restart services
-docker compose restart
-
-# Stop services
-docker compose down
-```
-
-### Production (on server)
-
-```bash
-# View status
-docker compose ps
-
-# View logs
-docker compose logs -f
-
-# Restart
-docker compose restart
-
-# Update images
-docker compose pull && docker compose up -d
-```
-
-## Security
-
-- JWT-based authentication
-- Role-based access control (RBAC)
-- Secure password hashing (bcrypt)
-- SSL/TLS encryption
-- Environment-based configuration
-- Docker security best practices
-
-## Development
-
-### Running Tests
-
-```bash
-cd backend
-pytest
-```
-
-### Code Quality
-
-```bash
-# Check imports
-python scripts/check_imports.py
-
-# Compile backend
-python scripts/compile_backend.py
-```
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and contribution process.
-
-## License
-
-[Specify your license here]
-
-## Support
-
-For deployment, see `docker-compose.ghcr.yml` and `.github/workflows/docker-build-push.yml`. For issues and questions, open an issue on GitHub.
-
-## Acknowledgments
-
-- FastAPI framework
-- SQLAlchemy ORM
-- Docker containerization
-- Rocky Linux community
 
 ---
 
-**Version**: 1.0  
-**Last Updated**: November 23, 2025
+## Management Commands
 
+### Development
+
+```bash
+# Backend logs
+docker compose logs -f backend
+
+# Restart backend only
+docker compose restart backend
+
+# Stop all services
+docker compose down
+```
+
+### Production
+
+```bash
+docker compose ps                        # Status
+docker compose logs -f                   # All logs
+docker compose logs -f backend           # Backend logs
+docker compose pull && docker compose up -d  # Update
+```
+
+---
+
+## Security
+
+- JWT-based authentication with role-based access control
+- Argon2 password hashing
+- SSL/TLS via Nginx reverse proxy
+- Environment-based secrets (never hardcoded)
+
+---
+
+**Last Updated**: February 2026
