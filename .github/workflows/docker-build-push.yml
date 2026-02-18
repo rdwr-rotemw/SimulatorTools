@@ -38,12 +38,14 @@ jobs:
             tcl
 
       - name: Install Python dependencies
-        run: pip install -r backend/requirements.txt
+        run: |
+          pip install -r backend/requirements.txt
+          pip install pytest
 
       - name: Run integration tests
         env:
           PYTHONPATH: ${{ github.workspace }}
-        run: pytest backend/tests/integration/ -v --tb=short
+        run: python -m pytest backend/tests/integration/ -v --tb=short
 
   build-and-push:
     needs: integration-tests
