@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     # Environment
     ENV: str = Field("development", description="Runtime environment")
     DEBUG: bool = Field(False, description="Enable debug mode")
-    ENVIRONMENT: str = Field(default="development", env="ENVIRONMENT", description="dev or prod")
+    ENVIRONMENT: str = Field(default="development", description="dev or prod")
 
     # Database type (postgresql or sqlite)
     DATABASE_TYPE: str = Field(default="postgresql", description="Database type: postgresql or sqlite")
@@ -46,7 +46,6 @@ class Settings(BaseSettings):
     # For production, set to 15 min and implement refresh tokens in auth.py
     ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(
         1440,
-        env="ACCESS_TOKEN_EXPIRE_MINUTES",
         description="Access token expiration in minutes (1440 = 24 hours for dev, use 15-60 for production)",
     )
 
@@ -64,12 +63,12 @@ class Settings(BaseSettings):
     # Sapro integration settings
     SAPRO_IP: str = Field("172.17.166.10", description="Sapro server IP (use localhost on production Sapro machine)")
     SAPRO_PORT: int = Field(2100, description="Sapro server port")
-    SAPRO_SSH_HOST: str = Field(default="172.17.166.10", env="SAPRO_SSH_HOST")
-    SAPRO_SSH_USER: str = Field(default="root", env="SAPRO_SSH_USER")
-    SAPRO_SSH_PASSWORD: str = Field(default="", env="SAPRO_SSH_PASSWORD")
+    SAPRO_SSH_HOST: str = Field(default="172.17.166.10")
+    SAPRO_SSH_USER: str = Field(default="root")
+    SAPRO_SSH_PASSWORD: str = Field(default="")
 
     # Download path for IRP/IdsDataFormat files (used by CC SSH download helpers)
-    DOWNLOAD_PATH: str = Field(default="/tmp/irp_files", env="DOWNLOAD_PATH")
+    DOWNLOAD_PATH: str = Field(default="/tmp/irp_files")
 
     # Logging
     LOG_LEVEL: str = Field("INFO", description="Logging level (DEBUG/INFO/WARNING/ERROR)")
@@ -77,11 +76,11 @@ class Settings(BaseSettings):
     # Seeding / Admin creation controls
     # In production the default is to SKIP test seeds. Use CREATE_ADMIN_ON_STARTUP
     # to create a bootstrap admin user from env variables (admin username + password/hash).
-    SKIP_TEST_SEEDS: bool = Field(True, env="SKIP_TEST_SEEDS", description="If true, do not run test user seeds on startup")
-    CREATE_ADMIN_ON_STARTUP: bool = Field(False, env="CREATE_ADMIN_ON_STARTUP", description="If true, create an admin user from ADMIN_USERNAME and ADMIN_PASSWORD or ADMIN_PASSWORD_HASH on startup")
-    ADMIN_USERNAME: Optional[str] = Field(None, env="ADMIN_USERNAME", description="Username to create as admin on startup if CREATE_ADMIN_ON_STARTUP is true")
-    ADMIN_PASSWORD: Optional[str] = Field(None, env="ADMIN_PASSWORD", description="Plaintext password for admin creation (avoid in production env, prefer ADMIN_PASSWORD_HASH)")
-    ADMIN_PASSWORD_HASH: Optional[str] = Field(None, env="ADMIN_PASSWORD_HASH", description="Argon2 hashed password for admin creation (preferred over plaintext)")
+    SKIP_TEST_SEEDS: bool = Field(True, description="If true, do not run test user seeds on startup")
+    CREATE_ADMIN_ON_STARTUP: bool = Field(False, description="If true, create an admin user from ADMIN_USERNAME and ADMIN_PASSWORD or ADMIN_PASSWORD_HASH on startup")
+    ADMIN_USERNAME: Optional[str] = Field(None, description="Username to create as admin on startup if CREATE_ADMIN_ON_STARTUP is true")
+    ADMIN_PASSWORD: Optional[str] = Field(None, description="Plaintext password for admin creation (avoid in production env, prefer ADMIN_PASSWORD_HASH)")
+    ADMIN_PASSWORD_HASH: Optional[str] = Field(None, description="Argon2 hashed password for admin creation (preferred over plaintext)")
 
     # pydantic v2 settings: load from .env by default
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
