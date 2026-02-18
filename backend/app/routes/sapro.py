@@ -882,10 +882,10 @@ def start_map(
         Success response when map is running
     """
     try:
-        # Get workspace from user - use "default" for super admin
-        workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
+        workspace = current_user.workspace
+        map_path = sapro_handler.get_full_map_path(map_name, workspace)
 
-        success, message = sapro_handler.start_map_and_wait(map_name, workspace=workspace)
+        success, message = sapro_handler.start_map_and_wait(map_path)
         if not success:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
