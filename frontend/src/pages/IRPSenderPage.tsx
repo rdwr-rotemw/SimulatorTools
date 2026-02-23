@@ -1299,10 +1299,6 @@ export const IRPSenderPage: React.FC = () => {
         moveMessageDown(index)
     }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
-    const memoizedTestMessage = React.useCallback((index: number) => {
-        handleTestMessage(index)
-    }, [])  // eslint-disable-line react-hooks/exhaustive-deps
-
     const memoizedRandomize = React.useCallback((index: number, msg: any) => {
         const randomData = generateRandomData(msg.schema, msg.data)
         updateMessage(index, randomData)
