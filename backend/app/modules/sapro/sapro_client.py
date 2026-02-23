@@ -1,12 +1,13 @@
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict
 from typing import Optional, Tuple
 
 # SSH-only communication - no API imports needed
-from backend.app.modules.sapro.src.returnTypes.enums import DeviceStatus
-from backend.app.modules.sapro.src.returnTypes.models import SaproDevice
+from backend.app.modules.sapro.enums import DeviceStatus
+from backend.app.modules.sapro.models import SaproDevice
 from backend.app.utils.config import settings
 from backend.app.utils.logger import logger
 from backend.app.utils.sapro_ssh import get_sapro_ssh_client
@@ -19,6 +20,18 @@ class SaproCommunicationHandler:
     This class wraps the lower-level `sapro` ProductLibraries module and exposes
     small helper methods suitable for dependency-injection in FastAPI.
     """
+
+    # Per-map-path locks to serialise concurrent read-modify-write operations.
+    # _map_locks_guard protects the dict itself; each entry is the actual map lock.
+    _map_locks: Dict[str, threading.Lock] = {}
+    _map_locks_guard: threading.Lock = threading.Lock()
+
+    @classmethod
+    def _get_map_lock(cls, map_path: str) -> threading.Lock:
+        with cls._map_locks_guard:
+            if map_path not in cls._map_locks:
+                cls._map_locks[map_path] = threading.Lock()
+            return cls._map_locks[map_path]
 
     def __init__(self, sapro_ip: str, sapro_port: int):
         """Initialize handler state for SSH-based Sapro communication.
@@ -1234,6 +1247,94 @@ class SaproCommunicationHandler:
         except Exception as e:
             logger.error(f"Failed to update device {device_ip}: {e}", exc_info=True)
             return False, f"Failed to update device {device_ip}: {str(e)}"
+
+    def update_device_fields(
+        self, device_ip: str, fields: Dict[str, str], map_path: str
+    ) -> Tuple[bool, str]:
+        """Update specific fields of a device in the map file.
+
+        Flow:
+        1. Stop the device
+        2. Read the map file
+        3. Find the device's <Device>...</Device> block by its Name attribute
+        4. Update the specified fields within that block using regex
+        5. Write the updated map file back
+        6. Start the device
+
+        Args:
+            device_ip: Device IP address (used to locate the device block)
+            fields: Dict of field name -> new value (e.g. {"MibFile": "/opt/sapro/cmf/new.cmf"})
+            map_path: Full map path (e.g., /opt/sapro/map/default.map)
+
+        Returns:
+            (success, message)
+        """
+        map_lock = self._get_map_lock(map_path)
+        acquired = map_lock.acquire(timeout=600)
+        if not acquired:
+            return False, f"Timed out waiting for map file lock (another operation is in progress): {map_path}"
+
+        try:
+            ssh_client = get_sapro_ssh_client()
+            _, map_name = self._extract_workspace_and_map_name(map_path)
+
+            # Step 1: Stop the device
+            logger.info(f"Stopping device {device_ip} before field update")
+            stop_ok, stop_msg = self.stop_devices_from_map(map_path, [device_ip])
+            if not stop_ok:
+                logger.warning(f"Stop device {device_ip} returned: {stop_msg}")
+
+            # Step 2: Read the map file
+            read_cmd = f"cat {map_path}"
+            success, map_content = ssh_client.execute_command(read_cmd, check_stderr=False)
+            if not success:
+                return False, f"Failed to read map file: {map_content}"
+
+            # Step 3: Find the device block and update fields
+            device_block_pattern = re.compile(r'(<Device>.*?</Device>)', re.DOTALL)
+            name_pattern = re.compile(rf'Name\s*=\s*"{re.escape(device_ip)}"')
+
+            device_found = False
+
+            def replace_block(match: re.Match) -> str:
+                nonlocal device_found
+                block = match.group(1)
+                if not name_pattern.search(block):
+                    return block
+                device_found = True
+                for field_name, new_value in fields.items():
+                    field_pattern = re.compile(rf'(\b{re.escape(field_name)}\s*=\s*")[^"]*(")')
+                    block = field_pattern.sub(rf'\g<1>{new_value}\g<2>', block)
+                return block
+
+            updated_content = device_block_pattern.sub(replace_block, map_content)
+
+            if not device_found:
+                return False, f"Device {device_ip} not found in map file {map_path}"
+
+            # Step 4: Write updated map file
+            escaped_content = updated_content.replace("'", "'\\''")
+            write_cmd = f"echo '{escaped_content}' > {map_path}"
+            success, output = ssh_client.execute_command(write_cmd, check_stderr=False)
+            if not success:
+                return False, f"Failed to write map file: {output}"
+
+            logger.info(f"Updated fields {list(fields.keys())} for device {device_ip} in map {map_name}")
+
+            # Step 5: Start the device
+            logger.info(f"Starting device {device_ip} after field update")
+            start_ok, start_msg = self.start_devices_from_map(map_path, [device_ip])
+            if not start_ok:
+                return False, f"Fields updated in map file but failed to start device: {start_msg}"
+
+            return True, f"Device {device_ip} fields updated and device started successfully"
+
+        except Exception as e:
+            logger.error(f"Failed to update device fields for {device_ip}: {e}", exc_info=True)
+            return False, f"Failed to update device fields: {str(e)}"
+
+        finally:
+            map_lock.release()
 
     def delete_device(self, device_ip: str, map_path: str) -> Tuple[bool, str]:
         """Delete a device from the specified map using SSH.

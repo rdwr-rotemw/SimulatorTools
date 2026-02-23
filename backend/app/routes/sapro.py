@@ -36,7 +36,10 @@ from backend.app.schemas.sapro_simulator import (
     SaproSimulatorCreate,
     SaproSimulatorUpdate,
     SaproSimulatorResponse,
-    SaproSimulatorBatchResponse, SaproSimulatorAddResult,
+    SaproSimulatorBatchResponse,
+    SaproSimulatorAddResult,
+    DeviceFieldsUpdateRequest,
+    DeviceFieldsUpdateResult,
 )
 from backend.app.utils.auth import require_sapro_access, require_admin
 from backend.app.utils.database import get_db, get_mongo_db
@@ -982,6 +985,71 @@ def create_map(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to create map: {exc}"
         )
+
+
+@router.post("/simulators/{simulator_ip}/update-fields", response_model=List[DeviceFieldsUpdateResult])
+def update_simulator_fields(
+        simulator_ip: str,
+        payload: DeviceFieldsUpdateRequest,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_sapro_access),
+        sapro_handler=Depends(get_sapro_handler),
+) -> List[DeviceFieldsUpdateResult]:
+    """Update specific fields of one or more simulator devices in their map files.
+
+    simulator_ip accepts a single IP or comma-separated IPs: "50.40.10.1,50.40.10.2"
+
+    Flow per simulator:
+    1. Look up its map from DB
+    2. Stop the device
+    3. Edit the device fields directly in the map file
+    4. Start the device
+
+    Returns:
+        Per-simulator result list with success/failure and message
+    """
+    simulator_ips = [ip.strip() for ip in simulator_ip.split(",") if ip.strip()]
+    fields_dict = {field.value: value for field, value in payload.fields.items()}
+    results = []
+
+    for ip in simulator_ips:
+        sim = db.get(Simulator, ip)
+        if not sim:
+            results.append(DeviceFieldsUpdateResult(
+                ip_address=ip,
+                success=False,
+                message=f"Simulator {ip} not found in DB"
+            ))
+            continue
+
+        map_name = sim.map
+        if not map_name:
+            results.append(DeviceFieldsUpdateResult(
+                ip_address=ip,
+                success=False,
+                message=f"Simulator {ip} has no map assigned"
+            ))
+            continue
+
+        if current_user.workspace == "*":
+            workspace = "*"
+        else:
+            workspace = current_user.workspace
+
+        try:
+            map_path = sapro_handler.get_full_map_path(map_name, workspace)
+        except Exception as e:
+            results.append(DeviceFieldsUpdateResult(
+                ip_address=ip,
+                success=False,
+                message=f"Failed to get map path: {e}"
+            ))
+            continue
+
+        success, message = sapro_handler.update_device_fields(ip, fields_dict, map_path)
+        results.append(DeviceFieldsUpdateResult(ip_address=ip, success=success, message=message))
+
+    return results
 
 
 @router.post("/simulators/{simulator_ip}/start", response_model=SuccessResponse)

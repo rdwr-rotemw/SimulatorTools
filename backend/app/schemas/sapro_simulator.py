@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, List
+from enum import Enum
+from typing import Optional, List, Dict
 import ipaddress
 from pydantic import BaseModel, Field, field_validator
 
@@ -76,5 +77,56 @@ class SaproSimulatorBatchResponse(BaseModel):
     successful: int = Field(..., description="Number of successfully added simulators")
     failed: int = Field(..., description="Number of failed simulator additions")
     results: List[SaproSimulatorAddResult] = Field(..., description="Individual results for each simulator")
+
+
+class DeviceField(str, Enum):
+    """Enum of editable device fields from the <Device> section of the map file."""
+    # General section
+    MULTI_HOME = "MultiHome"
+    DHCP = "DHCP"
+    SUBNET_MASK = "SubnetMask"
+    MAC_ADDRESS = "MacAddress"
+    INTERFACE = "Interface"
+    USER_DATA = "UserData"
+    TOPOLOGY_DATA = "TopologyData"
+    DISPLAY_TAG = "DisplayTag"
+    MODELING_FILE = "ModelingFile"
+    COMMON_DATA_FILE = "CommonDataFile"
+    # SNMP section
+    READ_COMMUNITY = "ReadCommunity"
+    WRITE_COMMUNITY = "WriteCommunity"
+    MIB_FILE = "MibFile"
+    AGENT_FILE = "AgentFile"
+    TRAP_MGR = "TrapMgr"
+    SNMP_STR = "SnmpStr"
+    RESPONSE_DELAY = "ResponseDelay"
+    MTU_SIZE = "MtuSize"
+    SNMP_PORT = "SnmpPort"
+    SECURITY_LEVEL = "SecurityLevel"
+    USER_NAME = "UserName"
+    # SSH section
+    SSH_USER_NAME = "SSHUserName"
+    SSH_PASSWORD = "SSHPassword"
+    SSH_SCP_BASE_DIR = "SSHSCPBaseDir"
+    SSH_VERSION = "SSHVersion"
+    SSH_FILE = "SSHFile"
+    # SOAP section
+    SOAP_HTTP_PORT = "SoapHttpPort"
+    SOAP_HTTPS_PORT = "SoapHttpsPort"
+    XML_HTTPS_TYPE = "XmlHttpsType"
+    SOAP_MOD_FILE = "SoapModFile"
+    SOAP_CONTENT_TYPE = "SoapContentType"
+
+
+class DeviceFieldsUpdateRequest(BaseModel):
+    """Request schema for updating specific device fields in the map file."""
+    fields: Dict[DeviceField, str] = Field(..., description="Map of field name to new value")
+
+
+class DeviceFieldsUpdateResult(BaseModel):
+    """Result for a single simulator in a device fields update operation."""
+    ip_address: str = Field(..., description="Simulator IP address")
+    success: bool = Field(..., description="Whether the update succeeded")
+    message: str = Field(..., description="Result message")
 
 
