@@ -2368,7 +2368,7 @@ export const IRPSenderPage: React.FC = () => {
                                         onUpdate={(data) => memoizedUpdateMessage(index, data)}
                                         onMoveUp={() => memoizedMoveUp(index)}
                                         onMoveDown={() => memoizedMoveDown(index)}
-                                        onTestMessage={() => memoizedTestMessage(index)}
+                                        onTestMessage={() => handleTestMessage(index)}
                                         onRandomize={() => memoizedRandomize(index, msg)}
                                         onValidationChange={(isValid) => memoizedValidationChange(index, isValid)}
                                         isTestingMessage={testingMessage}

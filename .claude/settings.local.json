@@ -14,7 +14,8 @@
       "Bash(git commit:*)",
       "Bash(pdftotext:*)",
       "Bash(where:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(git restore:*)"
     ]
   }
 }
