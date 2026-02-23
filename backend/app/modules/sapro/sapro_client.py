@@ -2,35 +2,14 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from enum import Enum
 from typing import List, Dict, Optional, Tuple
 
+from backend.app.modules.sapro.enums import DeviceStatus
+from backend.app.modules.sapro.models import SaproDevice
 from backend.app.utils.config import settings
 from backend.app.utils.logger import logger
 from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 from backend.app.utils.snmp import SnmpClient
-
-
-class DeviceStatus(Enum):
-    SHUTDOWN = 1
-    LOADING = 2
-    OK = 3
-    FAILED = 4
-    DISABLED = 5
-    STOPPING = 6
-
-    @staticmethod
-    def get_status(code: int) -> str:
-        return DeviceStatus(code).name
-
-
-class SaproDevice:
-    def __init__(self, ip_address: str, map: str, status: str, type: str = None, version: str = None):
-        self.ip_address = ip_address
-        self.map = map
-        self.status = status
-        self.type = type
-        self.version = version
 
 
 class SaproCommunicationHandler:
