@@ -1327,10 +1327,9 @@ class SaproCommunicationHandler:
         try:
             # First stop the device if it's running to ensure clean deletion
             stop_device_from_map_ok, stop_device_msg = self.stop_devices_from_map(map_path, [device_ip])
-            time.sleep(1) # Wait briefly to allow sapro to process the stop command before deletion
-            
             if not stop_device_from_map_ok:
-                logger.warning(f"Failed to stop device {device_ip} before deletion: {stop_device_msg}")
+                return False, f"Failed to stop device {device_ip} before deletion: {stop_device_msg}"
+            time.sleep(1)
             
             ssh_client = get_sapro_ssh_client()
 
