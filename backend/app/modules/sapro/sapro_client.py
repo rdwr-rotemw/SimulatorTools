@@ -846,16 +846,11 @@ class SaproCommunicationHandler:
                 logger.debug(f"Executing stop device command via SSH: {cmd}")
                 success, output = ssh_client.execute_command(cmd, check_stderr=False)
 
-                if not success:
+                if not success or "PACKET_EVALUATED: Device stopped." not in output:
                     messages.append(f"Failed to stop {device_ip}: {output}")
                 else:
-                    messages.append(
-                        f"Stopped {device_ip}: {output}"
-                        if output
-                        else f"Stopped {device_ip}"
-                    )
+                    messages.append(f"Stopped {device_ip}")
 
-            # Return success if all devices stopped successfully
             all_success = all("Failed" not in msg for msg in messages)
             return all_success, "\n".join(messages)
 
@@ -1233,7 +1228,7 @@ class SaproCommunicationHandler:
             logger.info(f"Deleting device {device_ip} from map {map_name}")
             success, message = self.delete_device(device_ip, map_path)
             if not success:
-                logger.warning(f"Delete device warning (continuing anyway): {message}")
+                return False, f"Failed to delete device {device_ip} before update: {message}"
 
             # Sleep briefly to allow sapro to process the deletion before re-adding
             time.sleep(4)
@@ -1267,35 +1262,24 @@ class SaproCommunicationHandler:
         Returns:
             (success, message)
         """
-        map_lock = self._get_map_lock(map_path)
-        acquired = map_lock.acquire(timeout=600)
-        if not acquired:
-            return False, f"Timed out waiting for map file lock (another operation is in progress): {map_path}"
-
         try:
             ssh_client = get_sapro_ssh_client()
-            _, map_name = self._extract_workspace_and_map_name(map_path)
 
-            # Step 1: Stop the device
-            logger.info(f"Stopping device {device_ip} before field update")
-            stop_ok, stop_msg = self.stop_devices_from_map(map_path, [device_ip])
-            if not stop_ok:
-                logger.warning(f"Stop device {device_ip} returned: {stop_msg}")
-
-            # Step 2: Read the map file
+            # Step 1: Read the map file
             read_cmd = f"cat {map_path}"
             success, map_content = ssh_client.execute_command(read_cmd, check_stderr=False)
             if not success:
                 return False, f"Failed to read map file: {map_content}"
 
-            # Step 3: Find the device block and update fields
+            # Step 2: Find the device block and patch the specified fields
             device_block_pattern = re.compile(r'(<Device>.*?</Device>)', re.DOTALL)
             name_pattern = re.compile(rf'Name\s*=\s*"{re.escape(device_ip)}"')
 
             device_found = False
+            patched_xml = None
 
             def replace_block(match: re.Match) -> str:
-                nonlocal device_found
+                nonlocal device_found, patched_xml
                 block = match.group(1)
                 if not name_pattern.search(block):
                     return block
@@ -1303,36 +1287,31 @@ class SaproCommunicationHandler:
                 for field_name, new_value in fields.items():
                     field_pattern = re.compile(rf'(\b{re.escape(field_name)}\s*=\s*")[^"]*(")')
                     block = field_pattern.sub(rf'\g<1>{new_value}\g<2>', block)
+                patched_xml = block
                 return block
 
-            updated_content = device_block_pattern.sub(replace_block, map_content)
+            device_block_pattern.sub(replace_block, map_content)
 
             if not device_found:
                 return False, f"Device {device_ip} not found in map file {map_path}"
 
-            # Step 4: Write updated map file
-            escaped_content = updated_content.replace("'", "'\\''")
-            write_cmd = f"echo '{escaped_content}' > {map_path}"
-            success, output = ssh_client.execute_command(write_cmd, check_stderr=False)
-            if not success:
-                return False, f"Failed to write map file: {output}"
+            # Extract the <DeviceMap ...> opening tag from the map file to use as wrapper
+            devmap_header_match = re.search(r'(<DeviceMap[\s\S]*?>)', map_content)
+            if not devmap_header_match:
+                return False, f"Could not find <DeviceMap> header in map file {map_path}"
+            devmap_header = devmap_header_match.group(1)
 
-            logger.info(f"Updated fields {list(fields.keys())} for device {device_ip} in map {map_name}")
+            # Build full device XML as adddev -f expects a complete <DeviceMap> file
+            full_device_xml = f"{devmap_header}\n{patched_xml}\n</DeviceMap>"
 
-            # Step 5: Start the device
-            logger.info(f"Starting device {device_ip} after field update")
-            start_ok, start_msg = self.start_devices_from_map(map_path, [device_ip])
-            if not start_ok:
-                return False, f"Fields updated in map file but failed to start device: {start_msg}"
+            logger.info(f"Patched fields {list(fields.keys())} for device {device_ip}, running update_device")
 
-            return True, f"Device {device_ip} fields updated and device started successfully"
+            # Step 3: Delete and recreate the device with the patched XML so Sapro loads it into memory
+            return self.update_device(device_ip, full_device_xml, map_path)
 
         except Exception as e:
             logger.error(f"Failed to update device fields for {device_ip}: {e}", exc_info=True)
             return False, f"Failed to update device fields: {str(e)}"
-
-        finally:
-            map_lock.release()
 
     def delete_device(self, device_ip: str, map_path: str) -> Tuple[bool, str]:
         """Delete a device from the specified map using SSH.
