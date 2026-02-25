@@ -1100,6 +1100,54 @@ def start_simulator(
                             detail=f"Failed to start simulator: {exc}")
 
 
+@router.post("/simulators/{simulator_ip}/restart", response_model=SuccessResponse)
+def restart_simulator(
+        simulator_ip: str,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_sapro_access),
+        sapro_handler=Depends(get_sapro_handler)
+) -> SuccessResponse:
+    """Restart a simulator device.
+
+    Retrieves the simulator's map from DB and calls Sapro to restart the device.
+    """
+    sim = db.get(Simulator, simulator_ip)
+    if not sim:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Simulator not found")
+
+    map_name = sim.map or ""
+    if not map_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
+
+    # Get workspace for restarting device
+    # Super admin (workspace='*') should auto-detect workspace from map
+    if current_user.workspace == "*":
+        workspace = "*"  # Auto-detect in get_full_map_path
+    else:
+        workspace = current_user.workspace
+
+    try:
+        # Get full map path first
+        try:
+            map_path = sapro_handler.get_full_map_path(map_name, workspace)
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to get map path: {e}"
+            )
+
+        success, message = sapro_handler.restart_devices_from_map(map_path, [simulator_ip])
+        if not success:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
+
+        return SuccessResponse(message=f"Simulator {simulator_ip} restarted successfully",
+                               data={"ip_address": simulator_ip})
+    except Exception as exc:
+        logger.exception("Failed to restart simulator %s: %s", simulator_ip, exc)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Failed to restart simulator: {exc}")
+
+
 @router.post("/simulators/{simulator_ip}/stop", response_model=SuccessResponse)
 def stop_simulator(
         simulator_ip: str,

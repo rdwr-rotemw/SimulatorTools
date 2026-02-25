@@ -823,6 +823,44 @@ class SaproCommunicationHandler:
             logger.error(f"Failed to start device(s): {e}", exc_info=True)
             return False, f"Failed to start device(s): {e}"
 
+    def restart_devices_from_map(
+        self, map_full_path: str, devices_names: list
+    ) -> Tuple[bool, str]:
+        """Restart one or more devices listed in a map using SSH commands.
+
+        Args:
+            map_full_path: Full path to map file (e.g., /opt/sapro/projects/dev/map/DP.map)
+            devices_names: List of device names/IPs to restart
+
+        Returns:
+            (success, combined_messages)
+        """
+        try:
+            ssh_client = get_sapro_ssh_client()
+            messages = []
+
+            for device_ip in devices_names:
+                cmd = f"/opt/sapro/bin/sapcnsl -p {self.sapro_port} -m {map_full_path} -c restartdev -d {device_ip}"
+
+                logger.debug(f"Executing restart device command via SSH: {cmd}")
+                success, output = ssh_client.execute_command(cmd, check_stderr=False)
+
+                if not success:
+                    messages.append(f"Failed to restart {device_ip}: {output}")
+                else:
+                    messages.append(
+                        f"Restarted {device_ip}: {output}"
+                        if output
+                        else f"Restarted {device_ip}"
+                    )
+
+            all_success = all("Failed" not in msg for msg in messages)
+            return all_success, "\n".join(messages)
+
+        except Exception as e:
+            logger.error(f"Failed to restart device(s): {e}", exc_info=True)
+            return False, f"Failed to restart device(s): {e}"
+
     def stop_devices_from_map(
         self, map_full_path: str, devices_names: list
     ) -> Tuple[bool, str]:
