@@ -31,6 +31,7 @@ import AddIcon from '@mui/icons-material/Add'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import DeleteIcon from '@mui/icons-material/Delete'
+import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import CasinoIcon from '@mui/icons-material/Casino'
 import LoopIcon from '@mui/icons-material/Loop'
 import StopIcon from '@mui/icons-material/Stop'
@@ -756,6 +757,7 @@ interface SortableMessageProps {
     isLast: boolean
     onToggle: () => void
     onDelete: () => void
+    onDuplicate: () => void
     onUpdate: (data: Record<string, any>) => void
     onMoveUp: () => void
     onMoveDown: () => void
@@ -777,6 +779,7 @@ const SortableMessage: React.FC<SortableMessageProps> = React.memo(({
                                                                         isLast,
                                                                         onToggle,
                                                                         onDelete,
+                                                                        onDuplicate,
                                                                         onUpdate,
                                                                         onMoveUp,
                                                                         onMoveDown,
@@ -804,7 +807,7 @@ const SortableMessage: React.FC<SortableMessageProps> = React.memo(({
     }
 
     return (
-        <Paper ref={setNodeRef} style={style} sx={{marginBottom: 2, padding: 2}}>
+        <Paper ref={setNodeRef} style={style} id={`irp-message-${index}`} sx={{marginBottom: 2, padding: 2}}>
             <Box sx={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2}}>
                 {/* Left side: Drag handle + Up/Down arrows */}
                 <Box sx={{display: 'flex', alignItems: 'center', gap: 0.5}}>
@@ -853,6 +856,11 @@ const SortableMessage: React.FC<SortableMessageProps> = React.memo(({
                             disabled={!isValid || isTestingMessage}
                         >
                             <ScienceIcon fontSize="small"/>
+                        </IconButton>
+                    </Tooltip>
+                    <Tooltip title="Duplicate message">
+                        <IconButton onClick={onDuplicate} size="small">
+                            <ContentCopyIcon fontSize="small"/>
                         </IconButton>
                     </Tooltip>
                     <IconButton onClick={onDelete} color="error">
@@ -940,6 +948,7 @@ export const IRPSenderPage: React.FC = () => {
     const [isSending, setIsSending] = useState(false);
     const [currentMessage, setCurrentMessage] = useState(0);
     const [totalMessages, setTotalMessages] = useState(0);
+    const [scrollToMessageIndex, setScrollToMessageIndex] = useState<number | null>(null);
 
     // Template management state
     const [saveDialogOpen, setSaveDialogOpen] = useState(false)
@@ -1150,6 +1159,20 @@ export const IRPSenderPage: React.FC = () => {
         setExpandedMessages((prev) => prev.filter((i) => i !== index).map((i) => (i > index ? i - 1 : i)))
     }
 
+    const duplicateMessage = (index: number) => {
+        setMessages((prev) => {
+            const clone = JSON.parse(JSON.stringify(prev[index]))
+            const next = [...prev]
+            next.splice(index + 1, 0, clone)
+            return next
+        })
+        setExpandedMessages((prev) => {
+            const shifted = prev.map((i) => (i > index ? i + 1 : i))
+            return [...shifted, index + 1]
+        })
+        setScrollToMessageIndex(index + 1)
+    }
+
     const toggleMessage = (index: number) => {
         setExpandedMessages((prev) => (prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]))
     }
@@ -1285,6 +1308,10 @@ export const IRPSenderPage: React.FC = () => {
 
     const memoizedDeleteMessage = React.useCallback((index: number) => {
         deleteMessage(index)
+    }, [])
+
+    const memoizedDuplicateMessage = React.useCallback((index: number) => {
+        duplicateMessage(index)
     }, [])
 
     const memoizedUpdateMessage = React.useCallback((index: number, data: Record<string, any>) => {
@@ -1958,6 +1985,14 @@ export const IRPSenderPage: React.FC = () => {
         }
     }
 
+    // Scroll to newly duplicated message
+    useEffect(() => {
+        if (scrollToMessageIndex === null) return
+        const el = document.getElementById(`irp-message-${scrollToMessageIndex}`)
+        if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'})
+        setScrollToMessageIndex(null)
+    }, [scrollToMessageIndex])
+
     // Auto-save form state to localStorage on every change
     useEffect(() => {
         if (messages.length > 0) {
@@ -2361,6 +2396,7 @@ export const IRPSenderPage: React.FC = () => {
                                         isLast={index === messages.length - 1}
                                         onToggle={() => memoizedToggleMessage(index)}
                                         onDelete={() => memoizedDeleteMessage(index)}
+                                        onDuplicate={() => memoizedDuplicateMessage(index)}
                                         onUpdate={(data) => memoizedUpdateMessage(index, data)}
                                         onMoveUp={() => memoizedMoveUp(index)}
                                         onMoveDown={() => memoizedMoveDown(index)}

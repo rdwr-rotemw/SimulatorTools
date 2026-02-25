@@ -35,6 +35,7 @@ import UploadIcon from '@mui/icons-material/Upload';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import DeleteIcon from '@mui/icons-material/Delete';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import LoopIcon from '@mui/icons-material/Loop';
 import StopIcon from '@mui/icons-material/Stop';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
@@ -85,6 +86,7 @@ export const SNMPPage: React.FC = () => {
     }]);
     const [expandedTraps, setExpandedTraps] = useState<number[]>([0]);
     const [errors, setErrors] = useState<{ [key: number]: SNMPFormErrors }>({});
+    const [scrollToTrapIndex, setScrollToTrapIndex] = useState<number | null>(null);
     const [snackbar, setSnackbar] = useState<{
         open: boolean;
         message: string;
@@ -259,6 +261,24 @@ export const SNMPPage: React.FC = () => {
             newErrors[newIndex] = errors[ki];
         });
         setErrors(newErrors);
+    };
+
+    const duplicateTrap = (index: number) => {
+        const clone = JSON.parse(JSON.stringify(traps[index]));
+        const newTraps = [...traps];
+        newTraps.splice(index + 1, 0, clone);
+        setTraps(newTraps);
+        setExpandedTraps((prev) => {
+            const shifted = prev.map((i) => (i > index ? i + 1 : i));
+            return [...shifted, index + 1];
+        });
+        const newErrors: { [key: number]: SNMPFormErrors } = {};
+        Object.keys(errors).forEach((k) => {
+            const ki = parseInt(k, 10);
+            newErrors[ki > index ? ki + 1 : ki] = errors[ki];
+        });
+        setErrors(newErrors);
+        setScrollToTrapIndex(index + 1);
     };
 
     const updateTrap = (index: number, updated: SNMPTrap) => {
@@ -536,6 +556,14 @@ export const SNMPPage: React.FC = () => {
     useEffect(() => {
         sendTrapsOnceRef.current = sendTrapsOnce;
     }, [selectedDestinationPort, selectedSimulators, traps]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Scroll to newly duplicated trap
+    useEffect(() => {
+        if (scrollToTrapIndex === null) return;
+        const el = document.getElementById(`snmp-trap-${scrollToTrapIndex}`);
+        if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
+        setScrollToTrapIndex(null);
+    }, [scrollToTrapIndex]);
 
     // Auto-save form state to localStorage on every change
     useEffect(() => {
@@ -884,7 +912,7 @@ export const SNMPPage: React.FC = () => {
                 {/* Scrollable Trap List */}
                 <Box sx={{flex: 1, overflow: 'auto', padding: 3}}>
                     {traps.map((t, index) => (
-                        <Paper key={index} sx={{marginBottom: 2, padding: 2}}>
+                        <Paper key={index} id={`snmp-trap-${index}`} sx={{marginBottom: 2, padding: 2}}>
                             <Box sx={{
                                 display: 'flex',
                                 justifyContent: 'space-between',
@@ -907,6 +935,11 @@ export const SNMPPage: React.FC = () => {
                                     <IconButton onClick={() => toggleTrap(index)}>
                                         {expandedTraps.includes(index) ? <ExpandLessIcon/> : <ExpandMoreIcon/>}
                                     </IconButton>
+                                    <Tooltip title="Duplicate trap">
+                                        <IconButton onClick={() => duplicateTrap(index)} size="small">
+                                            <ContentCopyIcon fontSize="small"/>
+                                        </IconButton>
+                                    </Tooltip>
                                     <IconButton onClick={() => deleteTrap(index)} color="error">
                                         <DeleteIcon/>
                                     </IconButton>
