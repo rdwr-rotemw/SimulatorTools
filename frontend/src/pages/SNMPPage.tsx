@@ -921,6 +921,9 @@ export const SNMPPage: React.FC = () => {
                             }}>
                                 <Typography variant="h6">Trap {index + 1}</Typography>
                                 <Box>
+                                    <IconButton onClick={() => toggleTrap(index)}>
+                                        {expandedTraps.includes(index) ? <ExpandLessIcon/> : <ExpandMoreIcon/>}
+                                    </IconButton>
                                     <Tooltip title={t.randomFields?.length === ALL_RANDOM_FIELDS.length ? 'Clear All Random' : 'Randomize All Fields'}>
                                         <IconButton
                                             onClick={() => updateTrap(index, {
@@ -932,9 +935,6 @@ export const SNMPPage: React.FC = () => {
                                             <CasinoIcon/>
                                         </IconButton>
                                     </Tooltip>
-                                    <IconButton onClick={() => toggleTrap(index)}>
-                                        {expandedTraps.includes(index) ? <ExpandLessIcon/> : <ExpandMoreIcon/>}
-                                    </IconButton>
                                     <Tooltip title="Duplicate trap">
                                         <IconButton onClick={() => duplicateTrap(index)} size="small">
                                             <ContentCopyIcon fontSize="small"/>
