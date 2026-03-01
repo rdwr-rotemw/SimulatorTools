@@ -40,6 +40,8 @@ from backend.app.schemas.sapro_simulator import (
     SaproSimulatorAddResult,
     DeviceFieldsUpdateRequest,
     DeviceFieldsUpdateResult,
+    DeviceFieldsResponse,
+    BulkActionResult,
 )
 from backend.app.utils.auth import require_sapro_access, require_admin
 from backend.app.utils.database import get_db, get_mongo_db
@@ -794,54 +796,52 @@ def update_simulator(
     return SaproSimulatorResponse.model_validate(sim)
 
 
-@router.delete("/simulators/{simulator_ip}", response_model=SuccessResponse)
+@router.delete("/simulators/{simulator_ip}", response_model=List[BulkActionResult])
 def delete_simulator(
         simulator_ip: str,
         db: Session = Depends(get_db),
         current_user=Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler),
-) -> SuccessResponse:
-    """Delete a Sapro-managed simulator from Sapro and the DB.
+) -> List[BulkActionResult]:
+    """Delete one or more Sapro-managed simulators from Sapro and the DB.
 
-    Calls the Sapro handler to remove the device from the map/server first,
-    then removes the record from the local DB on success.
+    simulator_ip accepts a single IP or comma-separated IPs: "50.40.10.1,50.40.10.2"
     """
-    sim = db.get(Simulator, simulator_ip)
-    if not sim:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Simulator not found")
+    simulator_ips = [ip.strip() for ip in simulator_ip.split(",") if ip.strip()]
+    workspace = current_user.workspace
+    results = []
 
-    # Get map name from simulator
-    map_name = sim.map or ""
-    if not map_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
+    for ip in simulator_ips:
+        sim = db.get(Simulator, ip)
+        if not sim:
+            results.append(BulkActionResult(ip_address=ip, success=False, message="Simulator not found"))
+            continue
 
-    # Get workspace for device deletion
-    # Super admin (workspace='*') should auto-detect workspace from map
-    if current_user.workspace == "*":
-        workspace = "*"  # Auto-detect in get_full_map_path
-    else:
-        workspace = current_user.workspace
+        map_name = sim.map or ""
+        if not map_name:
+            results.append(BulkActionResult(ip_address=ip, success=False, message="Simulator has no map assigned"))
+            continue
 
-    # Get full map path once at route level
-    try:
-        map_path = sapro_handler.get_full_map_path(map_name, workspace)
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get map path: {e}")
+        try:
+            map_path = sapro_handler.get_full_map_path(map_name, workspace)
+        except Exception as e:
+            results.append(BulkActionResult(ip_address=ip, success=False, message=f"Failed to get map path: {e}"))
+            continue
 
-    # Attempt to delete from Sapro first
-    success, message = sapro_handler.delete_device(simulator_ip, map_path)
-    if not success:
-        # Sapro deletion failed
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
+        success, message = sapro_handler.delete_device(ip, map_path)
+        if not success:
+            results.append(BulkActionResult(ip_address=ip, success=False, message=message))
+            continue
 
-    try:
-        db.delete(sim)
-        db.commit()
-    except SQLAlchemyError as exc:
-        db.rollback()
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        try:
+            db.delete(sim)
+            db.commit()
+            results.append(BulkActionResult(ip_address=ip, success=True, message="Deleted successfully"))
+        except SQLAlchemyError as exc:
+            db.rollback()
+            results.append(BulkActionResult(ip_address=ip, success=False, message=str(exc)))
 
-    return SuccessResponse(message="Simulator deleted successfully", data={"ip_address": simulator_ip})
+    return results
 
 
 @router.get("/maps", response_model=List[Dict[str, str]])
@@ -987,6 +987,37 @@ def create_map(
         )
 
 
+@router.get("/simulators/{simulator_ip}/fields", response_model=DeviceFieldsResponse)
+def get_simulator_fields(
+        simulator_ip: str,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_sapro_access),
+        sapro_handler=Depends(get_sapro_handler),
+) -> DeviceFieldsResponse:
+    """Read the current field values for a simulator device from its map file."""
+    sim = db.get(Simulator, simulator_ip)
+    if not sim:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Simulator {simulator_ip} not found")
+
+    map_name = sim.map
+    if not map_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Simulator {simulator_ip} has no map assigned")
+
+    workspace = current_user.workspace
+
+    try:
+        map_path = sapro_handler.get_full_map_path(map_name, workspace)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get map path: {e}")
+
+    try:
+        fields = sapro_handler.get_device_fields(simulator_ip, map_path)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+    return DeviceFieldsResponse(fields=fields)
+
+
 @router.post("/simulators/{simulator_ip}/update-fields", response_model=List[DeviceFieldsUpdateResult])
 def update_simulator_fields(
         simulator_ip: str,
@@ -1052,52 +1083,42 @@ def update_simulator_fields(
     return results
 
 
-@router.post("/simulators/{simulator_ip}/start", response_model=SuccessResponse)
+@router.post("/simulators/{simulator_ip}/start", response_model=List[BulkActionResult])
 def start_simulator(
         simulator_ip: str,
         db: Session = Depends(get_db),
         current_user: User = Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler)
-) -> SuccessResponse:
-    """Start a simulator device.
+) -> List[BulkActionResult]:
+    """Start one or more simulator devices.
 
-    Retrieves the simulator's map from DB and calls Sapro to start the device.
+    simulator_ip accepts a single IP or comma-separated IPs: "50.40.10.1,50.40.10.2"
     """
-    sim = db.get(Simulator, simulator_ip)
-    if not sim:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Simulator not found")
+    simulator_ips = [ip.strip() for ip in simulator_ip.split(",") if ip.strip()]
+    workspace = current_user.workspace
+    results = []
 
-    map_name = sim.map or ""
-    if not map_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
+    for ip in simulator_ips:
+        sim = db.get(Simulator, ip)
+        if not sim:
+            results.append(BulkActionResult(ip_address=ip, success=False, message="Simulator not found"))
+            continue
 
-    # Get workspace for starting device
-    # Super admin (workspace='*') should auto-detect workspace from map
-    if current_user.workspace == "*":
-        workspace = "*"  # Auto-detect in get_full_map_path
-    else:
-        workspace = current_user.workspace
+        map_name = sim.map or ""
+        if not map_name:
+            results.append(BulkActionResult(ip_address=ip, success=False, message="Simulator has no map assigned"))
+            continue
 
-    try:
-        # Get full map path first
         try:
             map_path = sapro_handler.get_full_map_path(map_name, workspace)
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to get map path: {e}"
-            )
+            results.append(BulkActionResult(ip_address=ip, success=False, message=f"Failed to get map path: {e}"))
+            continue
 
-        success, message = sapro_handler.start_devices_from_map(map_path, [simulator_ip])
-        if not success:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
+        success, message = sapro_handler.start_devices_from_map(map_path, [ip])
+        results.append(BulkActionResult(ip_address=ip, success=success, message=message))
 
-        return SuccessResponse(message=f"Simulator {simulator_ip} started successfully",
-                               data={"ip_address": simulator_ip})
-    except Exception as exc:
-        logger.exception("Failed to start simulator %s: %s", simulator_ip, exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Failed to start simulator: {exc}")
+    return results
 
 
 @router.post("/simulators/{simulator_ip}/restart", response_model=SuccessResponse)
@@ -1148,52 +1169,42 @@ def restart_simulator(
                             detail=f"Failed to restart simulator: {exc}")
 
 
-@router.post("/simulators/{simulator_ip}/stop", response_model=SuccessResponse)
+@router.post("/simulators/{simulator_ip}/stop", response_model=List[BulkActionResult])
 def stop_simulator(
         simulator_ip: str,
         db: Session = Depends(get_db),
         current_user: User = Depends(require_sapro_access),
         sapro_handler=Depends(get_sapro_handler)
-) -> SuccessResponse:
-    """Stop a simulator device.
+) -> List[BulkActionResult]:
+    """Stop one or more simulator devices.
 
-    Retrieves the simulator's map from DB and calls Sapro to stop the device.
+    simulator_ip accepts a single IP or comma-separated IPs: "50.40.10.1,50.40.10.2"
     """
-    sim = db.get(Simulator, simulator_ip)
-    if not sim:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Simulator not found")
+    simulator_ips = [ip.strip() for ip in simulator_ip.split(",") if ip.strip()]
+    workspace = current_user.workspace
+    results = []
 
-    map_name = sim.map or ""
-    if not map_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
+    for ip in simulator_ips:
+        sim = db.get(Simulator, ip)
+        if not sim:
+            results.append(BulkActionResult(ip_address=ip, success=False, message="Simulator not found"))
+            continue
 
-    # Get workspace for stopping device
-    # Super admin (workspace='*') should auto-detect workspace from map
-    if current_user.workspace == "*":
-        workspace = "*"  # Auto-detect in get_full_map_path
-    else:
-        workspace = current_user.workspace
+        map_name = sim.map or ""
+        if not map_name:
+            results.append(BulkActionResult(ip_address=ip, success=False, message="Simulator has no map assigned"))
+            continue
 
-    try:
-        # Get full map path first
         try:
             map_path = sapro_handler.get_full_map_path(map_name, workspace)
         except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to get map path: {e}"
-            )
+            results.append(BulkActionResult(ip_address=ip, success=False, message=f"Failed to get map path: {e}"))
+            continue
 
-        success, message = sapro_handler.stop_devices_from_map(map_path, [simulator_ip])
-        if not success:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
+        success, message = sapro_handler.stop_devices_from_map(map_path, [ip])
+        results.append(BulkActionResult(ip_address=ip, success=success, message=message))
 
-        return SuccessResponse(message=f"Simulator {simulator_ip} stopped successfully",
-                               data={"ip_address": simulator_ip})
-    except Exception as exc:
-        logger.exception("Failed to stop simulator %s: %s", simulator_ip, exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Failed to stop simulator: {exc}")
+    return results
 
 
 # ----------------------------- Device Template Endpoints -----------------------------

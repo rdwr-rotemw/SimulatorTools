@@ -41,20 +41,33 @@ type FieldStates = Record<string, FieldState>;
 const defaultFieldValues: Record<string, string> = {
   // DeviceMap
   'device_map.release': '11.0',
+  'device_map.description': '',
+  'device_map.user_data': '',
+  'device_map.setup_file': '',
+  'device_map.interface': '',
+  'device_map.separator': '',
   'device_map.start_interface_num': '0',
+  'device_map.username': '',
 
   // General
   'general.name': '<ip>',
   'general.multi_home': '1',
   'general.dhcp': '0',
   'general.subnet_mask': '255.255.255.0',
+  'general.mac_address': '',
+  'general.interface': '',
+  'general.user_data': '',
+  'general.topology_data': '',
+  'general.display_tag': '',
   'general.modeling_file': '/opt/sapro/tcl/varchange.tcl',
+  'general.common_data_file': '',
 
   // SNMP
   'snmp.read_community': 'public',
   'snmp.write_community': 'public',
   'snmp.mib_file': '/opt/sapro/cmf/DP_10_6.cmf',
   'snmp.agent_file': '/opt/sapro/var/DPX_10-6.var',
+  'snmp.trap_mgr': '',
   'snmp.snmp_str': 'V1V2V3',
   'snmp.response_delay': '0',
   'snmp.mtu_size': '1500',
@@ -66,6 +79,8 @@ const defaultFieldValues: Record<string, string> = {
   'soap.soap_http_port': '80',
   'soap.soap_https_port': '443',
   'soap.xml_https_type': '2',
+  'soap.soap_mod_file': '',
+  'soap.soap_content_type': '',
 
   // SSH
   'ssh.ssh_user_name': 'radware',
@@ -112,10 +127,14 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
   // Initialize field states - Create mode (immediate, no file dependency)
   useEffect(() => {
     if (open && !template) {
-      // Create mode: reset form immediately
+      // Create mode: reset form with all default fields pre-enabled
       setName('');
       setDescription('');
-      setFields({});
+      const initialFields: FieldStates = {};
+      Object.entries(defaultFieldValues).forEach(([path, value]) => {
+        initialFields[path] = { enabled: true, value };
+      });
+      setFields(initialFields);
     }
   }, [open, template]);
 
@@ -210,6 +229,7 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
         setIsFilesLoaded(true);
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   const loadFileLists = async () => {
@@ -290,7 +310,7 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
 
     // Add device_map level fields
     Object.entries(fields).forEach(([path, state]) => {
-      if (!state.enabled || !state.value) return;
+      if (!state.enabled) return;
 
       const parts = path.split('.');
       if (parts[0] === 'device_map' && parts.length === 2) {
@@ -299,8 +319,8 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
     });
 
     // Initialize device object if needed
-    const hasDeviceFields = Object.keys(fields).some(path =>
-      ['general', 'snmp', 'soap', 'ssh'].includes(path.split('.')[0])
+    const hasDeviceFields = Object.entries(fields).some(([path, state]) =>
+      state.enabled && ['general', 'snmp', 'soap', 'ssh'].includes(path.split('.')[0])
     );
 
     if (hasDeviceFields) {

@@ -1279,6 +1279,49 @@ class SaproCommunicationHandler:
             logger.error(f"Failed to update device {device_ip}: {e}", exc_info=True)
             return False, f"Failed to update device {device_ip}: {str(e)}"
 
+    def get_device_fields(self, device_ip: str, map_path: str) -> Dict[str, str]:
+        """Read current field values for a device from the map file.
+
+        Args:
+            device_ip: Device IP address (used to locate the device block by Name attribute)
+            map_path: Full map path (e.g., /opt/sapro/map/default.map)
+
+        Returns:
+            Dict of field_name -> current_value for all fields in the device block
+
+        Raises:
+            Exception: If map file cannot be read or device not found
+        """
+        ssh_client = get_sapro_ssh_client()
+
+        read_cmd = f"cat {map_path}"
+        success, map_content = ssh_client.execute_command(read_cmd, check_stderr=False)
+        if not success:
+            raise Exception(f"Failed to read map file: {map_content}")
+
+        device_block_pattern = re.compile(r'(<Device>.*?</Device>)', re.DOTALL)
+        name_pattern = re.compile(rf'Name\s*=\s*"{re.escape(device_ip)}"')
+
+        device_block = None
+        for match in device_block_pattern.finditer(map_content):
+            block = match.group(1)
+            if name_pattern.search(block):
+                device_block = block
+                break
+
+        if not device_block:
+            raise Exception(f"Device {device_ip} not found in map file {map_path}")
+
+        field_pattern = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
+        fields = {}
+        for m in field_pattern.finditer(device_block):
+            field_name = m.group(1)
+            field_value = m.group(2)
+            if field_name != "Name":
+                fields[field_name] = field_value
+
+        return fields
+
     def update_device_fields(
         self, device_ip: str, fields: Dict[str, str], map_path: str
     ) -> Tuple[bool, str]:

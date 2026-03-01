@@ -16,9 +16,15 @@ import {
 import AddIcon from '@mui/icons-material/Add';
 import SearchIcon from '@mui/icons-material/Search';
 import RefreshIcon from '@mui/icons-material/Refresh';
+import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import StopIcon from '@mui/icons-material/Stop';
+import EditIcon from '@mui/icons-material/Edit';
+import DeleteIcon from '@mui/icons-material/Delete';
+import ClearIcon from '@mui/icons-material/Clear';
 import Layout from '../components/common/Layout';
 import {SimulatorTable} from '../components/simulator/SimulatorTable';
 import SimulatorFormDialog from '../components/simulator/SimulatorFormDialog';
+import EditFieldsDialog from '../components/simulator/EditFieldsDialog';
 import useSimulatorStore from '../store/simulatorStore';
 import {Simulator, SimulatorCreate, SimulatorUpdate} from '../types/simulator.types';
 import apiClient from '../api/client';
@@ -33,6 +39,11 @@ interface SnackbarState {
 export const SimulatorsPage: React.FC = () => {
   const [formOpen, setFormOpen] = useState(false);
   const [selectedSimulator, setSelectedSimulator] = useState<Simulator | null>(null);
+  const [editFieldsOpen, setEditFieldsOpen] = useState(false);
+  const [simulatorsToEditFields, setSimulatorsToEditFields] = useState<Simulator[]>([]);
+  const [selectedIps, setSelectedIps] = useState<Set<string>>(new Set());
+  const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false);
+  const [bulkActionLoading, setBulkActionLoading] = useState<'start' | 'stop' | 'delete' | null>(null);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [simulatorToDelete, setSimulatorToDelete] = useState<string | null>(null);
   const [snackbar, setSnackbar] = useState<SnackbarState>({ open: false, message: '', severity: 'success' });
@@ -92,8 +103,60 @@ export const SimulatorsPage: React.FC = () => {
   };
 
   const handleEdit = (sim: Simulator) => {
-    setSelectedSimulator(sim);
-    setFormOpen(true);
+    setSimulatorsToEditFields([sim]);
+    setEditFieldsOpen(true);
+  };
+
+  const handleBulkEdit = () => {
+    const selected = simulators.filter(s => selectedIps.has(s.ip_address));
+    setSimulatorsToEditFields(selected);
+    setEditFieldsOpen(true);
+  };
+
+  const handleBulkStart = async () => {
+    const ipsParam = Array.from(selectedIps).join(',');
+    setBulkActionLoading('start');
+    try {
+      await apiClient.post(`/simulators/${ipsParam}/start`);
+      setSnackbar({ open: true, message: `Started ${selectedIps.size} simulator(s)`, severity: 'success' });
+      setSelectedIps(new Set());
+      await fetchSimulators();
+    } catch (err: any) {
+      setSnackbar({ open: true, message: err?.response?.data?.detail || 'Failed to start simulators', severity: 'error' });
+    } finally {
+      setBulkActionLoading(null);
+    }
+  };
+
+  const handleBulkStop = async () => {
+    const ipsParam = Array.from(selectedIps).join(',');
+    setBulkActionLoading('stop');
+    try {
+      await apiClient.post(`/simulators/${ipsParam}/stop`);
+      setSnackbar({ open: true, message: `Stopped ${selectedIps.size} simulator(s)`, severity: 'success' });
+      setSelectedIps(new Set());
+      await fetchSimulators();
+    } catch (err: any) {
+      setSnackbar({ open: true, message: err?.response?.data?.detail || 'Failed to stop simulators', severity: 'error' });
+    } finally {
+      setBulkActionLoading(null);
+    }
+  };
+
+  const handleBulkDeleteConfirm = async () => {
+    const ipsParam = Array.from(selectedIps).join(',');
+    setBulkDeleteDialogOpen(false);
+    setBulkActionLoading('delete');
+    try {
+      await apiClient.delete(`/simulators/${ipsParam}`);
+      setSnackbar({ open: true, message: `Deleted ${selectedIps.size} simulator(s)`, severity: 'success' });
+      setSelectedIps(new Set());
+      await fetchSimulators();
+    } catch (err: any) {
+      setSnackbar({ open: true, message: err?.response?.data?.detail || 'Failed to delete simulators', severity: 'error' });
+    } finally {
+      setBulkActionLoading(null);
+    }
   };
 
   const handleDeleteClick = (ip: string) => {
@@ -418,6 +481,68 @@ export const SimulatorsPage: React.FC = () => {
           }}
         />
 
+        {/* Bulk action toolbar */}
+        {selectedIps.size > 0 && (
+          <Box sx={{
+            display: 'flex', alignItems: 'center', gap: 1, mb: 1, px: 2, py: 1,
+            backgroundColor: 'primary.50', border: '1px solid', borderColor: 'primary.200',
+            borderRadius: 1, flexWrap: 'wrap',
+          }}>
+            <Typography variant="body2" sx={{ fontWeight: 600, mr: 1 }}>
+              {selectedIps.size} selected
+            </Typography>
+            <Button
+              size="small"
+              variant="contained"
+              color="success"
+              startIcon={bulkActionLoading === 'start' ? <CircularProgress size={14} color="inherit" /> : <PlayArrowIcon />}
+              onClick={handleBulkStart}
+              disabled={bulkActionLoading !== null}
+            >
+              Start
+            </Button>
+            <Button
+              size="small"
+              variant="contained"
+              color="error"
+              startIcon={bulkActionLoading === 'stop' ? <CircularProgress size={14} color="inherit" /> : <StopIcon />}
+              onClick={handleBulkStop}
+              disabled={bulkActionLoading !== null}
+            >
+              Stop
+            </Button>
+            <Button
+              size="small"
+              variant="contained"
+              color="primary"
+              startIcon={<EditIcon />}
+              onClick={handleBulkEdit}
+              disabled={bulkActionLoading !== null}
+            >
+              Edit Fields
+            </Button>
+            <Button
+              size="small"
+              variant="contained"
+              color="error"
+              startIcon={bulkActionLoading === 'delete' ? <CircularProgress size={14} color="inherit" /> : <DeleteIcon />}
+              onClick={() => setBulkDeleteDialogOpen(true)}
+              disabled={bulkActionLoading !== null}
+            >
+              Delete
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<ClearIcon />}
+              onClick={() => setSelectedIps(new Set())}
+              sx={{ ml: 'auto' }}
+            >
+              Clear
+            </Button>
+          </Box>
+        )}
+
         <SimulatorTable
           simulators={sortedSimulators}
           onEdit={handleEdit}
@@ -430,6 +555,8 @@ export const SimulatorsPage: React.FC = () => {
           sortBy={sortBy}
           sortOrder={sortOrder}
           onSort={handleSort}
+          selectedIps={selectedIps}
+          onSelectionChange={setSelectedIps}
         />
 
         <SimulatorFormDialog
@@ -438,6 +565,17 @@ export const SimulatorsPage: React.FC = () => {
           simulators={simulators}
           onClose={handleFormClose}
           onSubmit={handleFormSubmit}
+        />
+
+        <EditFieldsDialog
+          open={editFieldsOpen}
+          simulators={simulatorsToEditFields}
+          onClose={() => { setEditFieldsOpen(false); setSimulatorsToEditFields([]); }}
+          onSuccess={() => {
+            setSnackbar({ open: true, message: 'Simulator fields updated successfully', severity: 'success' });
+            setSelectedIps(new Set());
+            fetchSimulators();
+          }}
         />
 
         <Dialog open={deleteDialogOpen} onClose={handleDeleteCancel}>
@@ -611,6 +749,21 @@ export const SimulatorsPage: React.FC = () => {
               </Typography>
             </Box>
           </DialogContent>
+        </Dialog>
+
+        {/* Bulk Delete Confirmation Dialog */}
+        <Dialog open={bulkDeleteDialogOpen} onClose={() => setBulkDeleteDialogOpen(false)}>
+          <DialogTitle>Confirm Bulk Delete</DialogTitle>
+          <DialogContent>
+            <DialogContentText>
+              Are you sure you want to delete <strong>{selectedIps.size}</strong> simulator(s)?
+              This action cannot be undone.
+            </DialogContentText>
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setBulkDeleteDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleBulkDeleteConfirm} color="error" variant="contained">Delete</Button>
+          </DialogActions>
         </Dialog>
 
         <Snackbar open={snackbar.open} autoHideDuration={6000} onClose={handleSnackbarClose}>

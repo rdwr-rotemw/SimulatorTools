@@ -118,6 +118,18 @@ class DeviceField(str, Enum):
     SOAP_CONTENT_TYPE = "SoapContentType"
 
 
+class BulkActionResult(BaseModel):
+    """Result for a single simulator in a bulk start/stop/delete operation."""
+    ip_address: str = Field(..., description="Simulator IP address")
+    success: bool = Field(..., description="Whether the operation succeeded")
+    message: str = Field(..., description="Result message")
+
+
+class DeviceFieldsResponse(BaseModel):
+    """Response schema for reading current device fields from the map file."""
+    fields: Dict[str, str] = Field(..., description="Map of field name to current value")
+
+
 class DeviceFieldsUpdateRequest(BaseModel):
     """Request schema for updating specific device fields in the map file."""
     fields: Dict[DeviceField, str] = Field(..., description="Map of field name to new value")

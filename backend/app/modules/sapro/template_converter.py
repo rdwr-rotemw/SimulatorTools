@@ -164,7 +164,7 @@ def json_to_xml(template_dict: Dict[str, Any]) -> str:
                 text = t
 
         # Inline if small attribute count
-        inline = len(attrs) <= 4
+        inline = len(attrs) <= 2
 
         # No children and no text -> self-closing
         if not children and not text:
