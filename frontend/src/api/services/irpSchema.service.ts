@@ -40,6 +40,9 @@ interface IRPSendPayload {
   message_data: {
     messages: Array<Record<string, any>>
   }
+  per_simulator_data?: Record<string, {
+    messages: Array<Record<string, any>>
+  }>
 }
 
 // New: IRP template interfaces

@@ -122,6 +122,10 @@ class IRPSendPayload(BaseModel):
     mongo_id: str = Field(..., description="MongoDB _id of the IRP schema to use")
     map: Optional[str] = Field(None, description="Simulator workspace map folder (not used by IRP, kept for API consistency)")
     message_data: Dict[str, Any] = Field(..., description="Message data to populate the template")
+    per_simulator_data: Optional[Dict[str, Dict[str, Any]]] = Field(
+        None,
+        description="Per-simulator message data. Maps simulator IP to its message_data. When provided, overrides message_data for each simulator."
+    )
 
 
 class IRPTemplatePayload(BaseModel):

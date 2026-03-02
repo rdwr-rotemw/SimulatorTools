@@ -3,7 +3,7 @@ IRP Loop model for storing user loop configurations in MongoDB.
 """
 from datetime import datetime
 from typing import List, Dict, Optional, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 
 class IRPLoopConfig(BaseModel):
@@ -17,12 +17,24 @@ class IRPLoopConfig(BaseModel):
     batches_sent: int = Field(default=0, description="Number of batches sent so far")
     failed_batches: int = Field(default=0, description="Number of batches that failed")
     last_error: Optional[str] = Field(None, description="Most recent error message")
-    simulator: str = Field(..., description="Target simulator IP")
+    simulator: Optional[str] = Field(None, description="Target simulator IP (backward compat)")
+    simulators: List[str] = Field(default_factory=list, description="Target simulator IPs")
     destination_port: str = Field(..., description="Destination port IP")
     schema_id: str = Field(..., description="MongoDB ObjectId of IRP schema")
     messages: List[Dict[str, Any]] = Field(..., description="IRP message configurations")
+    per_simulator_messages: Optional[Dict[str, List[Dict[str, Any]]]] = Field(
+        None,
+        description="Per-simulator messages. Maps simulator IP to its messages list."
+    )
     created_at: datetime = Field(default_factory=lambda: datetime.now())
     updated_at: datetime = Field(default_factory=lambda: datetime.now())
+
+    @validator("simulators", always=True)
+    def normalize_simulators(cls, v, values):
+        """If simulators is empty but simulator is set, normalize to list."""
+        if not v and values.get("simulator"):
+            return [values["simulator"]]
+        return v
 
 
 class IRPLoopStatus(BaseModel):
@@ -37,6 +49,7 @@ class IRPLoopStatus(BaseModel):
     elapsed_seconds: int = 0
     remaining_seconds: int = 0
     simulator: Optional[str] = None
+    simulators: List[str] = []
     destination_port: Optional[str] = None
 
 
@@ -45,7 +58,21 @@ class IRPLoopStartRequest(BaseModel):
     cc_ip: str
     loop_delay: int = Field(..., ge=1, description="Delay between sends (minimum 1 second)")
     loop_timeout: int = Field(..., ge=1, description="Total loop duration (minimum 1 second)")
-    simulator: str = Field(..., description="Target simulator IP")
+    simulator: Optional[str] = Field(None, description="Target simulator IP (backward compat)")
+    simulators: Optional[List[str]] = Field(None, description="Target simulator IPs")
     destination_port: str
     schema_id: str = Field(..., description="MongoDB ObjectId of IRP schema")
     messages: List[Dict[str, Any]] = Field(..., min_items=1)
+    per_simulator_messages: Optional[Dict[str, List[Dict[str, Any]]]] = Field(
+        None,
+        description="Per-simulator messages. Maps simulator IP to its messages list."
+    )
+
+    @validator("simulators", always=True)
+    def normalize_simulators(cls, v, values):
+        """Accept either simulator (str) or simulators (list). Normalize to list."""
+        if v:
+            return v
+        if values.get("simulator"):
+            return [values["simulator"]]
+        raise ValueError("Either 'simulator' or 'simulators' must be provided")

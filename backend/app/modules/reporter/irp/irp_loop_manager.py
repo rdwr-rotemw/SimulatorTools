@@ -193,6 +193,7 @@ class IRPLoopManager:
             elapsed_seconds=elapsed_seconds,
             remaining_seconds=remaining_seconds,
             simulator=config.simulator,
+            simulators=config.simulators,
             destination_port=config.destination_port
         )
 
@@ -286,7 +287,7 @@ class IRPLoopManager:
 
     async def _send_batch(self, config: IRPLoopConfig) -> None:
         """
-        Send one batch of IRP messages.
+        Send one batch of IRP messages to all simulators.
 
         Args:
             config: Loop configuration
@@ -299,34 +300,38 @@ class IRPLoopManager:
                 config.schema_id
             )
 
-            # Build payload for send_irp_messages
-            payload = {
-                "messages": config.messages
-            }
-
-            # Call the synchronous send_irp_messages function in a thread
-            results = await asyncio.to_thread(
-                send_irp_messages,
-                schema_obj,
-                payload,
-                config.simulator,           # from_ip
-                config.destination_port     # to_ip
-            )
-
-            # Check results - send_irp_messages returns dict of {message_name: (success, msg)} or (False, error) on exception
             has_failures = False
             error_messages = []
 
-            if isinstance(results, tuple):
-                # Exception occurred - results is (False, error_msg)
-                has_failures = True
-                error_messages.append(results[1])
-            elif isinstance(results, dict):
-                # Check each message result
-                for message_name, (success, msg) in results.items():
-                    if not success:
-                        has_failures = True
-                        error_messages.append(f"{message_name}: {msg}")
+            # Send to each simulator
+            for simulator_ip in config.simulators:
+                # Use per-simulator messages if available, else shared messages
+                sim_messages = config.messages
+                if config.per_simulator_messages and simulator_ip in config.per_simulator_messages:
+                    sim_messages = config.per_simulator_messages[simulator_ip]
+
+                payload = {"messages": sim_messages}
+
+                # Call the synchronous send_irp_messages function in a thread
+                results = await asyncio.to_thread(
+                    send_irp_messages,
+                    schema_obj,
+                    payload,
+                    simulator_ip,               # from_ip
+                    config.destination_port      # to_ip
+                )
+
+                # Check results - send_irp_messages returns dict of {message_name: (success, msg)} or (False, error) on exception
+                if isinstance(results, tuple):
+                    # Exception occurred - results is (False, error_msg)
+                    has_failures = True
+                    error_messages.append(f"{simulator_ip}: {results[1]}")
+                elif isinstance(results, dict):
+                    # Check each message result
+                    for message_name, (success, msg) in results.items():
+                        if not success:
+                            has_failures = True
+                            error_messages.append(f"{simulator_ip}/{message_name}: {msg}")
 
             if has_failures:
                 # Some or all messages failed

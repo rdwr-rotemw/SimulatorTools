@@ -890,8 +890,10 @@ async def send_irp_messages_endpoint(
             # Process all simulators in parallel (IRP doesn't need different maps)
             async def send_to_simulator(sim_ip: str):
                 try:
+                    # Use per-simulator data if available, else shared message_data
+                    sim_message_data = payload.per_simulator_data[sim_ip] if payload.per_simulator_data and sim_ip in payload.per_simulator_data else payload.message_data
                     return send_irp_messages(
-                        schema_obj, payload.message_data, sim_ip, cc_ip
+                        schema_obj, sim_message_data, sim_ip, cc_ip
                     )
                 except Exception as e:
                     logger.error(f"Error sending to {sim_ip}: {e}")
@@ -974,8 +976,9 @@ async def send_irp_messages_endpoint(
                 )
         else:
             # Single simulator (backward compatible)
+            sim_message_data = payload.per_simulator_data[simulator_ip] if payload.per_simulator_data and simulator_ip in payload.per_simulator_data else payload.message_data
             results = send_irp_messages(
-                schema_obj, payload.message_data, simulator_ip, cc_ip
+                schema_obj, sim_message_data, simulator_ip, cc_ip
             )
             if isinstance(results, dict):
                 # The results dict contains per-message tuples/lists like: { name: [bool_success, message_or_error] }
@@ -1054,6 +1057,7 @@ async def send_irp_messages_stream_endpoint(
 
     try:
         message_data = payload.message_data
+        per_simulator_data = payload.per_simulator_data
 
         # Check if multiple simulators (comma-separated)
         if "," in simulator_ip:
@@ -1067,8 +1071,9 @@ async def send_irp_messages_stream_endpoint(
                     # Create async generators for each simulator
                     async def simulator_generator(sim_ip: str):
                         try:
+                            sim_message_data = per_simulator_data[sim_ip] if per_simulator_data and sim_ip in per_simulator_data else message_data
                             for progress in send_irp_messages_with_progress(
-                                schema_obj, message_data, sim_ip, cc_ip
+                                schema_obj, sim_message_data, sim_ip, cc_ip
                             ):
                                 # Add simulator_ip to progress event
                                 progress["simulator_ip"] = sim_ip
@@ -1128,8 +1133,9 @@ async def send_irp_messages_stream_endpoint(
             # Single simulator (backward compatible)
             async def event_generator():
                 try:
+                    sim_message_data = per_simulator_data[simulator_ip] if per_simulator_data and simulator_ip in per_simulator_data else message_data
                     for progress in send_irp_messages_with_progress(
-                        schema_obj, message_data, simulator_ip, cc_ip
+                        schema_obj, sim_message_data, simulator_ip, cc_ip
                     ):
                         # Add simulator_ip for consistency
                         progress["simulator_ip"] = simulator_ip
@@ -2092,9 +2098,11 @@ async def start_irp_loop(
             loop_delay=request.loop_delay,
             loop_timeout=request.loop_timeout,
             simulator=request.simulator,
+            simulators=request.simulators,
             destination_port=request.destination_port,
             schema_id=request.schema_id,
             messages=request.messages,
+            per_simulator_messages=request.per_simulator_messages,
         )
 
         # Start the loop

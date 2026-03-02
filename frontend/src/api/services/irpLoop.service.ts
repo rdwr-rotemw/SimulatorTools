@@ -11,6 +11,7 @@ export interface IRPLoopStatus {
   elapsed_seconds: number;
   remaining_seconds: number;
   simulator: string | null;
+  simulators: string[];
   destination_port: string | null;
 }
 
@@ -18,10 +19,12 @@ export interface IRPLoopStartRequest {
   cc_ip: string;
   loop_delay: number;
   loop_timeout: number;
-  simulator: string;
+  simulator?: string;
+  simulators?: string[];
   destination_port: string;
   schema_id: string;
   messages: any[];
+  per_simulator_messages?: Record<string, any[]>;
 }
 
 export interface IRPLoopStartResponse {

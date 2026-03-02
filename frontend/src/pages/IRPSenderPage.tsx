@@ -981,6 +981,7 @@ export const IRPSenderPage: React.FC = () => {
     // Attack-ID configuration dialog state
     const [attackIdDialogOpen, setAttackIdDialogOpen] = useState(false)
     const [pendingAction, setPendingAction] = useState<'send' | 'loop' | null>(null)
+    const [pendingLoopPerSimMessages, setPendingLoopPerSimMessages] = useState<Record<string, any[]> | null>(null)
 
     // PCAP Import state
     const [pcapDialogOpen, setPcapDialogOpen] = useState(false)
@@ -1047,8 +1048,8 @@ export const IRPSenderPage: React.FC = () => {
                 setRemainingSeconds(status.remaining_seconds);
 
                 // If loop is active, restore UI state
-                if (status.is_active && status.simulator) {
-                    setSelectedSimulators([status.simulator]);
+                if (status.is_active && (status.simulators?.length || status.simulator)) {
+                    setSelectedSimulators(status.simulators?.length ? status.simulators : [status.simulator!]);
                     if (status.destination_port) {
                         setSelectedDestinationPort(status.destination_port);
                     }
@@ -2026,16 +2027,10 @@ export const IRPSenderPage: React.FC = () => {
             return
         }
 
-        // For now, only support single simulator loops
-        if (selectedSimulators.length > 1) {
-            setSnackbar({open: true, message: 'Backend loops currently support single simulator only', severity: 'error'})
-            return
-        }
-
         setLoopDialogOpen(false)
 
         try {
-            // Format messages for backend
+            // Format messages for backend (shared messages for all simulators)
             const formattedMessages = messages.map((msg: any) => {
                 const backendData = transformFromAttackId(msg.data, msg.originalSchema)
                 return {
@@ -2050,10 +2045,11 @@ export const IRPSenderPage: React.FC = () => {
                 cc_ip: currentCC!,
                 loop_delay: loopDelay,
                 loop_timeout: loopTimeout,
-                simulator: selectedSimulators[0],
+                simulators: selectedSimulators,
                 destination_port: selectedDestinationPort,
                 schema_id: schemaId!,
                 messages: formattedMessages,
+                per_simulator_messages: pendingLoopPerSimMessages || undefined,
             });
 
             // Update local state
@@ -2067,8 +2063,9 @@ export const IRPSenderPage: React.FC = () => {
                 severity: 'success'
             });
 
-            // Clear pending action
+            // Clear pending state
             setPendingAction(null);
+            setPendingLoopPerSimMessages(null);
 
         } catch (error: any) {
             const errorMsg = error?.response?.data?.detail || error?.message || 'Failed to start loop';
@@ -2130,18 +2127,16 @@ export const IRPSenderPage: React.FC = () => {
         setAttackIdDialogOpen(false);
 
         if (pendingAction === 'send') {
-            // Send to each simulator with configured attack-IDs
+            // Send to all simulators in one request with per-simulator data
             setIsSending(true);
             setCurrentMessage(0);
             setTotalMessages(messages.length * selectedSimulators.length);
 
             try {
-                let successCount = 0;
-                let failedCount = 0;
-
+                // Build per-simulator data with custom attack IDs
+                const perSimulatorData: Record<string, { messages: Array<Record<string, any>> }> = {};
                 for (const simulatorIp of selectedSimulators) {
                     const simMessages = attackIdConfig[simulatorIp];
-
                     const formattedMessages = simMessages.map((msg: any) => {
                         const backendData = transformFromAttackId(msg.data, msg.originalSchema)
                         return {
@@ -2150,42 +2145,34 @@ export const IRPSenderPage: React.FC = () => {
                             ...backendData,
                         }
                     })
-
-                    const payload = {
-                        mongo_id: schemaId!,
-                        map: '',
-                        message_data: {
-                            messages: formattedMessages,
-                        },
-                    }
-
-                    try {
-                        // Capture current counts for progress display
-                        const currentSuccessCount = successCount;
-                        const currentFailedCount = failedCount;
-                        const messageCount = simMessages.length;
-
-                        await irpSchemaService.sendMessagesWithProgress(
-                            selectedDestinationPort,
-                            [simulatorIp],
-                            payload,
-                            (current, total, messageName, status) => {
-                                setCurrentMessage(currentSuccessCount + currentFailedCount + current);
-                            },
-                            // eslint-disable-next-line no-loop-func
-                            (simSuccessCount, simFailedCount, totalCount) => {
-                                successCount += simSuccessCount;
-                                failedCount += simFailedCount;
-                            },
-                            // eslint-disable-next-line no-loop-func
-                            (error) => {
-                                failedCount += messageCount;
-                            }
-                        );
-                    } catch (error) {
-                        failedCount += simMessages.length;
-                    }
+                    perSimulatorData[simulatorIp] = { messages: formattedMessages };
                 }
+
+                const payload = {
+                    mongo_id: schemaId!,
+                    map: '',
+                    message_data: { messages: [] },
+                    per_simulator_data: perSimulatorData,
+                }
+
+                let successCount = 0;
+                let failedCount = 0;
+
+                await irpSchemaService.sendMessagesWithProgress(
+                    selectedDestinationPort,
+                    selectedSimulators,
+                    payload,
+                    (current, total, messageName, status) => {
+                        setCurrentMessage(current);
+                    },
+                    (totalSuccess, totalFailed, totalCount) => {
+                        successCount = totalSuccess;
+                        failedCount = totalFailed;
+                    },
+                    (error) => {
+                        // Error handled in catch
+                    }
+                );
 
                 if (failedCount === 0) {
                     setSnackbar({
@@ -2217,10 +2204,24 @@ export const IRPSenderPage: React.FC = () => {
                 setCurrentMessage(0);
                 setTotalMessages(0);
             }
-            setPendingAction(null);
+        } else if (pendingAction === 'loop') {
+            // Build per-simulator messages for loop, then open loop dialog
+            const perSimulatorMessages: Record<string, any[]> = {};
+            for (const simulatorIp of selectedSimulators) {
+                const simMessages = attackIdConfig[simulatorIp];
+                perSimulatorMessages[simulatorIp] = simMessages.map((msg: any) => {
+                    const backendData = transformFromAttackId(msg.data, msg.originalSchema)
+                    return {
+                        message: msg.messageName,
+                        pause: msg.pause || 0,
+                        ...backendData,
+                    }
+                });
+            }
+            setPendingLoopPerSimMessages(perSimulatorMessages);
+            setLoopDialogOpen(true);
         }
-        // Note: Multi-simulator loops are not supported (see handleStartLoop validation)
-        // so the pendingAction === 'loop' branch is not needed
+        setPendingAction(null);
     }
 
     return (
