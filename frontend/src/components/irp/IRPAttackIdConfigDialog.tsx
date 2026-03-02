@@ -64,16 +64,16 @@ const IRPAttackIdConfigDialog: React.FC<IRPAttackIdConfigDialogProps> = ({
   const [currentTab, setCurrentTab] = useState(0);
   const [modifiedMessages, setModifiedMessages] = useState<Record<string, IRPMessage[]>>({});
 
-  // Generate a random attack-ID
+  // Generate a random attack-ID (cnt-time format, both must fit uint32 max 4294967295)
   const generateRandomAttackId = (): string => {
     const prefix = Math.floor(Math.random() * 9000) + 100; // 100-9999
-    const suffix = Math.floor(Math.random() * 9000000000) + 1000000000; // 10 digits
+    const suffix = Math.floor(Math.random() * 4294967295) + 1; // 1 to uint32 max
     return `${prefix}-${suffix}`;
   };
 
-  // Generate random time (for Message 1)
+  // Generate random time (for Message 1, must fit uint32 max 4294967295)
   const generateRandomTime = (): string => {
-    return Math.floor(Math.random() * 9000000000 + 1000000000).toString();
+    return (Math.floor(Math.random() * 4294967295) + 1).toString();
   };
 
   // Check if message is Message 1 (has separate attack-id and time fields)
