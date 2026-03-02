@@ -27,6 +27,7 @@ import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import { Simulator } from '../../types/simulator.types';
 import apiClient from '../../api/client';
+import activityTracker from '../../utils/activityTracker';
 
 interface EditFieldsDialogProps {
   open: boolean;
@@ -239,6 +240,7 @@ export const EditFieldsDialog: React.FC<EditFieldsDialogProps> = ({ open, simula
     setStreamDone(false);
     setStreamSummary(null);
 
+    activityTracker.pauseTracking();
     try {
       const baseURL = apiClient.defaults.baseURL || '';
       const url = `${baseURL}/simulators/${ipsParam}/update-fields/stream`;
@@ -313,6 +315,8 @@ export const EditFieldsDialog: React.FC<EditFieldsDialogProps> = ({ open, simula
       setStreamDone(false);
       setProgressItems([]);
       alert(err?.message || 'Failed to update fields');
+    } finally {
+      activityTracker.resumeTracking();
     }
   };
 

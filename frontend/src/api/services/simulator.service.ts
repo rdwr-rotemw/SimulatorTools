@@ -19,8 +19,8 @@ export const simulatorService = {
       map: data.map,
       template_id: (data as any).template_id || data.template_id,
     };
-    // Extended timeout: create_device verifies device is running (up to 90s)
-    const response = await apiClient.post<Simulator>('/simulators', payload, { timeout: 120000 });
+    // Extended timeout: map lock can hold up to 10 min + create_device verifies device is running
+    const response = await apiClient.post<Simulator>('/simulators', payload, { timeout: 660000 });
     return response.data;
   },
 
@@ -123,13 +123,14 @@ export const simulatorService = {
     if (data.map !== undefined) payload.map = data.map;
     if (data.template_id !== undefined) payload.template_id = data.template_id;
 
-    // Extended timeout: update_device (delete + create) verifies device is running (up to 90s)
-    const response = await apiClient.put<Simulator>(`/simulators/${ip}`, payload, { timeout: 120000 });
+    // Extended timeout: map lock can hold up to 10 min + update_device verifies device is running
+    const response = await apiClient.put<Simulator>(`/simulators/${ip}`, payload, { timeout: 660000 });
     return response.data;
   },
 
   deleteSimulator: async (ip: string): Promise<void> => {
-    await apiClient.delete(`/simulators/${ip}`);
+    // Extended timeout: map lock can hold up to 10 min
+    await apiClient.delete(`/simulators/${ip}`, { timeout: 660000 });
     return;
   },
 };

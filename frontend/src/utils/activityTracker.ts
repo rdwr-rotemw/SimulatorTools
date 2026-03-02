@@ -6,6 +6,7 @@ class ActivityTracker {
   private checkInterval: NodeJS.Timeout | null = null;
   private eventListeners: Array<{ event: string; handler: () => void }> = [];
   private onInactivityCallback: (() => void) | null = null;
+  private pauseCount = 0;
 
   /**
    * Update the last activity timestamp
@@ -51,6 +52,7 @@ class ActivityTracker {
 
     // Start interval to check for inactivity
     this.checkInterval = setInterval(() => {
+      if (this.pauseCount > 0) return;
       if (this.isInactive() && this.onInactivityCallback) {
         this.onInactivityCallback();
       }
@@ -75,6 +77,27 @@ class ActivityTracker {
 
     // Clear callback
     this.onInactivityCallback = null;
+  }
+
+  /**
+   * Pause inactivity checks (e.g. during long-running Sapro operations).
+   * Uses a counter so nested pause/resume calls are safe.
+   */
+  pauseTracking(): void {
+    this.pauseCount++;
+  }
+
+  /**
+   * Resume inactivity checks after a paused operation completes.
+   * Resets the activity timestamp so the timeout restarts from now.
+   */
+  resumeTracking(): void {
+    if (this.pauseCount > 0) {
+      this.pauseCount--;
+    }
+    if (this.pauseCount === 0) {
+      this.updateActivity();
+    }
   }
 
   /**

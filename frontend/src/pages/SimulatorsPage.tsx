@@ -28,6 +28,7 @@ import EditFieldsDialog from '../components/simulator/EditFieldsDialog';
 import useSimulatorStore from '../store/simulatorStore';
 import {Simulator, SimulatorCreate, SimulatorUpdate} from '../types/simulator.types';
 import apiClient from '../api/client';
+import activityTracker from '../utils/activityTracker';
 import { simulatorService } from '../api/services/simulator.service';
 
 interface SnackbarState {
@@ -116,14 +117,16 @@ export const SimulatorsPage: React.FC = () => {
   const handleBulkStart = async () => {
     const ipsParam = Array.from(selectedIps).join(',');
     setBulkActionLoading('start');
+    activityTracker.pauseTracking();
     try {
-      await apiClient.post(`/simulators/${ipsParam}/start`);
+      await apiClient.post(`/simulators/${ipsParam}/start`, {}, { timeout: 660000 });
       setSnackbar({ open: true, message: `Started ${selectedIps.size} simulator(s)`, severity: 'success' });
       setSelectedIps(new Set());
       await fetchSimulators();
     } catch (err: any) {
       setSnackbar({ open: true, message: err?.response?.data?.detail || 'Failed to start simulators', severity: 'error' });
     } finally {
+      activityTracker.resumeTracking();
       setBulkActionLoading(null);
     }
   };
@@ -131,14 +134,16 @@ export const SimulatorsPage: React.FC = () => {
   const handleBulkStop = async () => {
     const ipsParam = Array.from(selectedIps).join(',');
     setBulkActionLoading('stop');
+    activityTracker.pauseTracking();
     try {
-      await apiClient.post(`/simulators/${ipsParam}/stop`);
+      await apiClient.post(`/simulators/${ipsParam}/stop`, {}, { timeout: 660000 });
       setSnackbar({ open: true, message: `Stopped ${selectedIps.size} simulator(s)`, severity: 'success' });
       setSelectedIps(new Set());
       await fetchSimulators();
     } catch (err: any) {
       setSnackbar({ open: true, message: err?.response?.data?.detail || 'Failed to stop simulators', severity: 'error' });
     } finally {
+      activityTracker.resumeTracking();
       setBulkActionLoading(null);
     }
   };
@@ -147,14 +152,16 @@ export const SimulatorsPage: React.FC = () => {
     const ipsParam = Array.from(selectedIps).join(',');
     setBulkDeleteDialogOpen(false);
     setBulkActionLoading('delete');
+    activityTracker.pauseTracking();
     try {
-      await apiClient.delete(`/simulators/${ipsParam}`);
+      await apiClient.delete(`/simulators/${ipsParam}`, { timeout: 660000 });
       setSnackbar({ open: true, message: `Deleted ${selectedIps.size} simulator(s)`, severity: 'success' });
       setSelectedIps(new Set());
       await fetchSimulators();
     } catch (err: any) {
       setSnackbar({ open: true, message: err?.response?.data?.detail || 'Failed to delete simulators', severity: 'error' });
     } finally {
+      activityTracker.resumeTracking();
       setBulkActionLoading(null);
     }
   };
@@ -172,6 +179,7 @@ export const SimulatorsPage: React.FC = () => {
     const ipToDelete = simulatorToDelete;
     setSimulatorToDelete(null);
 
+    activityTracker.pauseTracking();
     try {
       await deleteSimulator(ipToDelete);
       setSnackbar({ open: true, message: 'Simulator deleted', severity: 'success' });
@@ -183,13 +191,16 @@ export const SimulatorsPage: React.FC = () => {
         message: err?.response?.data?.detail || err?.message || 'Failed to delete simulator',
         severity: 'error'
       });
+    } finally {
+      activityTracker.resumeTracking();
     }
   };
 
   const handleStart = async (ip: string) => {
     setStartLoading(ip);
+    activityTracker.pauseTracking();
     try {
-      await apiClient.post(`/simulators/${ip}/start`);
+      await apiClient.post(`/simulators/${ip}/start`, {}, { timeout: 660000 });
       setSnackbar({ open: true, message: `Simulator ${ip} started successfully`, severity: 'success' });
       // Refresh simulator list to update status
       await fetchSimulators();
@@ -201,14 +212,16 @@ export const SimulatorsPage: React.FC = () => {
         severity: 'error'
       });
     } finally {
+      activityTracker.resumeTracking();
       setStartLoading(null);
     }
   };
 
   const handleStop = async (ip: string) => {
     setStopLoading(ip);
+    activityTracker.pauseTracking();
     try {
-      await apiClient.post(`/simulators/${ip}/stop`);
+      await apiClient.post(`/simulators/${ip}/stop`, {}, { timeout: 660000 });
       setSnackbar({ open: true, message: `Simulator ${ip} stopped successfully`, severity: 'success' });
       // Refresh simulator list to update status
       await fetchSimulators();
@@ -220,15 +233,17 @@ export const SimulatorsPage: React.FC = () => {
         severity: 'error'
       });
     } finally {
+      activityTracker.resumeTracking();
       setStopLoading(null);
     }
   };
 
   const handleMapStart = async (mapName: string) => {
     setMapStartLoading(mapName);
+    activityTracker.pauseTracking();
     try {
-      // Extended timeout for map start (5 minutes + buffer)
-      await apiClient.post(`/maps/${mapName}/start`, {}, { timeout: 330000 }); // 5.5 minutes
+      // Extended timeout: map lock can hold up to 10 min + map start operation
+      await apiClient.post(`/maps/${mapName}/start`, {}, { timeout: 660000 });
       setSnackbar({ open: true, message: `Map ${mapName} started successfully`, severity: 'success' });
       await fetchMaps();
     } catch (err: any) {
@@ -239,15 +254,17 @@ export const SimulatorsPage: React.FC = () => {
         severity: 'error'
       });
     } finally {
+      activityTracker.resumeTracking();
       setMapStartLoading(null);
     }
   };
 
   const handleMapStop = async (mapName: string) => {
     setMapStopLoading(mapName);
+    activityTracker.pauseTracking();
     try {
-      // Extended timeout for map stop (5 minutes + buffer)
-      await apiClient.post(`/maps/${mapName}/stop`, {}, { timeout: 330000 }); // 5.5 minutes
+      // Extended timeout: map lock can hold up to 10 min + map stop operation
+      await apiClient.post(`/maps/${mapName}/stop`, {}, { timeout: 660000 });
       setSnackbar({ open: true, message: `Map ${mapName} stopped successfully`, severity: 'success' });
       await fetchMaps();
     } catch (err: any) {
@@ -258,6 +275,7 @@ export const SimulatorsPage: React.FC = () => {
         severity: 'error'
       });
     } finally {
+      activityTracker.resumeTracking();
       setMapStopLoading(null);
     }
   };
@@ -288,6 +306,7 @@ export const SimulatorsPage: React.FC = () => {
   };
 
   const handleFormSubmit = async (data: SimulatorCreate | SimulatorUpdate) => {
+    activityTracker.pauseTracking();
     try {
       if (selectedSimulator) {
         await updateSimulator(selectedSimulator.ip_address, data as SimulatorUpdate);
@@ -367,6 +386,8 @@ export const SimulatorsPage: React.FC = () => {
       // DO NOT close form on error - let user retry or cancel
       // setFormOpen(false);  // ← Remove this
       // setSelectedSimulator(null);  // ← Remove this
+    } finally {
+      activityTracker.resumeTracking();
     }
   };
 
