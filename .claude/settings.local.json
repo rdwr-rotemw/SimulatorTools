@@ -15,7 +15,8 @@
       "Bash(pdftotext:*)",
       "Bash(where:*)",
       "Bash(wc:*)",
-      "Bash(git restore:*)"
+      "Bash(git restore:*)",
+      "Bash(xargs grep -l \"pytest\\\\|unittest\")"
     ]
   }
 }

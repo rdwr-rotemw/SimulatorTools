@@ -532,6 +532,9 @@ async def add_cc_simulator_stream(
         # Parse IP range
         ip_list = parse_ip_range(payload.management_ip)
 
+        # Release DB connection before long-running streaming operations
+        db.close()
+
         async def event_generator():
             successful = 0
             failed = 0
@@ -664,6 +667,9 @@ async def add_cc_simulator_stream_with_status(
 
         # Parse IP range
         ip_list = parse_ip_range(payload.management_ip)
+
+        # Release DB connection before long-running streaming operations
+        db.close()
 
         async def event_generator():
             successful = 0
@@ -814,6 +820,9 @@ async def add_devices_batch(
         # Parse IP range
         ip_list = parse_ip_range(payload.management_ip)
 
+        # Release DB connection before long-running streaming operations
+        db.close()
+
         async def event_generator():
             successful = 0
             failed = 0
@@ -913,6 +922,9 @@ async def validate_devices_batch(
 
         # Parse IP range
         ip_list = parse_ip_range(payload.management_ip)
+
+        # Release DB connection before long-running streaming operations
+        db.close()
 
         async def event_generator():
             import asyncio

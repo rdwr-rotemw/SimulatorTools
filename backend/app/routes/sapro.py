@@ -46,6 +46,7 @@ from backend.app.schemas.sapro_simulator import (
 from backend.app.utils.auth import require_sapro_access, require_admin
 from backend.app.utils.database import get_db, get_mongo_db
 from backend.app.utils.logger import logger
+from backend.app.utils.map_lock import get_map_lock_manager
 from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 from backend.utils.ip_utils import parse_ip_range
 
@@ -263,6 +264,13 @@ def create_simulator(
     # 1) Parse IP range
     ip_list = parse_ip_range(payload.ip_address)
 
+    lock_mgr = get_map_lock_manager()
+    with lock_mgr.lock(payload.map):
+        return _create_simulator_locked(ip_list, payload, db, current_user, sapro_handler, mongo_db)
+
+
+def _create_simulator_locked(ip_list, payload, db, current_user, sapro_handler, mongo_db):
+    """Inner helper that runs under the map lock."""
     if len(ip_list) == 1:
         # Single device
         ip = ip_list[0]
@@ -473,26 +481,25 @@ async def create_simulator_stream(
         # Load template and get base XML
         tpl_doc, base_xml = _load_template_and_get_base_xml(mongo_db, payload.template_id)
 
+        # Release DB connection before long-running streaming operations
+        db.close()
+
+        # Resolve workspace and map path upfront (before lock acquisition)
+        if current_user.workspace == "*":
+            workspace = "*"
+        else:
+            workspace = current_user.workspace
+        map_path = sapro_handler.get_full_map_path(payload.map, workspace)
+
+        # Acquire map lock before streaming — released in generator's finally block
+        lock_mgr = get_map_lock_manager()
+        lock_mgr.acquire(payload.map)
+
         async def event_generator():
             successful_ips = []
             successful = 0
             failed = 0
             total = len(ip_list)
-
-            # Get workspace for device creation
-            # Super admin (workspace='*') should auto-detect workspace from map
-            if current_user.workspace == "*":
-                workspace = "*"  # Auto-detect in get_full_map_path
-            else:
-                workspace = current_user.workspace
-
-            # Get full map path once at route level
-            try:
-                map_path = sapro_handler.get_full_map_path(payload.map, workspace)
-            except Exception as e:
-                error_event = {"type": "error", "message": f"Failed to get map path: {e}"}
-                yield f"data: {json.dumps(error_event)}\n\n"
-                return
 
             try:
                 # Create devices sequentially (1 by 1) with progress updates
@@ -584,6 +591,8 @@ async def create_simulator_stream(
                 logger.exception(f"Error during simulator creation streaming: {exc}")
                 error_event = {"type": "error", "message": str(exc)}
                 yield f"data: {json.dumps(error_event)}\n\n"
+            finally:
+                lock_mgr.release(payload.map)
 
         return StreamingResponse(
             event_generator(),
@@ -739,61 +748,66 @@ def update_simulator(
     if not map_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Map is required")
 
-    # Get workspace for device update
-    # Super admin (workspace='*') should auto-detect workspace from map
-    if current_user.workspace == "*":
-        workspace = "*"  # Auto-detect in get_full_map_path
-    else:
-        workspace = current_user.workspace
+    # Lock both old and new maps (may be the same)
+    maps_to_lock = [m for m in {sim.map, map_name} if m]
+    lock_mgr = get_map_lock_manager()
+    with lock_mgr.lock_maps(maps_to_lock):
 
-    # Get full map path once at route level
-    try:
-        map_path = sapro_handler.get_full_map_path(map_name, workspace)
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get map path: {e}")
+        # Get workspace for device update
+        # Super admin (workspace='*') should auto-detect workspace from map
+        if current_user.workspace == "*":
+            workspace = "*"  # Auto-detect in get_full_map_path
+        else:
+            workspace = current_user.workspace
 
-    # 3) Load template and convert to XML
-    logger.info(f"Updating device {simulator_ip} with template {template_id} on map {map_name}")
-    tpl_doc, xml_content = _load_template_and_convert_to_xml(mongo_db, template_id, simulator_ip)
+        # Get full map path once at route level
+        try:
+            map_path = sapro_handler.get_full_map_path(map_name, workspace)
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to get map path: {e}")
 
-    # 4) Call sapro_handler.update_device() to handle all Sapro operations
-    try:
-        success, message = sapro_handler.update_device(simulator_ip, xml_content, map_path)
-        if not success:
+        # 3) Load template and convert to XML
+        logger.info(f"Updating device {simulator_ip} with template {template_id} on map {map_name}")
+        tpl_doc, xml_content = _load_template_and_convert_to_xml(mongo_db, template_id, simulator_ip)
+
+        # 4) Call sapro_handler.update_device() to handle all Sapro operations
+        try:
+            success, message = sapro_handler.update_device(simulator_ip, xml_content, map_path)
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=message
+                )
+            logger.info(f"Device {simulator_ip} updated successfully on Sapro")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.error(f"Failed to update device on Sapro: {exc}", exc_info=True)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=message
+                detail=f"Failed to update device on Sapro: {exc}"
             )
-        logger.info(f"Device {simulator_ip} updated successfully on Sapro")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.error(f"Failed to update device on Sapro: {exc}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update device on Sapro: {exc}"
-        )
 
-    # 5) Update DB with new metadata
-    sim.type = tpl_doc.get("name") or sim.type
-    sim.version = tpl_doc.get("description") or sim.version
-    sim.map = map_name
-    sim.status = "running"  # Assume running after successful update
+        # 5) Update DB with new metadata
+        sim.type = tpl_doc.get("name") or sim.type
+        sim.version = tpl_doc.get("description") or sim.version
+        sim.map = map_name
+        sim.status = "running"  # Assume running after successful update
 
-    try:
-        db.add(sim)
-        db.commit()
-        db.refresh(sim)
-    except SQLAlchemyError as exc:
-        db.rollback()
-        logger.error(f"Failed to update DB for {simulator_ip}: {exc}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Device updated on Sapro but failed to update DB: {str(exc)}"
-        )
+        try:
+            db.add(sim)
+            db.commit()
+            db.refresh(sim)
+        except SQLAlchemyError as exc:
+            db.rollback()
+            logger.error(f"Failed to update DB for {simulator_ip}: {exc}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Device updated on Sapro but failed to update DB: {str(exc)}"
+            )
 
-    logger.info(f"Simulator {simulator_ip} updated successfully")
-    return SaproSimulatorResponse.model_validate(sim)
+        logger.info(f"Simulator {simulator_ip} updated successfully")
+        return SaproSimulatorResponse.model_validate(sim)
 
 
 @router.delete("/simulators/{simulator_ip}", response_model=List[BulkActionResult])
@@ -811,35 +825,52 @@ def delete_simulator(
     workspace = current_user.workspace
     results = []
 
+    # Phase 1: gather simulator info and map names upfront
+    sim_info: Dict[str, tuple] = {}  # ip -> (sim, map_name)
+    ips_to_process = []
+
     for ip in simulator_ips:
         sim = db.get(Simulator, ip)
         if not sim:
             results.append(BulkActionResult(ip_address=ip, success=False, message="Simulator not found"))
             continue
-
         map_name = sim.map or ""
         if not map_name:
             results.append(BulkActionResult(ip_address=ip, success=False, message="Simulator has no map assigned"))
             continue
+        sim_info[ip] = (sim, map_name)
+        ips_to_process.append(ip)
 
-        try:
-            map_path = sapro_handler.get_full_map_path(map_name, workspace)
-        except Exception as e:
-            results.append(BulkActionResult(ip_address=ip, success=False, message=f"Failed to get map path: {e}"))
-            continue
+    if not ips_to_process:
+        return results
 
-        success, message = sapro_handler.delete_device(ip, map_path)
-        if not success:
-            results.append(BulkActionResult(ip_address=ip, success=False, message=message))
-            continue
+    # Phase 2: lock all unique maps
+    unique_maps = list({info[1] for info in sim_info.values()})
+    lock_mgr = get_map_lock_manager()
 
-        try:
-            db.delete(sim)
-            db.commit()
-            results.append(BulkActionResult(ip_address=ip, success=True, message="Deleted successfully"))
-        except SQLAlchemyError as exc:
-            db.rollback()
-            results.append(BulkActionResult(ip_address=ip, success=False, message=str(exc)))
+    with lock_mgr.lock_maps(unique_maps):
+        # Phase 3: process deletions under lock
+        for ip in ips_to_process:
+            sim, map_name = sim_info[ip]
+
+            try:
+                map_path = sapro_handler.get_full_map_path(map_name, workspace)
+            except Exception as e:
+                results.append(BulkActionResult(ip_address=ip, success=False, message=f"Failed to get map path: {e}"))
+                continue
+
+            success, message = sapro_handler.delete_device(ip, map_path)
+            if not success:
+                results.append(BulkActionResult(ip_address=ip, success=False, message=message))
+                continue
+
+            try:
+                db.delete(sim)
+                db.commit()
+                results.append(BulkActionResult(ip_address=ip, success=True, message="Deleted successfully"))
+            except SQLAlchemyError as exc:
+                db.rollback()
+                results.append(BulkActionResult(ip_address=ip, success=False, message=str(exc)))
 
     return results
 
@@ -884,25 +915,27 @@ def start_map(
     Returns:
         Success response when map is running
     """
-    try:
-        workspace = current_user.workspace
-        map_path = sapro_handler.get_full_map_path(map_name, workspace)
+    lock_mgr = get_map_lock_manager()
+    with lock_mgr.lock(map_name):
+        try:
+            workspace = current_user.workspace
+            map_path = sapro_handler.get_full_map_path(map_name, workspace)
 
-        success, message = sapro_handler.start_map_and_wait(map_path)
-        if not success:
+            success, message = sapro_handler.start_map_and_wait(map_path)
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=message
+                )
+            return SuccessResponse(message=message, data={"map": map_name, "status": "running"})
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Failed to start map %s: %s", map_name, exc)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=message
+                detail=f"Failed to start map: {exc}"
             )
-        return SuccessResponse(message=message, data={"map": map_name, "status": "running"})
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("Failed to start map %s: %s", map_name, exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to start map: {exc}"
-        )
 
 
 @router.post("/maps/{map_name}/stop", response_model=SuccessResponse)
@@ -922,25 +955,27 @@ def stop_map(
     Returns:
         Success response when map is stopped
     """
-    try:
-        # Get workspace from user - use "default" for super admin
-        workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
+    lock_mgr = get_map_lock_manager()
+    with lock_mgr.lock(map_name):
+        try:
+            # Get workspace from user - use "default" for super admin
+            workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
 
-        success, message = sapro_handler.stop_map_and_wait(map_name, workspace=workspace)
-        if not success:
+            success, message = sapro_handler.stop_map_and_wait(map_name, workspace=workspace)
+            if not success:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=message
+                )
+            return SuccessResponse(message=message, data={"map": map_name, "status": "stopped"})
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Failed to stop map %s: %s", map_name, exc)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=message
+                detail=f"Failed to stop map: {exc}"
             )
-        return SuccessResponse(message=message, data={"map": map_name, "status": "stopped"})
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception("Failed to stop map %s: %s", map_name, exc)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to stop map: {exc}"
-        )
 
 
 @router.post("/maps", response_model=SuccessResponse, status_code=status.HTTP_201_CREATED)
@@ -1043,6 +1078,15 @@ def update_simulator_fields(
     fields_dict = {field.value: value for field, value in payload.fields.items()}
     results = []
 
+    if current_user.workspace == "*":
+        workspace = "*"
+    else:
+        workspace = current_user.workspace
+
+    # Phase 1: Gather simulator info and map data upfront
+    sim_info: Dict[str, tuple] = {}  # ip -> (map_name, map_path)
+    ips_to_process = []
+
     for ip in simulator_ips:
         sim = db.get(Simulator, ip)
         if not sim:
@@ -1062,11 +1106,6 @@ def update_simulator_fields(
             ))
             continue
 
-        if current_user.workspace == "*":
-            workspace = "*"
-        else:
-            workspace = current_user.workspace
-
         try:
             map_path = sapro_handler.get_full_map_path(map_name, workspace)
         except Exception as e:
@@ -1077,10 +1116,108 @@ def update_simulator_fields(
             ))
             continue
 
-        success, message = sapro_handler.update_device_fields(ip, fields_dict, map_path)
-        results.append(DeviceFieldsUpdateResult(ip_address=ip, success=success, message=message))
+        sim_info[ip] = (map_name, map_path)
+        ips_to_process.append(ip)
+
+    # Phase 2 & 3: Lock all unique maps, then process under lock
+    if ips_to_process:
+        unique_maps = list({info[0] for info in sim_info.values()})
+        lock_mgr = get_map_lock_manager()
+        with lock_mgr.lock_maps(unique_maps):
+            for ip in ips_to_process:
+                _map_name, map_path = sim_info[ip]
+                success, message = sapro_handler.update_device_fields(ip, fields_dict, map_path)
+                results.append(DeviceFieldsUpdateResult(ip_address=ip, success=success, message=message))
 
     return results
+
+
+@router.post("/simulators/{simulator_ip}/update-fields/stream", status_code=status.HTTP_200_OK)
+async def update_simulator_fields_stream(
+        simulator_ip: str,
+        payload: DeviceFieldsUpdateRequest,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(require_sapro_access),
+        sapro_handler=Depends(get_sapro_handler),
+):
+    """Update simulator fields with real-time progress via Server-Sent Events (SSE).
+
+    simulator_ip accepts a single IP or comma-separated IPs: "50.40.10.1,50.40.10.2"
+
+    Event format:
+        - progress: {"type": "progress", "current": N, "total": M, "ip": "X.X.X.X", "status": "success"/"failed", "message": "..."}
+        - complete: {"type": "complete", "success_count": N, "failed_count": M, "total_count": T}
+        - error: {"type": "error", "message": "..."}
+    """
+    simulator_ips = [ip.strip() for ip in simulator_ip.split(",") if ip.strip()]
+    fields_dict = {field.value: value for field, value in payload.fields.items()}
+    total = len(simulator_ips)
+    workspace = "*" if current_user.workspace == "*" else current_user.workspace
+
+    # Resolve all DB lookups and map paths UPFRONT before the generator runs,
+    # so the DB connection is released back to the pool before streaming starts.
+    sim_errors: Dict[str, str] = {}
+    map_paths: Dict[str, str] = {}
+
+    unique_map_names: set = set()
+
+    for ip in simulator_ips:
+        sim = db.get(Simulator, ip)
+        if not sim:
+            sim_errors[ip] = f"Simulator {ip} not found in DB"
+            continue
+        if not sim.map:
+            sim_errors[ip] = f"Simulator {ip} has no map assigned"
+            continue
+        try:
+            map_paths[ip] = sapro_handler.get_full_map_path(sim.map, workspace)
+            unique_map_names.add(sim.map)
+        except Exception as e:
+            sim_errors[ip] = f"Failed to get map path: {e}"
+
+    # Release the DB connection before streaming — prevents pool exhaustion
+    # during long-running Sapro operations (up to 60s × N simulators).
+    db.close()
+
+    # Acquire map locks before streaming — released in generator's finally block
+    lock_mgr = get_map_lock_manager()
+    locked_maps = lock_mgr.acquire_maps(list(unique_map_names)) if unique_map_names else []
+
+    async def event_generator():
+        success_count = 0
+        failed_count = 0
+
+        try:
+            for index, ip in enumerate(simulator_ips, start=1):
+                try:
+                    if ip in sim_errors:
+                        failed_count += 1
+                        yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'status': 'failed', 'message': sim_errors[ip]})}\n\n"
+                        continue
+
+                    ok, message = sapro_handler.update_device_fields(ip, fields_dict, map_paths[ip])
+                    if ok:
+                        success_count += 1
+                        yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'status': 'success', 'message': 'Fields updated successfully'})}\n\n"
+                    else:
+                        failed_count += 1
+                        yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'status': 'failed', 'message': message})}\n\n"
+
+                except Exception as exc:
+                    failed_count += 1
+                    logger.error(f"Error updating fields for {ip}: {exc}", exc_info=True)
+                    yield f"data: {json.dumps({'type': 'progress', 'current': index, 'total': total, 'ip': ip, 'status': 'failed', 'message': str(exc)})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'complete', 'success_count': success_count, 'failed_count': failed_count, 'total_count': total})}\n\n"
+        finally:
+            if locked_maps:
+                lock_mgr.release_maps(locked_maps)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/simulators/{simulator_ip}/start", response_model=List[BulkActionResult])
@@ -1097,6 +1234,10 @@ def start_simulator(
     simulator_ips = [ip.strip() for ip in simulator_ip.split(",") if ip.strip()]
     workspace = current_user.workspace
     results = []
+
+    # Phase 1: Gather simulator info and map data upfront
+    sim_info: Dict[str, tuple] = {}  # ip -> (map_name, map_path)
+    ips_to_process = []
 
     for ip in simulator_ips:
         sim = db.get(Simulator, ip)
@@ -1115,8 +1256,18 @@ def start_simulator(
             results.append(BulkActionResult(ip_address=ip, success=False, message=f"Failed to get map path: {e}"))
             continue
 
-        success, message = sapro_handler.start_devices_from_map(map_path, [ip])
-        results.append(BulkActionResult(ip_address=ip, success=success, message=message))
+        sim_info[ip] = (map_name, map_path)
+        ips_to_process.append(ip)
+
+    # Phase 2 & 3: Lock all unique maps, then process under lock
+    if ips_to_process:
+        unique_maps = list({info[0] for info in sim_info.values()})
+        lock_mgr = get_map_lock_manager()
+        with lock_mgr.lock_maps(unique_maps):
+            for ip in ips_to_process:
+                _map_name, map_path = sim_info[ip]
+                success, message = sapro_handler.start_devices_from_map(map_path, [ip])
+                results.append(BulkActionResult(ip_address=ip, success=success, message=message))
 
     return results
 
@@ -1140,33 +1291,35 @@ def restart_simulator(
     if not map_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Simulator has no map assigned")
 
-    # Get workspace for restarting device
-    # Super admin (workspace='*') should auto-detect workspace from map
-    if current_user.workspace == "*":
-        workspace = "*"  # Auto-detect in get_full_map_path
-    else:
-        workspace = current_user.workspace
+    lock_mgr = get_map_lock_manager()
+    with lock_mgr.lock(map_name):
+        # Get workspace for restarting device
+        # Super admin (workspace='*') should auto-detect workspace from map
+        if current_user.workspace == "*":
+            workspace = "*"  # Auto-detect in get_full_map_path
+        else:
+            workspace = current_user.workspace
 
-    try:
-        # Get full map path first
         try:
-            map_path = sapro_handler.get_full_map_path(map_name, workspace)
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to get map path: {e}"
-            )
+            # Get full map path first
+            try:
+                map_path = sapro_handler.get_full_map_path(map_name, workspace)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Failed to get map path: {e}"
+                )
 
-        success, message = sapro_handler.restart_devices_from_map(map_path, [simulator_ip])
-        if not success:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
+            success, message = sapro_handler.restart_devices_from_map(map_path, [simulator_ip])
+            if not success:
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=message)
 
-        return SuccessResponse(message=f"Simulator {simulator_ip} restarted successfully",
-                               data={"ip_address": simulator_ip})
-    except Exception as exc:
-        logger.exception("Failed to restart simulator %s: %s", simulator_ip, exc)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Failed to restart simulator: {exc}")
+            return SuccessResponse(message=f"Simulator {simulator_ip} restarted successfully",
+                                   data={"ip_address": simulator_ip})
+        except Exception as exc:
+            logger.exception("Failed to restart simulator %s: %s", simulator_ip, exc)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail=f"Failed to restart simulator: {exc}")
 
 
 @router.post("/simulators/{simulator_ip}/stop", response_model=List[BulkActionResult])
@@ -1183,6 +1336,10 @@ def stop_simulator(
     simulator_ips = [ip.strip() for ip in simulator_ip.split(",") if ip.strip()]
     workspace = current_user.workspace
     results = []
+
+    # Phase 1: Gather simulator info and map data upfront
+    sim_info: Dict[str, tuple] = {}  # ip -> (map_name, map_path)
+    ips_to_process = []
 
     for ip in simulator_ips:
         sim = db.get(Simulator, ip)
@@ -1201,8 +1358,18 @@ def stop_simulator(
             results.append(BulkActionResult(ip_address=ip, success=False, message=f"Failed to get map path: {e}"))
             continue
 
-        success, message = sapro_handler.stop_devices_from_map(map_path, [ip])
-        results.append(BulkActionResult(ip_address=ip, success=success, message=message))
+        sim_info[ip] = (map_name, map_path)
+        ips_to_process.append(ip)
+
+    # Phase 2 & 3: Lock all unique maps, then process under lock
+    if ips_to_process:
+        unique_maps = list({info[0] for info in sim_info.values()})
+        lock_mgr = get_map_lock_manager()
+        with lock_mgr.lock_maps(unique_maps):
+            for ip in ips_to_process:
+                _map_name, map_path = sim_info[ip]
+                success, message = sapro_handler.stop_devices_from_map(map_path, [ip])
+                results.append(BulkActionResult(ip_address=ip, success=success, message=message))
 
     return results
 

@@ -20,8 +20,11 @@ import {
   MenuItem,
   FormControl,
   InputLabel,
+  LinearProgress,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
+import ErrorOutlineIcon from '@mui/icons-material/ErrorOutline';
 import { Simulator } from '../../types/simulator.types';
 import apiClient from '../../api/client';
 
@@ -38,6 +41,13 @@ interface FieldState {
 }
 
 type FieldStates = Record<string, FieldState>;
+
+type ProgressStatus = 'pending' | 'processing' | 'success' | 'failed';
+interface ProgressItem {
+  ip: string;
+  status: ProgressStatus;
+  message: string;
+}
 
 // Maps UI field path → DeviceField enum value (used by update-fields endpoint)
 const fieldPathToDeviceField: Record<string, string> = {
@@ -86,6 +96,12 @@ export const EditFieldsDialog: React.FC<EditFieldsDialogProps> = ({ open, simula
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [fields, setFields] = useState<FieldStates>({});
 
+  // Streaming progress state
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamDone, setStreamDone] = useState(false);
+  const [progressItems, setProgressItems] = useState<ProgressItem[]>([]);
+  const [streamSummary, setStreamSummary] = useState<{ success: number; failed: number; total: number } | null>(null);
+
   // File lists state
   const [fileListsLoading, setFileListsLoading] = useState(false);
   const [fileLists, setFileLists] = useState<{
@@ -107,6 +123,10 @@ export const EditFieldsDialog: React.FC<EditFieldsDialogProps> = ({ open, simula
     if (open && simulators.length > 0) {
       setFields({});
       setFetchError(null);
+      setIsStreaming(false);
+      setStreamDone(false);
+      setProgressItems([]);
+      setStreamSummary(null);
       loadFileLists();
       if (simulators.length === 1) {
         fetchCurrentFields();
@@ -151,7 +171,7 @@ export const EditFieldsDialog: React.FC<EditFieldsDialogProps> = ({ open, simula
     setIsFetching(true);
     setFetchError(null);
     try {
-      const resp = await apiClient.get(`/simulators/${simulators[0].ip_address}/fields`);
+      const resp = await apiClient.get(`/simulators/${simulators[0].ip_address}/fields`, { timeout: 60000 });
       const rawFields: Record<string, string> = resp.data.fields;
 
       // Map DeviceField names → UI field paths, all unchecked
@@ -204,24 +224,95 @@ export const EditFieldsDialog: React.FC<EditFieldsDialogProps> = ({ open, simula
       }
     }
 
-    if (Object.keys(enabledFields).length === 0) {
-      return;
-    }
+    if (Object.keys(enabledFields).length === 0) return;
 
     const ipsParam = simulators.map(s => s.ip_address).join(',');
 
-    setIsLoading(true);
+    // Initialize progress items — first one starts as "processing"
+    const initial: ProgressItem[] = simulators.map((s, i) => ({
+      ip: s.ip_address,
+      status: i === 0 ? 'processing' : 'pending',
+      message: '',
+    }));
+    setProgressItems(initial);
+    setIsStreaming(true);
+    setStreamDone(false);
+    setStreamSummary(null);
+
     try {
-      await apiClient.post(`/simulators/${ipsParam}/update-fields`, {
-        fields: enabledFields,
+      const baseURL = apiClient.defaults.baseURL || '';
+      const url = `${baseURL}/simulators/${ipsParam}/update-fields/stream`;
+      const token = localStorage.getItem('token');
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ fields: enabledFields }),
       });
-      onSuccess();
-      onClose();
+
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP error: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const messages = buffer.split('\n\n');
+        buffer = messages.pop() || '';
+
+        for (const message of messages) {
+          if (message.startsWith('data: ')) {
+            try {
+              const evt = JSON.parse(message.slice(6));
+              if (evt.type === 'progress') {
+                setProgressItems(prev => {
+                  const updated = prev.map(item =>
+                    item.ip === evt.ip
+                      ? { ...item, status: evt.status as ProgressStatus, message: evt.message }
+                      : item
+                  );
+                  // Mark next pending item as processing
+                  const nextIdx = updated.findIndex(item => item.status === 'pending');
+                  if (nextIdx !== -1) {
+                    updated[nextIdx] = { ...updated[nextIdx], status: 'processing' };
+                  }
+                  return updated;
+                });
+              } else if (evt.type === 'complete') {
+                setStreamSummary({ success: evt.success_count, failed: evt.failed_count, total: evt.total_count });
+                setIsStreaming(false);
+                setStreamDone(true);
+                reader.releaseLock();
+                onSuccess();
+                return;
+              } else if (evt.type === 'error') {
+                reader.releaseLock();
+                throw new Error(evt.message);
+              }
+            } catch (parseErr) {
+              console.error('Failed to parse SSE message:', parseErr);
+            }
+          }
+        }
+      }
+
+      reader.releaseLock();
+      setIsStreaming(false);
+      setStreamDone(true);
     } catch (err: any) {
-      const msg = err?.response?.data?.detail || err?.message || 'Failed to update fields';
-      alert(msg);
-    } finally {
-      setIsLoading(false);
+      setIsStreaming(false);
+      setStreamDone(false);
+      setProgressItems([]);
+      alert(err?.message || 'Failed to update fields');
     }
   };
 
@@ -343,107 +434,191 @@ export const EditFieldsDialog: React.FC<EditFieldsDialogProps> = ({ open, simula
       slotProps={{ paper: { sx: { margin: '32px', maxHeight: 'calc(100% - 64px)' } } }}
     >
       <DialogTitle>
-        {isSingle
-          ? `Edit Fields: ${simulators[0].ip_address}`
-          : `Edit Fields: ${simulators.length} simulators`}
+        {isStreaming
+          ? 'Updating Fields...'
+          : streamDone
+            ? 'Update Complete'
+            : isSingle
+              ? `Edit Fields: ${simulators[0].ip_address}`
+              : `Edit Fields: ${simulators.length} simulators`}
       </DialogTitle>
 
       <DialogContent sx={{ paddingTop: '24px !important' }}>
-        {isFetching && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
-            <CircularProgress />
+        {/* Progress view */}
+        {(isStreaming || streamDone) ? (
+          <Box>
+            {/* Progress bar */}
+            {isStreaming && (
+              <Box sx={{ mb: 2 }}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                  <Typography variant="body2" color="text.secondary">
+                    {progressItems.filter(i => i.status === 'success' || i.status === 'failed').length} / {progressItems.length}
+                  </Typography>
+                </Box>
+                <LinearProgress
+                  variant="determinate"
+                  value={(progressItems.filter(i => i.status === 'success' || i.status === 'failed').length / progressItems.length) * 100}
+                />
+              </Box>
+            )}
+
+            {/* Summary */}
+            {streamDone && streamSummary && (
+              <Alert
+                severity={streamSummary.failed === 0 ? 'success' : streamSummary.success === 0 ? 'error' : 'warning'}
+                sx={{ mb: 2 }}
+              >
+                {streamSummary.failed === 0
+                  ? `Successfully updated all ${streamSummary.success} simulator(s)`
+                  : `Updated ${streamSummary.success}/${streamSummary.total}, ${streamSummary.failed} failed`}
+              </Alert>
+            )}
+
+            {/* Per-simulator progress list */}
+            <Box sx={{ maxHeight: 350, overflowY: 'auto' }}>
+              {progressItems.map(item => (
+                <Box
+                  key={item.ip}
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1.5,
+                    py: 1,
+                    px: 1,
+                    borderBottom: '1px solid #f0f0f0',
+                    '&:last-child': { borderBottom: 'none' },
+                  }}
+                >
+                  {item.status === 'processing' && <CircularProgress size={18} />}
+                  {item.status === 'success' && <CheckCircleOutlineIcon sx={{ color: 'success.main', fontSize: 20 }} />}
+                  {item.status === 'failed' && <ErrorOutlineIcon sx={{ color: 'error.main', fontSize: 20 }} />}
+                  {item.status === 'pending' && <Box sx={{ width: 20, height: 20, borderRadius: '50%', border: '2px solid #ddd', flexShrink: 0 }} />}
+                  <Typography variant="body2" sx={{ fontFamily: 'monospace', minWidth: 120 }}>{item.ip}</Typography>
+                  {item.message && (
+                    <Typography
+                      variant="caption"
+                      color={item.status === 'failed' ? 'error' : 'text.secondary'}
+                      sx={{ flex: 1 }}
+                    >
+                      {item.message}
+                    </Typography>
+                  )}
+                </Box>
+              ))}
+            </Box>
           </Box>
-        )}
-
-        {fetchError && (
-          <Alert severity="error" sx={{ mb: 2 }}>{fetchError}</Alert>
-        )}
-
-        {!isFetching && !fetchError && (
+        ) : (
+          /* Form view */
           <>
-            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              {isSingle
-                ? 'Check fields to update. Current values are shown — change as needed.'
-                : `Check fields to update. The selected values will be applied to all ${simulators.length} simulators.`}
-            </Typography>
+            {isFetching && (
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                <CircularProgress />
+              </Box>
+            )}
 
-            <Divider sx={{ my: 2 }} />
+            {fetchError && (
+              <Alert severity="error" sx={{ mb: 2 }}>{fetchError}</Alert>
+            )}
 
-            <Accordion defaultExpanded>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography variant="subtitle1" fontWeight="medium">General</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                {renderField('Multi Home', 'general.multi_home')}
-                {renderField('DHCP', 'general.dhcp')}
-                {renderField('Subnet Mask', 'general.subnet_mask')}
-                {renderField('MAC Address', 'general.mac_address')}
-                {renderField('Interface', 'general.interface')}
-                {renderField('User Data', 'general.user_data')}
-                {renderField('Topology Data', 'general.topology_data')}
-                {renderField('Display Tag', 'general.display_tag')}
-                {renderDropdownField('Modeling File', 'general.modeling_file', 'modeling')}
-                {renderField('Common Data File', 'general.common_data_file')}
-              </AccordionDetails>
-            </Accordion>
+            {!isFetching && !fetchError && (
+              <>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  {isSingle
+                    ? 'Check fields to update. Current values are shown — change as needed.'
+                    : `Check fields to update. The selected values will be applied to all ${simulators.length} simulators.`}
+                </Typography>
 
-            <Accordion>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography variant="subtitle1" fontWeight="medium">SNMP</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                {renderField('Read Community', 'snmp.read_community')}
-                {renderField('Write Community', 'snmp.write_community')}
-                {renderDropdownField('MIB File', 'snmp.mib_file', 'mib')}
-                {renderDropdownField('Agent File', 'snmp.agent_file', 'agent')}
-                {renderField('Trap Manager', 'snmp.trap_mgr')}
-                {renderField('SNMP String', 'snmp.snmp_str')}
-                {renderField('Response Delay', 'snmp.response_delay')}
-                {renderField('MTU Size', 'snmp.mtu_size')}
-                {renderField('SNMP Port', 'snmp.snmp_port')}
-                {renderField('Security Level', 'snmp.security_level')}
-                {renderField('User Name', 'snmp.user_name')}
-              </AccordionDetails>
-            </Accordion>
+                <Divider sx={{ my: 2 }} />
 
-            <Accordion>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography variant="subtitle1" fontWeight="medium">SOAP</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                {renderField('SOAP HTTP Port', 'soap.soap_http_port')}
-                {renderField('SOAP HTTPS Port', 'soap.soap_https_port')}
-                {renderField('XML HTTPS Type', 'soap.xml_https_type')}
-                {renderDropdownField('SOAP Mod File', 'soap.soap_mod_file', 'soap')}
-                {renderField('SOAP Content Type', 'soap.soap_content_type')}
-              </AccordionDetails>
-            </Accordion>
+                <Accordion defaultExpanded>
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Typography variant="subtitle1" fontWeight="medium">General</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    {renderField('Multi Home', 'general.multi_home')}
+                    {renderField('DHCP', 'general.dhcp')}
+                    {renderField('Subnet Mask', 'general.subnet_mask')}
+                    {renderField('MAC Address', 'general.mac_address')}
+                    {renderField('Interface', 'general.interface')}
+                    {renderField('User Data', 'general.user_data')}
+                    {renderField('Topology Data', 'general.topology_data')}
+                    {renderField('Display Tag', 'general.display_tag')}
+                    {renderDropdownField('Modeling File', 'general.modeling_file', 'modeling')}
+                    {renderField('Common Data File', 'general.common_data_file')}
+                  </AccordionDetails>
+                </Accordion>
 
-            <Accordion>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Typography variant="subtitle1" fontWeight="medium">SSH</Typography>
-              </AccordionSummary>
-              <AccordionDetails>
-                {renderField('SSH User Name', 'ssh.ssh_user_name')}
-                {renderField('SSH Password', 'ssh.ssh_password')}
-                {renderField('SSH SCP Base Dir', 'ssh.ssh_scp_base_dir')}
-                {renderField('SSH Version', 'ssh.ssh_version')}
-                {renderDropdownField('SSH File', 'ssh.ssh_file', 'ssh')}
-              </AccordionDetails>
-            </Accordion>
+                <Accordion>
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Typography variant="subtitle1" fontWeight="medium">SNMP</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    {renderField('Read Community', 'snmp.read_community')}
+                    {renderField('Write Community', 'snmp.write_community')}
+                    {renderDropdownField('MIB File', 'snmp.mib_file', 'mib')}
+                    {renderDropdownField('Agent File', 'snmp.agent_file', 'agent')}
+                    {renderField('Trap Manager', 'snmp.trap_mgr')}
+                    {renderField('SNMP String', 'snmp.snmp_str')}
+                    {renderField('Response Delay', 'snmp.response_delay')}
+                    {renderField('MTU Size', 'snmp.mtu_size')}
+                    {renderField('SNMP Port', 'snmp.snmp_port')}
+                    {renderField('Security Level', 'snmp.security_level')}
+                    {renderField('User Name', 'snmp.user_name')}
+                  </AccordionDetails>
+                </Accordion>
+
+                <Accordion>
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Typography variant="subtitle1" fontWeight="medium">SOAP</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    {renderField('SOAP HTTP Port', 'soap.soap_http_port')}
+                    {renderField('SOAP HTTPS Port', 'soap.soap_https_port')}
+                    {renderField('XML HTTPS Type', 'soap.xml_https_type')}
+                    {renderDropdownField('SOAP Mod File', 'soap.soap_mod_file', 'soap')}
+                    {renderField('SOAP Content Type', 'soap.soap_content_type')}
+                  </AccordionDetails>
+                </Accordion>
+
+                <Accordion>
+                  <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                    <Typography variant="subtitle1" fontWeight="medium">SSH</Typography>
+                  </AccordionSummary>
+                  <AccordionDetails>
+                    {renderField('SSH User Name', 'ssh.ssh_user_name')}
+                    {renderField('SSH Password', 'ssh.ssh_password')}
+                    {renderField('SSH SCP Base Dir', 'ssh.ssh_scp_base_dir')}
+                    {renderField('SSH Version', 'ssh.ssh_version')}
+                    {renderDropdownField('SSH File', 'ssh.ssh_file', 'ssh')}
+                  </AccordionDetails>
+                </Accordion>
+              </>
+            )}
           </>
         )}
       </DialogContent>
 
       <DialogActions sx={{ px: 3, pb: 2 }}>
-        <Button onClick={onClose} disabled={isLoading}>Cancel</Button>
-        <Button
-          onClick={handleSubmit}
-          variant="contained"
-          disabled={isLoading || isFetching || !hasAnyEnabled}
-        >
-          {isLoading ? <CircularProgress size={20} /> : 'Update Fields'}
-        </Button>
+        {(isStreaming || streamDone) ? (
+          <Button
+            onClick={() => { setIsStreaming(false); setStreamDone(false); onClose(); }}
+            variant="contained"
+            disabled={isStreaming}
+          >
+            {isStreaming ? 'Please wait...' : 'Close'}
+          </Button>
+        ) : (
+          <>
+            <Button onClick={onClose} disabled={isLoading}>Cancel</Button>
+            <Button
+              onClick={handleSubmit}
+              variant="contained"
+              disabled={isLoading || isFetching || !hasAnyEnabled}
+            >
+              {isLoading ? <CircularProgress size={20} /> : 'Update Fields'}
+            </Button>
+          </>
+        )}
       </DialogActions>
     </Dialog>
   );

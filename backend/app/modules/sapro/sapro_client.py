@@ -1,5 +1,4 @@
 import re
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Optional, Tuple
@@ -18,18 +17,6 @@ class SaproCommunicationHandler:
     This class wraps the lower-level `sapro` ProductLibraries module and exposes
     small helper methods suitable for dependency-injection in FastAPI.
     """
-
-    # Per-map-path locks to serialise concurrent read-modify-write operations.
-    # _map_locks_guard protects the dict itself; each entry is the actual map lock.
-    _map_locks: Dict[str, threading.Lock] = {}
-    _map_locks_guard: threading.Lock = threading.Lock()
-
-    @classmethod
-    def _get_map_lock(cls, map_path: str) -> threading.Lock:
-        with cls._map_locks_guard:
-            if map_path not in cls._map_locks:
-                cls._map_locks[map_path] = threading.Lock()
-            return cls._map_locks[map_path]
 
     def __init__(self, sapro_ip: str, sapro_port: int):
         """Initialize handler state for SSH-based Sapro communication.
@@ -1295,7 +1282,7 @@ class SaproCommunicationHandler:
         ssh_client = get_sapro_ssh_client()
 
         read_cmd = f"cat {map_path}"
-        success, map_content = ssh_client.execute_command(read_cmd, check_stderr=False)
+        success, map_content = ssh_client.execute_command(read_cmd, timeout=60, check_stderr=False)
         if not success:
             raise Exception(f"Failed to read map file: {map_content}")
 
@@ -1348,7 +1335,7 @@ class SaproCommunicationHandler:
 
             # Step 1: Read the map file
             read_cmd = f"cat {map_path}"
-            success, map_content = ssh_client.execute_command(read_cmd, check_stderr=False)
+            success, map_content = ssh_client.execute_command(read_cmd, timeout=60, check_stderr=False)
             if not success:
                 return False, f"Failed to read map file: {map_content}"
 
