@@ -309,11 +309,8 @@ def set_trap_string_to_send(cc_ip, trap):
 def build_sa_sendtrap_line(fields):
     """Build a single SA_sendtrap TCL command line from resolved trap fields.
 
-    The varbind format matches the existing send_attack.tcl output exactly:
-    V_8 {attack_id} {radware_id} {category} \"{attack_name}\" {protocol}
-    {src_ip} {src_port} {dst_ip} {dst_port} {physical_port} Regular
-    \"{policy}\" {status} {packet_count} {packet_bandwidth} {samples}
-    {risk} {action} 0 0 19 N/A {direction} 0
+    Uses [list ...] syntax as recommended by Sapro documentation for proper
+    TCL list construction and escaping.
 
     Args:
         fields: Dictionary from resolve_trap_fields()
@@ -321,25 +318,28 @@ def build_sa_sendtrap_line(fields):
     Returns:
         A complete SA_sendtrap TCL command string
     """
-    # Sanitize fields that get quoted in the varbind (strip double-quotes)
-    attack_name = str(fields["attack_name"]).replace('"', '')
-    policy = str(fields["policy"]).replace('"', '')
+    # Sanitize fields (strip quotes and braces to avoid breaking TCL syntax)
+    attack_name = str(fields["attack_name"]).replace('"', '').replace('{', '').replace('}', '')
+    policy = str(fields["policy"]).replace('"', '').replace('{', '').replace('}', '')
 
-    return (
-        f'SA_sendtrap {{ 1.3.6.1.4.1.89.35.1.65.107 6 1 '
-        f'{{ rsIDSIntrusionErrorDesc.0 OctetString '
-        f'"V_8 {fields["attack_id"]} {fields["radware_id"]} {fields["category"]} '
-        f'\\"{attack_name}\\" {fields["protocol"]} '
+    value = (
+        f'V_8 {fields["attack_id"]} {fields["radware_id"]} {fields["category"]} '
+        f'"{attack_name}" {fields["protocol"]} '
         f'{fields["src_ip"]} {fields["src_port"]} '
         f'{fields["dst_ip"]} {fields["dst_port"]} '
         f'{fields["physical_port"]} '
         f'Regular '
-        f'\\"{policy}\\" {fields["status"]} '
+        f'"{policy}" {fields["status"]} '
         f'{fields["packet_count"]} {fields["packet_bandwidth"]} '
         f'{fields["samples"]} '
         f'{fields["risk"]} {fields["action"]} '
-        f'0 0 19 N/A {fields["direction"]} 0" '
-        f'}} {{ rsIDSIntrusionErrorSeverity.0 Integer "2" }} }}'
+        f'0 0 19 N/A {fields["direction"]} 0'
+    )
+
+    return (
+        f'SA_sendtrap [list 1.3.6.1.4.1.89.35.1.65.107 6 1 '
+        f'[list rsIDSIntrusionErrorDesc.0 OctetString {{{value}}}] '
+        f'[list rsIDSIntrusionErrorSeverity.0 Integer 2]]'
     )
 
 
