@@ -129,10 +129,10 @@ def _extract_sendtrap_lines(script: str) -> list:
 def _extract_varbind_string(sendtrap_line: str) -> str:
     """Extract the OctetString content from a SA_sendtrap line.
 
-    Handles escaped double-quotes (\\") inside the OctetString value.
+    Handles both [list] syntax with {value} braces and legacy brace syntax.
     """
     match = re.search(
-        r'rsIDSIntrusionErrorDesc\.0 OctetString "((?:[^"\\]|\\.)*)"',
+        r'rsIDSIntrusionErrorDesc\.0 OctetString \{([^}]+)\}',
         sendtrap_line,
     )
     assert match, f"No varbind OctetString found in:\n  {sendtrap_line[:150]}"
@@ -142,10 +142,10 @@ def _extract_varbind_string(sendtrap_line: str) -> str:
 def _parse_varbind_fields(varbind: str) -> dict:
     """Parse the V_8 varbind string into a named-field dict.
 
-    Varbind format (backslash-escaped quotes around attack_name and policy):
-        V_8 {attack_id} {radware_id} {category} \"{attack_name}\" {protocol}
+    Varbind format (double-quoted attack_name and policy inside braces):
+        V_8 {attack_id} {radware_id} {category} "{attack_name}" {protocol}
         {src_ip} {src_port} {dst_ip} {dst_port} {physical_port} Regular
-        \"{policy}\" {status} {packet_count} {packet_bandwidth} {samples}
+        "{policy}" {status} {packet_count} {packet_bandwidth} {samples}
         {risk} {action} 0 0 19 N/A {direction} 0
     """
     pattern = (
@@ -153,7 +153,7 @@ def _parse_varbind_fields(varbind: str) -> dict:
         r"(?P<attack_id>\S+)\s+"
         r"(?P<radware_id>\S+)\s+"
         r"(?P<category>\S+)\s+"
-        r'\\"(?P<attack_name>[^\\"]+)\\"\s+'
+        r'"(?P<attack_name>[^"]+)"\s+'
         r"(?P<protocol>\S+)\s+"
         r"(?P<src_ip>\S+)\s+"
         r"(?P<src_port>\S+)\s+"
@@ -161,7 +161,7 @@ def _parse_varbind_fields(varbind: str) -> dict:
         r"(?P<dst_port>\S+)\s+"
         r"(?P<physical_port>\S+)\s+"
         r"Regular\s+"
-        r'\\"(?P<policy>[^\\"]+)\\"\s+'
+        r'"(?P<policy>[^"]+)"\s+'
         r"(?P<status>\S+)\s+"
         r"(?P<packet_count>\S+)\s+"
         r"(?P<packet_bandwidth>\S+)\s+"
@@ -263,7 +263,7 @@ class TestScriptStructure:
 class TestSendtrapFormat:
     """Each SA_sendtrap line format, OID, and varbind structure."""
 
-    EXPECTED_PREFIX = "SA_sendtrap { 1.3.6.1.4.1.89.35.1.65.107 6 1 {"
+    EXPECTED_PREFIX = "SA_sendtrap [list 1.3.6.1.4.1.89.35.1.65.107 6 1 "
 
     def test_all_lines_start_with_correct_oid(self, trap_lines):
         for i, line in enumerate(trap_lines):
@@ -279,7 +279,7 @@ class TestSendtrapFormat:
 
     def test_all_lines_contain_severity_integer(self, trap_lines):
         for i, line in enumerate(trap_lines):
-            assert 'rsIDSIntrusionErrorSeverity.0 Integer "2"' in line, (
+            assert 'rsIDSIntrusionErrorSeverity.0 Integer 2]' in line, (
                 f"Trap {i + 1}: missing severity varbind"
             )
 
@@ -537,8 +537,8 @@ class TestHelperFunctions:
         """build_sa_sendtrap_line with a fully specified fields dict."""
         fields = resolve_trap_fields(MOCK_CC_IP, MOCK_TRAPS[0])
         line = build_sa_sendtrap_line(fields)
-        assert line.startswith("SA_sendtrap { 1.3.6.1.4.1.89.35.1.65.107 6 1 {")
-        assert 'rsIDSIntrusionErrorSeverity.0 Integer "2"' in line
+        assert line.startswith("SA_sendtrap [list 1.3.6.1.4.1.89.35.1.65.107 6 1 ")
+        assert 'rsIDSIntrusionErrorSeverity.0 Integer 2]' in line
         varbind = _extract_varbind_string(line)
         parsed = _parse_varbind_fields(varbind)
         assert parsed["attack_id"] == "123-4567890123"
