@@ -374,27 +374,34 @@ def build_batch_tcl_content(cc_ip, traps):
     return '\n'.join(lines) + '\n'
 
 
-def _execute_trap_batch(cc_ip, device_ip, device_map, traps, batch_label=""):
-    """Execute a single sub-batch of traps via sapcnsl.
+def send_attack_traps(cc_ip, device_ip, payload):
+    """Send attack traps to CyberController using batch execution.
 
-    Writes a TCL script with the given traps and executes it.
+    Generates a single TCL script with all SA_sendtrap calls and executes
+    it in one sapcnsl invocation via a temp file, reducing N SSH round-trips to 1.
+
+    Supports optional 'pause' field in each trap (converted to TCL 'after' commands).
 
     Returns:
-        Tuple of (success_count: int, failed_count: int)
+        Tuple of (success_count: int, failed_count: int, total_count: int)
     """
-    trap_count = len(traps)
+    total_traps = len(payload['traps'])
+    device_map = payload['map']
 
+    # Build batch TCL content
     try:
-        tcl_content = build_batch_tcl_content(cc_ip, traps)
+        tcl_content = build_batch_tcl_content(cc_ip, payload['traps'])
     except ValueError as e:
-        logger.error(f"Failed to build batch TCL content{batch_label}: {e}")
-        return 0, trap_count
+        logger.error(f"Failed to build batch TCL content: {e}")
+        return 0, total_traps, total_traps
 
+    # Generate unique temp file path
     batch_id = uuid.uuid4().hex[:12]
     temp_tcl_path = f'/tmp/sapro_batch_{batch_id}.tcl'
 
-    total_pause = sum(trap.get('pause', 0) or 0 for trap in traps)
-    timeout = max(30, trap_count * 2) + int(total_pause)
+    # Scale timeout: base 30s + 2s per trap + explicit pause durations
+    total_pause = sum(trap.get('pause', 0) or 0 for trap in payload['traps'])
+    timeout = max(30, total_traps * 2) + int(total_pause)
 
     # Write TCL script to temp file via heredoc
     write_command = (
@@ -402,12 +409,12 @@ def _execute_trap_batch(cc_ip, device_ip, device_map, traps, batch_label=""):
         f"{tcl_content}"
         f"SAPRO_BATCH_EOF"
     )
-    logger.info(f"Writing batch TCL script{batch_label} to {temp_tcl_path} ({trap_count} traps)")
+    logger.info(f"Writing batch TCL script to {temp_tcl_path} ({total_traps} traps)")
     logger.debug(f"TCL content to write ({len(tcl_content)} chars):\n{tcl_content}")
     write_success, write_output = execute_sapro_command(write_command, timeout=30)
     if not write_success:
-        logger.error(f"Failed to write batch TCL file{batch_label}: {write_output[:500]}")
-        return 0, trap_count
+        logger.error(f"Failed to write batch TCL file: {write_output[:500]}")
+        return 0, total_traps, total_traps
 
     # Verify the file was written correctly
     verify_success, verify_output = execute_sapro_command(f"cat {temp_tcl_path}", timeout=10)
@@ -426,61 +433,26 @@ def _execute_trap_batch(cc_ip, device_ip, device_map, traps, batch_label=""):
         f"/opt/sapro/bin/sapcnsl -m {device_map} -c tcl -d {device_ip} "
         f"-f {temp_tcl_path}"
     )
-    logger.info(f"Executing batch{batch_label} of {trap_count} trap(s) from {device_ip} to {cc_ip} (timeout={timeout}s)")
+    logger.info(f"Executing batch of {total_traps} trap(s) from {device_ip} to {cc_ip} (timeout={timeout}s)")
     success, output = execute_sapro_command(exec_command, timeout=timeout)
-    logger.info(f"Batch{batch_label} execution output: {output[:1000]}")
+    logger.info(f"Batch execution output: {output[:1000]}")
 
     # Cleanup temp file
     execute_sapro_command(f"rm -f {temp_tcl_path}", timeout=10)
 
-    if success and "Trap(s) Sent" in output:
-        logger.info(f"Batch{batch_label} sent all {trap_count} trap(s) from {device_ip} to {cc_ip}")
-        return trap_count, 0
-    elif success:
-        logger.error(
-            f"Batch{batch_label} execution succeeded but no traps confirmed sent "
-            f"from {device_ip} to {cc_ip}. Output: {output[:500]}"
-        )
-        return 0, trap_count
+    if success:
+        if "Trap(s) Sent" in output:
+            logger.info(f"Batch sent all {total_traps} trap(s) from {device_ip} to {cc_ip}")
+            return total_traps, 0, total_traps
+        else:
+            logger.error(
+                f"Batch execution succeeded but no traps confirmed sent "
+                f"from {device_ip} to {cc_ip}. Output: {output[:500]}"
+            )
+            return 0, total_traps, total_traps
     else:
-        logger.error(f"Batch{batch_label} execution failed from {device_ip} to {cc_ip}: {output[:500]}")
-        return 0, trap_count
-
-
-# sapcnsl has a limited buffer for TCL script files; keep sub-batches small.
-_MAX_TRAPS_PER_BATCH = 5
-
-
-def send_attack_traps(cc_ip, device_ip, payload):
-    """Send attack traps to CyberController using batch execution.
-
-    Splits traps into sub-batches to avoid sapcnsl TCL buffer limits.
-    Each sub-batch is written to a temp file and executed separately.
-
-    Supports optional 'pause' field in each trap (converted to TCL 'after' commands).
-
-    Returns:
-        Tuple of (success_count: int, failed_count: int, total_count: int)
-    """
-    all_traps = payload['traps']
-    total_traps = len(all_traps)
-    device_map = payload['map']
-
-    total_success = 0
-    total_failed = 0
-
-    # Split into sub-batches
-    for batch_start in range(0, total_traps, _MAX_TRAPS_PER_BATCH):
-        batch_traps = all_traps[batch_start:batch_start + _MAX_TRAPS_PER_BATCH]
-        batch_num = batch_start // _MAX_TRAPS_PER_BATCH + 1
-        total_batches = (total_traps + _MAX_TRAPS_PER_BATCH - 1) // _MAX_TRAPS_PER_BATCH
-        batch_label = f" [{batch_num}/{total_batches}]" if total_batches > 1 else ""
-
-        success, failed = _execute_trap_batch(cc_ip, device_ip, device_map, batch_traps, batch_label)
-        total_success += success
-        total_failed += failed
-
-    return total_success, total_failed, total_traps
+        logger.error(f"Batch execution failed from {device_ip} to {cc_ip}: {output[:500]}")
+        return 0, total_traps, total_traps
 
 
 def send_attack_traps_with_progress(cc_ip, device_ip, payload):
