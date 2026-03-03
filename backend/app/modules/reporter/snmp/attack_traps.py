@@ -374,75 +374,113 @@ def build_batch_tcl_content(cc_ip, traps):
     return '\n'.join(lines) + '\n'
 
 
+def _execute_trap_batch(cc_ip, device_ip, device_map, traps, batch_label=""):
+    """Execute a single sub-batch of traps via sapcnsl.
+
+    Writes a TCL script with the given traps and executes it.
+
+    Returns:
+        Tuple of (success_count: int, failed_count: int)
+    """
+    trap_count = len(traps)
+
+    try:
+        tcl_content = build_batch_tcl_content(cc_ip, traps)
+    except ValueError as e:
+        logger.error(f"Failed to build batch TCL content{batch_label}: {e}")
+        return 0, trap_count
+
+    batch_id = uuid.uuid4().hex[:12]
+    temp_tcl_path = f'/tmp/sapro_batch_{batch_id}.tcl'
+
+    total_pause = sum(trap.get('pause', 0) or 0 for trap in traps)
+    timeout = max(30, trap_count * 2) + int(total_pause)
+
+    # Write TCL script to temp file via heredoc
+    write_command = (
+        f"cat > {temp_tcl_path} << 'SAPRO_BATCH_EOF'\n"
+        f"{tcl_content}"
+        f"SAPRO_BATCH_EOF"
+    )
+    logger.info(f"Writing batch TCL script{batch_label} to {temp_tcl_path} ({trap_count} traps)")
+    logger.debug(f"TCL content to write ({len(tcl_content)} chars):\n{tcl_content}")
+    write_success, write_output = execute_sapro_command(write_command, timeout=30)
+    if not write_success:
+        logger.error(f"Failed to write batch TCL file{batch_label}: {write_output[:500]}")
+        return 0, trap_count
+
+    # Verify the file was written correctly
+    verify_success, verify_output = execute_sapro_command(f"cat {temp_tcl_path}", timeout=10)
+    if verify_success:
+        logger.info(f"Written file content ({len(verify_output)} chars):\n{verify_output}")
+        if len(verify_output.strip()) != len(tcl_content.strip()):
+            logger.error(
+                f"FILE SIZE MISMATCH! Expected {len(tcl_content.strip())} chars, "
+                f"got {len(verify_output.strip())} chars on disk"
+            )
+    else:
+        logger.error(f"Failed to verify written file: {verify_output[:500]}")
+
+    # Execute the batch TCL script via sapcnsl
+    exec_command = (
+        f"/opt/sapro/bin/sapcnsl -m {device_map} -c tcl -d {device_ip} "
+        f"-f {temp_tcl_path}"
+    )
+    logger.info(f"Executing batch{batch_label} of {trap_count} trap(s) from {device_ip} to {cc_ip} (timeout={timeout}s)")
+    success, output = execute_sapro_command(exec_command, timeout=timeout)
+    logger.info(f"Batch{batch_label} execution output: {output[:1000]}")
+
+    # Cleanup temp file
+    execute_sapro_command(f"rm -f {temp_tcl_path}", timeout=10)
+
+    if success and "Trap(s) Sent" in output:
+        logger.info(f"Batch{batch_label} sent all {trap_count} trap(s) from {device_ip} to {cc_ip}")
+        return trap_count, 0
+    elif success:
+        logger.error(
+            f"Batch{batch_label} execution succeeded but no traps confirmed sent "
+            f"from {device_ip} to {cc_ip}. Output: {output[:500]}"
+        )
+        return 0, trap_count
+    else:
+        logger.error(f"Batch{batch_label} execution failed from {device_ip} to {cc_ip}: {output[:500]}")
+        return 0, trap_count
+
+
+# sapcnsl has a limited buffer for TCL script files; keep sub-batches small.
+_MAX_TRAPS_PER_BATCH = 5
+
+
 def send_attack_traps(cc_ip, device_ip, payload):
     """Send attack traps to CyberController using batch execution.
 
-    Generates a single TCL script with all SA_sendtrap calls and executes
-    it in one sapcnsl invocation via a temp file, reducing N SSH round-trips to 1.
+    Splits traps into sub-batches to avoid sapcnsl TCL buffer limits.
+    Each sub-batch is written to a temp file and executed separately.
 
     Supports optional 'pause' field in each trap (converted to TCL 'after' commands).
 
     Returns:
         Tuple of (success_count: int, failed_count: int, total_count: int)
     """
-    total_traps = len(payload['traps'])
+    all_traps = payload['traps']
+    total_traps = len(all_traps)
     device_map = payload['map']
 
-    # Build batch TCL content
-    try:
-        tcl_content = build_batch_tcl_content(cc_ip, payload['traps'])
-    except ValueError as e:
-        logger.error(f"Failed to build batch TCL content: {e}")
-        return 0, total_traps, total_traps
+    total_success = 0
+    total_failed = 0
 
-    # Generate unique temp file path
-    batch_id = uuid.uuid4().hex[:12]
-    temp_tcl_path = f'/tmp/sapro_batch_{batch_id}.tcl'
+    # Split into sub-batches
+    for batch_start in range(0, total_traps, _MAX_TRAPS_PER_BATCH):
+        batch_traps = all_traps[batch_start:batch_start + _MAX_TRAPS_PER_BATCH]
+        batch_num = batch_start // _MAX_TRAPS_PER_BATCH + 1
+        total_batches = (total_traps + _MAX_TRAPS_PER_BATCH - 1) // _MAX_TRAPS_PER_BATCH
+        batch_label = f" [{batch_num}/{total_batches}]" if total_batches > 1 else ""
 
-    # Scale timeout: base 30s + 2s per trap + explicit pause durations
-    total_pause = sum(trap.get('pause', 0) or 0 for trap in payload['traps'])
-    timeout = max(30, total_traps * 2) + int(total_pause)
+        success, failed = _execute_trap_batch(cc_ip, device_ip, device_map, batch_traps, batch_label)
+        total_success += success
+        total_failed += failed
 
-    # Step 1: Write TCL script to temp file via heredoc
-    # Single-quoted delimiter 'SAPRO_BATCH_EOF' prevents shell variable expansion.
-    write_command = (
-        f"cat > {temp_tcl_path} << 'SAPRO_BATCH_EOF'\n"
-        f"{tcl_content}"
-        f"SAPRO_BATCH_EOF"
-    )
-    logger.info(f"Writing batch TCL script to {temp_tcl_path} ({total_traps} traps)")
-    write_success, write_output = execute_sapro_command(write_command, timeout=30)
-    if not write_success:
-        logger.error(f"Failed to write batch TCL file: {write_output[:500]}")
-        return 0, total_traps, total_traps
-
-    # Step 2: Execute the batch TCL script via sapcnsl
-    exec_command = (
-        f"/opt/sapro/bin/sapcnsl -m {device_map} -c tcl -d {device_ip} "
-        f"-f {temp_tcl_path}"
-    )
-    logger.info(f"Executing batch of {total_traps} trap(s) from {device_ip} to {cc_ip} (timeout={timeout}s)")
-    success, output = execute_sapro_command(exec_command, timeout=timeout)
-    logger.info(f"Batch execution output: {output[:1000]}")
-
-    # Step 3: Cleanup temp file
-    cleanup_command = f"rm -f {temp_tcl_path}"
-    execute_sapro_command(cleanup_command, timeout=10)
-
-    if success:
-        # sapcnsl outputs a single "Trap(s) Sent" for the entire batch
-        if "Trap(s) Sent" in output:
-            logger.info(f"Batch sent all {total_traps} trap(s) from {device_ip} to {cc_ip}")
-            return total_traps, 0, total_traps
-        else:
-            logger.error(
-                f"Batch execution succeeded but no traps confirmed sent "
-                f"from {device_ip} to {cc_ip}. Output: {output[:500]}"
-            )
-            return 0, total_traps, total_traps
-    else:
-        logger.error(f"Batch execution failed from {device_ip} to {cc_ip}: {output[:500]}")
-        return 0, total_traps, total_traps
+    return total_success, total_failed, total_traps
 
 
 def send_attack_traps_with_progress(cc_ip, device_ip, payload):
