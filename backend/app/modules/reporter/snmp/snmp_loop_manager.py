@@ -180,9 +180,13 @@ class SNMPLoopManager:
         elapsed_seconds = 0
         remaining_seconds = config.loop_timeout if config.loop_timeout else 0
 
-        if config.start_time and config.is_active:
+        if config.start_time:
             elapsed_seconds = int((datetime.now(timezone.utc) - config.start_time.replace(tzinfo=timezone.utc)).total_seconds())
-            remaining_seconds = max(0, config.loop_timeout - elapsed_seconds)
+            if config.is_active:
+                remaining_seconds = max(0, config.loop_timeout - elapsed_seconds)
+            else:
+                elapsed_seconds = min(elapsed_seconds, config.loop_timeout)
+                remaining_seconds = 0
 
         return SNMPLoopStatus(
             is_active=config.is_active,
