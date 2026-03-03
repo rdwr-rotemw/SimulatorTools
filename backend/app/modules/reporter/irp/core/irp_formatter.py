@@ -9,10 +9,12 @@ Example usage:
 import socket
 import struct
 import time
+
 from backend.app.modules.reporter.irp.tools.type_handler import TypeHandler
 from backend.app.modules.reporter.irp.tools.message_builder import MessageBuilder
 from backend.app.modules.reporter.irp.tools.value_loader import ValueLoader
 from backend.app.modules.reporter.irp.tools.message_resolver import MessageResolver
+from backend.app.utils.logger import logger
 
 
 class IrpFormatter:
@@ -89,7 +91,7 @@ class IrpFormatter:
         server_address = (self.to_ip, 2088)
         try:
             sock.sendto(data, server_address)
-            print("Data sent successfully")
+            logger.debug(f"IRP UDP sent from {self.from_ip} to {self.to_ip}:{server_address[1]}")
         except Exception as e:
             raise RuntimeError(f"Failed to send UDP data: {e}")
         finally:

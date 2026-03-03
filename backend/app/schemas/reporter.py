@@ -52,6 +52,7 @@ class ReporterSNMPPayload(BaseModel):
     """
     map: Union[str, Dict[str, str]]
     traps: List[TrapConfig]
+    per_simulator_traps: Optional[Dict[str, List[TrapConfig]]] = None
 
 
 class ReporterIRPPayload(BaseModel):

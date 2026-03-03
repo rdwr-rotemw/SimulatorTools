@@ -681,64 +681,48 @@ export const SNMPPage: React.FC = () => {
         setAttackIdDialogOpen(false);
 
         if (pendingAction === 'send') {
-            // Create modified traps with attack-IDs for each simulator
-            // For now, we'll send to each simulator sequentially with modified attack-IDs
+            // Build per-simulator traps with simulator-specific attack IDs
+            const perSimulatorTraps: Record<string, SNMPTrap[]> = {};
+            for (const simulatorIp of selectedSimulators) {
+                perSimulatorTraps[simulatorIp] = traps.map((trap, index) => ({
+                    ...trap,
+                    attackId: attackIdConfig[simulatorIp][index]
+                }));
+            }
+
             setIsSending(true);
             setCurrentTrap(0);
             setTotalTraps(traps.length * selectedSimulators.length);
 
             try {
-                let successCount = 0;
-                let failedCount = 0;
-
-                for (const simulatorIp of selectedSimulators) {
-                    const modifiedTraps = traps.map((trap, index) => ({
-                        ...trap,
-                        attackId: attackIdConfig[simulatorIp][index]
-                    }));
-
-                    try {
-                        // Capture current counts for progress display
-                        const currentSuccessCount = successCount;
-                        const currentFailedCount = failedCount;
-                        const trapCount = modifiedTraps.length;
-
-                        await snmpTemplateService.sendTrapsWithProgress(
-                            selectedDestinationPort,
-                            [simulatorIp],
-                            modifiedTraps,
-                            (current, total, trapName, status) => {
-                                setCurrentTrap(currentSuccessCount + currentFailedCount + current);
-                            },
-                            // eslint-disable-next-line no-loop-func
-                            (simSuccessCount, simFailedCount, totalCount) => {
-                                successCount += simSuccessCount;
-                                failedCount += simFailedCount;
-                            },
-                            // eslint-disable-next-line no-loop-func
-                            (error) => {
-                                // Error for this simulator
-                                failedCount += trapCount;
-                            }
-                        );
-                    } catch (error) {
-                        failedCount += modifiedTraps.length;
-                    }
-                }
-
-                if (failedCount === 0) {
-                    setSnackbar({
-                        open: true,
-                        message: `Successfully sent all ${successCount} trap(s) to ${selectedSimulators.length} simulator(s)`,
-                        severity: 'success'
-                    });
-                } else {
-                    setSnackbar({
-                        open: true,
-                        message: `Partially successful: ${successCount} succeeded, ${failedCount} failed`,
-                        severity: 'error'
-                    });
-                }
+                await snmpTemplateService.sendTrapsWithProgress(
+                    selectedDestinationPort,
+                    selectedSimulators,
+                    traps,
+                    (current, total, trapName, status) => {
+                        setCurrentTrap(current);
+                        setTotalTraps(total);
+                    },
+                    (successCount, failedCount, totalCount) => {
+                        if (failedCount === 0) {
+                            setSnackbar({
+                                open: true,
+                                message: `Successfully sent all ${successCount} trap(s) to ${selectedSimulators.length} simulator(s)`,
+                                severity: 'success'
+                            });
+                        } else {
+                            setSnackbar({
+                                open: true,
+                                message: `Partially successful: ${successCount} succeeded, ${failedCount} failed`,
+                                severity: 'error'
+                            });
+                        }
+                    },
+                    (error) => {
+                        setSnackbar({open: true, message: error, severity: 'error'});
+                    },
+                    perSimulatorTraps
+                );
             } catch (error: any) {
                 setSnackbar({
                     open: true,

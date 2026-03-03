@@ -171,10 +171,15 @@ async def send_snmp_trap_endpoint(
                 if map_name:
                     map_dict[sim_ip] = sapro_handler.get_full_map_path(map_name, workspace)
 
+            # Extract per-simulator traps (different attack IDs per simulator)
+            per_simulator_traps = trap_data.pop("per_simulator_traps", None)
+
             # Process all simulators in parallel
             async def send_to_simulator(sim_ip: str):
                 sim_trap_data = trap_data.copy()
                 sim_trap_data["map"] = map_dict.get(sim_ip)
+                if per_simulator_traps and sim_ip in per_simulator_traps:
+                    sim_trap_data["traps"] = per_simulator_traps[sim_ip]
                 return attack_traps.send_attack_traps(cc_ip, sim_ip, sim_trap_data)
 
             # Execute in parallel
@@ -236,6 +241,11 @@ async def send_snmp_trap_endpoint(
 
             # Resolve map name to full path
             trap_data["map"] = sapro_handler.get_full_map_path(trap_data["map"], workspace)
+
+            # Use per-simulator traps if provided
+            per_simulator_traps = trap_data.pop("per_simulator_traps", None)
+            if per_simulator_traps and simulator_ip in per_simulator_traps:
+                trap_data["traps"] = per_simulator_traps[simulator_ip]
 
             # Call attack_traps module directly
             logger.info(
@@ -1745,6 +1755,9 @@ async def send_snmp_trap_stream_endpoint(
                 if map_name:
                     map_dict[sim_ip] = sapro_handler.get_full_map_path(map_name, workspace)
 
+            # Extract per-simulator traps (different attack IDs per simulator)
+            per_simulator_traps = trap_data.pop("per_simulator_traps", None)
+
             async def event_generator():
                 try:
                     # Create async generators for each simulator
@@ -1752,6 +1765,8 @@ async def send_snmp_trap_stream_endpoint(
                         try:
                             sim_trap_data = trap_data.copy()
                             sim_trap_data["map"] = map_dict.get(sim_ip)
+                            if per_simulator_traps and sim_ip in per_simulator_traps:
+                                sim_trap_data["traps"] = per_simulator_traps[sim_ip]
 
                             for progress in send_attack_traps_with_progress(
                                 cc_ip, sim_ip, sim_trap_data
@@ -1824,6 +1839,11 @@ async def send_snmp_trap_stream_endpoint(
 
             # Resolve map name to full path
             trap_data["map"] = sapro_handler.get_full_map_path(trap_data["map"], workspace)
+
+            # Use per-simulator traps if provided
+            per_simulator_traps = trap_data.pop("per_simulator_traps", None)
+            if per_simulator_traps and simulator_ip in per_simulator_traps:
+                trap_data["traps"] = per_simulator_traps[simulator_ip]
 
             async def event_generator():
                 try:

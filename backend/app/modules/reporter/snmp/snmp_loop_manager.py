@@ -294,56 +294,61 @@ class SNMPLoopManager:
             config: Loop configuration
         """
         try:
-            # Track overall success/failure across all simulators
-            total_success = 0
-            total_failed = 0
+            # Send to all simulators in parallel
             error_messages = []
 
-            # Send to each simulator separately
-            for simulator_ip in config.simulators:
-                # Get map for this simulator
+            async def send_to_simulator(simulator_ip: str):
                 map_name = config.simulator_maps.get(simulator_ip)
                 if not map_name:
                     error_msg = f"No map found for simulator {simulator_ip}"
                     logger.error(error_msg)
-                    error_messages.append(error_msg)
-                    continue
+                    return 0, 0, error_msg
 
                 # Prepare traps with attack IDs if needed
-                traps_to_send = list(config.traps)  # Copy the traps
+                traps_to_send = [dict(t) for t in config.traps]  # Deep copy each trap
 
                 if config.configured_attack_ids and simulator_ip in config.configured_attack_ids:
-                    # Use configured attack IDs for multi-simulator case
                     for index, trap in enumerate(traps_to_send):
                         if config.regenerate_attack_id:
                             trap["attackId"] = self._generate_random_attack_id()
                         else:
                             trap["attackId"] = config.configured_attack_ids[simulator_ip][index]
                 elif config.regenerate_attack_id:
-                    # Regenerate attack IDs
                     for trap in traps_to_send:
                         trap["attackId"] = self._generate_random_attack_id()
 
-                # Build payload for send_attack_traps
                 payload = {
                     "map": map_name,
                     "traps": traps_to_send
                 }
 
-                # Call the synchronous send_attack_traps function in a thread
-                # Returns: (success_count, failed_count, total_count)
                 success_count, failed_count, total_count = await asyncio.to_thread(
                     send_attack_traps,
-                    config.destination_port,  # cc_ip
-                    simulator_ip,            # device_ip
-                    payload                   # payload
+                    config.destination_port,
+                    simulator_ip,
+                    payload
                 )
 
-                total_success += success_count
-                total_failed += failed_count
+                error_msg = f"{simulator_ip}: {failed_count}/{total_count} traps failed" if failed_count > 0 else None
+                return success_count, failed_count, error_msg
 
-                if failed_count > 0:
-                    error_messages.append(f"{simulator_ip}: {failed_count}/{total_count} traps failed")
+            sim_results = await asyncio.gather(
+                *[send_to_simulator(sim_ip) for sim_ip in config.simulators],
+                return_exceptions=True,
+            )
+
+            total_success = 0
+            total_failed = 0
+            for result in sim_results:
+                if isinstance(result, Exception):
+                    error_messages.append(str(result))
+                    total_failed += len(config.traps)
+                else:
+                    sc, fc, err = result
+                    total_success += sc
+                    total_failed += fc
+                    if err:
+                        error_messages.append(err)
 
             # Check if there were any failures
             if total_failed > 0:

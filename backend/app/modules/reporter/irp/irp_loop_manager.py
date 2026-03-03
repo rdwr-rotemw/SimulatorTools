@@ -300,38 +300,44 @@ class IRPLoopManager:
                 config.schema_id
             )
 
-            has_failures = False
             error_messages = []
 
-            # Send to each simulator
-            for simulator_ip in config.simulators:
-                # Use per-simulator messages if available, else shared messages
+            # Send to all simulators in parallel
+            async def send_to_simulator(simulator_ip: str):
                 sim_messages = config.messages
                 if config.per_simulator_messages and simulator_ip in config.per_simulator_messages:
                     sim_messages = config.per_simulator_messages[simulator_ip]
 
                 payload = {"messages": sim_messages}
 
-                # Call the synchronous send_irp_messages function in a thread
-                results = await asyncio.to_thread(
+                return simulator_ip, await asyncio.to_thread(
                     send_irp_messages,
                     schema_obj,
                     payload,
-                    simulator_ip,               # from_ip
-                    config.destination_port      # to_ip
+                    simulator_ip,
+                    config.destination_port
                 )
 
-                # Check results - send_irp_messages returns dict of {message_name: (success, msg)} or (False, error) on exception
-                if isinstance(results, tuple):
-                    # Exception occurred - results is (False, error_msg)
+            sim_results = await asyncio.gather(
+                *[send_to_simulator(sim_ip) for sim_ip in config.simulators],
+                return_exceptions=True,
+            )
+
+            has_failures = False
+            for result in sim_results:
+                if isinstance(result, Exception):
                     has_failures = True
-                    error_messages.append(f"{simulator_ip}: {results[1]}")
-                elif isinstance(results, dict):
-                    # Check each message result
-                    for message_name, (success, msg) in results.items():
-                        if not success:
-                            has_failures = True
-                            error_messages.append(f"{simulator_ip}/{message_name}: {msg}")
+                    error_messages.append(str(result))
+                else:
+                    simulator_ip, results = result
+                    if isinstance(results, tuple):
+                        has_failures = True
+                        error_messages.append(f"{simulator_ip}: {results[1]}")
+                    elif isinstance(results, dict):
+                        for message_name, (success, msg) in results.items():
+                            if not success:
+                                has_failures = True
+                                error_messages.append(f"{simulator_ip}/{message_name}: {msg}")
 
             if has_failures:
                 # Some or all messages failed

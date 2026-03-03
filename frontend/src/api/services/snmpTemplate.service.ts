@@ -43,7 +43,7 @@ class SNMPTemplateService {
     await apiClient.delete(url);
   }
 
-  async sendTraps(destinationPortIp: string, simulatorIps: string[], traps: SNMPTrap[]): Promise<void> {
+  async sendTraps(destinationPortIp: string, simulatorIps: string[], traps: SNMPTrap[], perSimulatorTraps?: Record<string, SNMPTrap[]>): Promise<void> {
     // Send traps to multiple simulators using comma-separated IPs and map dict
     const saproSimulators = useCCStore.getState().saproSimulators;
 
@@ -62,8 +62,9 @@ class SNMPTemplateService {
     const url = `/cc/${destinationPortIp}/simulators/${simulatorIpsParam}/reporter/snmp`;
 
     await apiClient.post(url, {
-      map: mapDict, // Send as dict for multi-simulator
-      traps
+      map: mapDict,
+      traps,
+      ...(perSimulatorTraps && { per_simulator_traps: perSimulatorTraps })
     }, {
       timeout: 600000, // 10 minutes - allows for pause delays and multiple traps
     });
@@ -75,7 +76,8 @@ class SNMPTemplateService {
     traps: SNMPTrap[],
     onProgress: (current: number, total: number, trapName: string, status: string) => void,
     onComplete: (successCount: number, failedCount: number, totalCount: number) => void,
-    onError: (error: string) => void
+    onError: (error: string) => void,
+    perSimulatorTraps?: Record<string, SNMPTrap[]>
   ): Promise<void> {
     return new Promise<void>(async (resolve, reject) => {
       try {
@@ -118,8 +120,9 @@ class SNMPTemplateService {
             'Authorization': `Bearer ${token}`
           },
           body: JSON.stringify({
-            map: mapDict, // Send as dict for multi-simulator
-            traps
+            map: mapDict,
+            traps,
+            ...(perSimulatorTraps && { per_simulator_traps: perSimulatorTraps })
           })
         });
 
