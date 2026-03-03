@@ -619,7 +619,7 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({messageData, schema, onC
                         <Typography variant="body2" color="textSecondary">No iterations</Typography>
                     ) : (
                         arrayValue.map((item: any, idx: number) => (
-                            <Accordion key={`${pathString}-${idx}`} sx={{marginBottom: 1}}>
+                            <Accordion key={`${pathString}-${idx}`} sx={{marginBottom: 1}} TransitionProps={{unmountOnExit: true}}>
                                 <AccordionSummary expandIcon={<ExpandMoreIcon/>}>
                                     <Typography variant="body2">
                                         {isSwitchArray ? Object.keys(item)[0] : `Iteration ${idx + 1}`}
@@ -972,7 +972,7 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({messageData, schema, onC
                         const optionValue = cloneValue[optionKey] ?? {}
 
                         return (
-                            <Accordion key={`${pathString}-${optionKey}`} sx={{marginBottom: 1}}>
+                            <Accordion key={`${pathString}-${optionKey}`} sx={{marginBottom: 1}} TransitionProps={{unmountOnExit: true}}>
                                 <AccordionSummary expandIcon={<ExpandMoreIcon/>}>
                                     <Typography variant="body2">{optionKey}</Typography>
                                 </AccordionSummary>
@@ -1003,7 +1003,7 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({messageData, schema, onC
             const isOverlap = fieldSchema.type === 'overlap'
 
             return (
-                <Accordion key={pathString} sx={{marginY: 1}}>
+                <Accordion key={pathString} sx={{marginY: 1}} TransitionProps={{unmountOnExit: true}}>
                     <AccordionSummary expandIcon={<ExpandMoreIcon/>}>
                         <Typography variant="subtitle2" sx={{fontWeight: 'bold'}}>{key}</Typography>
                     </AccordionSummary>
@@ -1124,7 +1124,7 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({messageData, schema, onC
             const selectedCaseData = nestedValue[selectedCase] ?? {}
 
             return (
-                <Accordion key={pathString} sx={{marginY: 1}}>
+                <Accordion key={pathString} sx={{marginY: 1}} TransitionProps={{unmountOnExit: true}}>
                     <AccordionSummary expandIcon={<ExpandMoreIcon/>}>
                         <Typography variant="subtitle2" sx={{fontWeight: 'bold'}}>{key}</Typography>
                     </AccordionSummary>
@@ -1186,7 +1186,7 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({messageData, schema, onC
             fieldSchema && typeof fieldSchema === 'object' && fieldSchema.fields && fieldSchema.type !== 'clone') {
             const nestedValue = value
             return (
-                <Accordion key={pathString} sx={{marginY: 1}}>
+                <Accordion key={pathString} sx={{marginY: 1}} TransitionProps={{unmountOnExit: true}}>
                     <AccordionSummary expandIcon={<ExpandMoreIcon/>}>
                         <Typography variant="subtitle2" sx={{fontWeight: 'bold'}}>{key}</Typography>
                     </AccordionSummary>

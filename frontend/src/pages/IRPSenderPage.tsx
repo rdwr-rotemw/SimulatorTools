@@ -25,6 +25,7 @@ import {
     TextField,
     Tooltip,
     Typography,
+    Pagination,
 } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import AddIcon from '@mui/icons-material/Add'
@@ -868,7 +869,7 @@ const SortableMessage: React.FC<SortableMessageProps> = React.memo(({
                     </IconButton>
                 </Box>
             </Box>
-            <Collapse in={isExpanded}>
+            <Collapse in={isExpanded} unmountOnExit>
                 <IRPMessageForm
                     messageData={msg.data}
                     schema={msg.schema}
@@ -978,6 +979,17 @@ export const IRPSenderPage: React.FC = () => {
     const [remainingSeconds, setRemainingSeconds] = useState<number>(0) // Time remaining
     const statusPollIntervalRef = React.useRef<NodeJS.Timeout | null>(null)
 
+    // Check if any message data (at any nesting level) contains attack-id fields
+    const hasAttackIdFields = (data: any): boolean => {
+        if (!data || typeof data !== 'object') return false
+        if ('attack-id' in data) return true
+        return Object.values(data).some((value: any) => {
+            if (Array.isArray(value)) return value.some(item => hasAttackIdFields(item))
+            if (value && typeof value === 'object') return hasAttackIdFields(value)
+            return false
+        })
+    }
+
     // Attack-ID configuration dialog state
     const [attackIdDialogOpen, setAttackIdDialogOpen] = useState(false)
     const [pendingAction, setPendingAction] = useState<'send' | 'loop' | null>(null)
@@ -990,7 +1002,16 @@ export const IRPSenderPage: React.FC = () => {
     const [importProgress, setImportProgress] = useState<number>(0)
     const [isImporting, setIsImporting] = useState<boolean>(false)
     const [isFullscreen, setIsFullscreen] = useState(false)
+    const [messagePage, setMessagePage] = useState(1)
+    const MESSAGES_PER_PAGE = 20
     const jsonFileInputRef = React.useRef<HTMLInputElement>(null)
+
+    // Pagination computed values
+    const totalPages = Math.max(1, Math.ceil(messages.length / MESSAGES_PER_PAGE))
+    const safeMessagePage = Math.min(messagePage, totalPages)
+    const pageStartIndex = (safeMessagePage - 1) * MESSAGES_PER_PAGE
+    const visibleMessages = messages.slice(pageStartIndex, pageStartIndex + MESSAGES_PER_PAGE)
+    const visibleIndices = visibleMessages.map((_, i) => pageStartIndex + i)
 
     // ========================================================================
     // DRAG AND DROP SENSORS
@@ -1129,13 +1150,18 @@ export const IRPSenderPage: React.FC = () => {
             const transformedData = transformToAttackId(template.template, template.schema)
             const transformedSchema = transformSchemaForAttackId(template.schema)
 
-            setMessages((prev) => [...prev, {
-                messageType,
-                messageName,
-                data: transformedData,
-                schema: transformedSchema,
-                originalSchema: template.schema,
-            }])
+            setMessages((prev) => {
+                const newMessages = [...prev, {
+                    messageType,
+                    messageName,
+                    data: transformedData,
+                    schema: transformedSchema,
+                    originalSchema: template.schema,
+                }]
+                // Navigate to last page so the new message is visible
+                setMessagePage(Math.ceil(newMessages.length / MESSAGES_PER_PAGE))
+                return newMessages
+            })
             setExpandedMessages((prev) => [...prev, messages.length])
             setAddMessageDialogOpen(false)
             setSnackbar({open: true, message: `Added ${messageName}`, severity: 'success'})
@@ -1146,12 +1172,18 @@ export const IRPSenderPage: React.FC = () => {
         }
     }
 
-    const handleToggleAllMessages = () => {
-        const allExpanded = expandedMessages.length === messages.length && messages.length > 0
-        if (allExpanded) {
-            setExpandedMessages([])
+    const handleToggleAllMessages = async () => {
+        const allVisibleExpanded = visibleIndices.length > 0 && visibleIndices.every(i => expandedMessages.includes(i))
+        if (allVisibleExpanded) {
+            // Collapse all at once (cheap — unmountOnExit handles cleanup)
+            setExpandedMessages(prev => prev.filter(i => !visibleIndices.includes(i)))
         } else {
-            setExpandedMessages(messages.map((_, i) => i))
+            // Expand one at a time with a frame delay so each form mounts without freezing
+            const toExpand = visibleIndices.filter(i => !expandedMessages.includes(i))
+            for (const idx of toExpand) {
+                setExpandedMessages(prev => [...prev, idx])
+                await new Promise(resolve => requestAnimationFrame(resolve))
+            }
         }
     }
 
@@ -1639,13 +1671,16 @@ export const IRPSenderPage: React.FC = () => {
         setIsImporting(true)
         setImportProgress(0)
 
+        // Helper: yield to UI thread so progress renders
+        const yieldToUI = () => new Promise<void>(resolve => setTimeout(resolve, 0))
+
         try {
-            // 1. Parse JSON file
+            // 1. Parse and validate JSON file
             const fileContent = await file.text()
             const imported = JSON.parse(fileContent)
 
             if (!imported.messages || !Array.isArray(imported.messages)) {
-                throw new Error('Invalid JSON format: missing messages array')
+                throw new Error('Invalid JSON format: missing "messages" array')
             }
 
             const messagesToImport = imported.messages
@@ -1654,38 +1689,68 @@ export const IRPSenderPage: React.FC = () => {
                 throw new Error('No messages found in JSON file')
             }
 
-            // 2. Get list of available messages for name→type mapping
-            const availableMessages = await irpSchemaService.listMessages(currentCC!, schemaId!)
+            // Validate each message has required 'message' field
+            const invalidIndices: number[] = []
+            for (let i = 0; i < messagesToImport.length; i++) {
+                const msg = messagesToImport[i]
+                if (!msg || typeof msg !== 'object') {
+                    invalidIndices.push(i + 1)
+                } else if (!msg.message && !msg.messageType) {
+                    invalidIndices.push(i + 1)
+                }
+            }
+            if (invalidIndices.length > 0) {
+                throw new Error(
+                    `Invalid messages at position(s) ${invalidIndices.slice(0, 5).join(', ')}${invalidIndices.length > 5 ? ` and ${invalidIndices.length - 5} more` : ''}: each message must have a "message" (name) or "messageType" field`
+                )
+            }
+
+            setImportProgress(10)
+            await yieldToUI()
+
+            // 2. Get list of available messages for name->type mapping
+            const availableMessages = await irpSchemaService.listMessages(currentCC!, schemaId!, 600000)
             const messageNameToType = new Map(availableMessages.map(m => [m.name, m.id]))
 
-            // 3. PARALLEL: Fetch ALL templates at once
             setImportProgress(20)
-            const templatePromises = messagesToImport.map((msg: any) => {
-                // Resolve message name → message type
+            await yieldToUI()
+
+            // 3. Resolve message types and collect unique ones
+            const uniqueMessageTypes = new Map<string, string>() // messageType -> messageName
+            const resolvedTypes: Array<{ messageType: string | null, messageName: string }> = []
+
+            for (const msg of messagesToImport) {
                 const messageType = msg.messageType || messageNameToType.get(msg.message)
-
-                if (!messageType) {
-                    return Promise.resolve({
-                        error: true,
-                        messageName: msg.message,
-                        reason: 'Message type not found in current schema'
-                    })
+                resolvedTypes.push({ messageType: messageType || null, messageName: msg.message })
+                if (messageType && !uniqueMessageTypes.has(messageType)) {
+                    uniqueMessageTypes.set(messageType, msg.message)
                 }
+            }
 
-                return irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageType)
-                    .then(template => ({...template, messageType, originalMessage: msg}))
-                    .catch(err => ({
-                        error: true,
-                        messageName: msg.message,
-                        messageType,
-                        reason: err.message
-                    }))
-            })
+            // 4. Fetch only unique templates in parallel
+            const templateCache = new Map<string, any>()
+            const templateErrors = new Map<string, string>()
+            const uniqueEntries = Array.from(uniqueMessageTypes.entries())
+            const uniqueResults = await Promise.all(
+                uniqueEntries.map(([messageType, messageName]) =>
+                    irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageType, 600000)
+                        .then(tmpl => ({ messageType, tmpl, error: false as const }))
+                        .catch(err => ({ messageType, tmpl: null, error: true as const, reason: err.message, messageName }))
+                )
+            )
 
-            const templates = await Promise.all(templatePromises)
+            for (const result of uniqueResults) {
+                if (!result.error) {
+                    templateCache.set(result.messageType, result.tmpl)
+                } else {
+                    templateErrors.set(result.messageType, (result as any).reason)
+                }
+            }
+
             setImportProgress(50)
+            await yieldToUI()
 
-            // 4. Process each message (all in memory, no more API calls)
+            // 5. Process each message (all in memory, no more API calls)
             const results: Array<{
                 success: boolean
                 messageName: string
@@ -1703,78 +1768,79 @@ export const IRPSenderPage: React.FC = () => {
                 pause?: number
             }> = []
 
-            for (let i = 0; i < templates.length; i++) {
-                const templateResult = templates[i]
+            // Pre-compute transformed schemas per unique type (avoids recomputing for each message)
+            const transformedSchemaCache = new Map<string, any>()
 
-                if (templateResult.error) {
-                    results.push({
-                        success: false,
-                        messageName: templateResult.messageName,
-                        error: templateResult.reason
-                    })
+            for (let i = 0; i < messagesToImport.length; i++) {
+                const msg = messagesToImport[i]
+                const { messageType, messageName } = resolvedTypes[i]
+
+                if (!messageType) {
+                    results.push({ success: false, messageName, error: 'Message type not found in current schema' })
                     continue
                 }
 
-                const {template, schema, name, messageType, originalMessage} = templateResult
-                const {message: _, messageType: __, pause: importedPause, ...importedData} = originalMessage
+                const cached = templateCache.get(messageType)
+                if (!cached) {
+                    results.push({ success: false, messageName, messageType, error: templateErrors.get(messageType) || 'Template fetch failed' })
+                    continue
+                }
+
+                const { template, schema, name } = cached
+                const { message: _, messageType: __, pause: importedPause, ...importedData } = msg
 
                 try {
-                    // Check if SCHEMA has attack-id related fields (not data!)
+                    // Deep-clone template since it's shared across messages of the same type
+                    const templateClone = JSON.parse(JSON.stringify(template))
+
                     const schemaHasTimeCnt = 'time' in schema && 'cnt' in schema
                     const schemaHasAttackId = 'attack-id' in schema
-                    const isMessage1 = messageType === '1'
+                    const isMsg1 = messageType === '1'
 
                     let finalData: Record<string, any>
                     let warnings: string[] = []
 
-                    // If schema has no attack-id related fields, just merge and we're done
                     if (!schemaHasTimeCnt && !schemaHasAttackId) {
-                        finalData = mergeWithTemplate(importedData, template, schema)
+                        finalData = mergeWithTemplate(importedData, templateClone, schema)
                     } else {
-                        // Schema has attack-id fields - apply transformation logic
                         const hasAttackId = 'attack-id' in importedData
                         const hasTime = 'time' in importedData
                         const hasCnt = 'cnt' in importedData
 
-                        if (isMessage1) {
-                            // Message 1: Keep attack-id and time separate (no transformation)
+                        if (isMsg1) {
                             if (hasAttackId && hasTime) {
-                                // Already in correct format for message 1
-                                finalData = mergeWithTemplate(importedData, template, schema)
+                                finalData = mergeWithTemplate(importedData, templateClone, schema)
                             } else {
                                 warnings.push('Message 1 requires both attack-id and time fields')
-                                finalData = template // Use template defaults
+                                finalData = templateClone
                             }
                         } else {
-                            // Other messages: Need cnt+time or merged attack-id
                             if (hasAttackId && !hasCnt && !hasTime) {
-                                // UI format: has merged attack-id, need to split to backend then transform
                                 const [cnt, time] = (importedData['attack-id'] as string).split('-')
-                                const backendData = {...importedData, cnt: parseInt(cnt), time: parseInt(time)}
+                                const backendData = { ...importedData, cnt: parseInt(cnt), time: parseInt(time) }
                                 delete backendData['attack-id']
-
-                                // Merge with template, then transform to UI
-                                const merged = mergeWithTemplate(backendData, template, schema)
+                                const merged = mergeWithTemplate(backendData, templateClone, schema)
                                 finalData = transformToAttackId(merged, schema)
                             } else if (hasCnt && hasTime) {
-                                // Backend format: transform to UI
-                                const merged = mergeWithTemplate(importedData, template, schema)
+                                const merged = mergeWithTemplate(importedData, templateClone, schema)
                                 finalData = transformToAttackId(merged, schema)
                             } else {
                                 warnings.push('Missing required fields (cnt+time or attack-id)')
-                                finalData = transformToAttackId(template, schema) // Use template defaults
+                                finalData = transformToAttackId(templateClone, schema)
                             }
                         }
                     }
 
-                    // Transform schema for UI
-                    const transformedSchema = transformSchemaForAttackId(schema)
+                    // Cache transformed schema per type (same schema = same transform)
+                    if (!transformedSchemaCache.has(messageType)) {
+                        transformedSchemaCache.set(messageType, transformSchemaForAttackId(schema))
+                    }
 
                     successfulMessages.push({
                         messageType,
                         messageName: name,
                         data: finalData,
-                        schema: transformedSchema,
+                        schema: transformedSchemaCache.get(messageType),
                         originalSchema: schema,
                         pause: importedPause
                     })
@@ -1787,26 +1853,24 @@ export const IRPSenderPage: React.FC = () => {
                     })
 
                 } catch (err: any) {
-                    results.push({
-                        success: false,
-                        messageName: name,
-                        messageType,
-                        error: err.message
-                    })
+                    results.push({ success: false, messageName: name, messageType, error: err.message })
                 }
 
-                // Update progress
-                setImportProgress(50 + ((i + 1) / templates.length) * 50)
+                // Yield to UI every 10 messages so progress bar updates
+                if ((i + 1) % 10 === 0 || i === messagesToImport.length - 1) {
+                    setImportProgress(50 + ((i + 1) / messagesToImport.length) * 45)
+                    await yieldToUI()
+                }
             }
 
-            // 5. Single state update (prevents multiple re-renders)
-            setMessages(prev => [...prev, ...successfulMessages])
-            setExpandedMessages(prev => [
-                ...prev,
-                ...successfulMessages.map((_, idx) => messages.length + idx)
-            ])
+            setImportProgress(98)
+            await yieldToUI()
 
-            // 6. Show detailed summary
+            // 6. Single state update (don't auto-expand — rendering many expanded forms freezes UI)
+            setMessages(prev => [...prev, ...successfulMessages])
+            setMessagePage(1)
+
+            // 7. Show summary
             const successful = results.filter(r => r.success).length
             const failed = results.filter(r => !r.success).length
             const withWarnings = results.filter(r => r.success && r.warnings?.length).length
@@ -1821,14 +1885,13 @@ export const IRPSenderPage: React.FC = () => {
                 severity: failed > 0 ? 'warning' : 'success'
             })
 
-            // Log details to console
             if (failed > 0 || withWarnings > 0) {
                 console.group('Import Details')
                 results.forEach(r => {
                     if (!r.success) {
-                        console.error(`❌ ${r.messageName}: ${r.error}`)
+                        console.error(`Failed: ${r.messageName}: ${r.error}`)
                     } else if (r.warnings?.length) {
-                        console.warn(`⚠️ ${r.messageName}:`, r.warnings.join(', '))
+                        console.warn(`Warning: ${r.messageName}:`, r.warnings.join(', '))
                     }
                 })
                 console.groupEnd()
@@ -1912,8 +1975,8 @@ export const IRPSenderPage: React.FC = () => {
             return
         }
 
-        // If multiple simulators selected, show attack-ID configuration dialog
-        if (selectedSimulators.length > 1) {
+        // If multiple simulators selected and messages have attack-ID fields, show config dialog
+        if (selectedSimulators.length > 1 && messages.some(msg => hasAttackIdFields(msg.data))) {
             setPendingAction('send');
             setAttackIdDialogOpen(true);
             return;
@@ -2112,8 +2175,8 @@ export const IRPSenderPage: React.FC = () => {
             return
         }
 
-        // If multiple simulators, show attack-ID dialog first
-        if (selectedSimulators.length > 1) {
+        // If multiple simulators and messages have attack-ID fields, show config dialog first
+        if (selectedSimulators.length > 1 && messages.some(msg => hasAttackIdFields(msg.data))) {
             setPendingAction('loop');
             setAttackIdDialogOpen(true);
             return;
@@ -2377,43 +2440,62 @@ export const IRPSenderPage: React.FC = () => {
                         <Typography color="textSecondary">No messages. Use "Add Message" to add one from the
                             schema.</Typography>
                     ) : (
-                        <DndContext
-                            sensors={sensors}
-                            collisionDetection={closestCenter}
-                            onDragEnd={handleDragEnd}
-                        >
-                            <SortableContext
-                                items={messages.map((_, index) => index)}
-                                strategy={verticalListSortingStrategy}
+                        <>
+                            <DndContext
+                                sensors={sensors}
+                                collisionDetection={closestCenter}
+                                onDragEnd={handleDragEnd}
                             >
-                                {messages.map((msg, index) => (
-                                    <SortableMessage
-                                        key={index}
-                                        id={index}
-                                        index={index}
-                                        msg={msg}
-                                        isExpanded={expandedMessages.includes(index)}
-                                        isFirst={index === 0}
-                                        isLast={index === messages.length - 1}
-                                        onToggle={() => memoizedToggleMessage(index)}
-                                        onDelete={() => memoizedDeleteMessage(index)}
-                                        onDuplicate={() => memoizedDuplicateMessage(index)}
-                                        onUpdate={(data) => memoizedUpdateMessage(index, data)}
-                                        onMoveUp={() => memoizedMoveUp(index)}
-                                        onMoveDown={() => memoizedMoveDown(index)}
-                                        onTestMessage={() => handleTestMessage(index)}
-                                        onRandomize={() => memoizedRandomize(index, msg)}
-                                        onValidationChange={(isValid) => memoizedValidationChange(index, isValid)}
-                                        isTestingMessage={testingMessage}
-                                        isValid={messageValidationState.get(index) ?? true}
-                                        messages={messages}
-                                        setMessages={setMessages}
-                                    />
-                                ))}
-                            </SortableContext>
-                        </DndContext>
+                                <SortableContext
+                                    items={visibleMessages.map((_, i) => pageStartIndex + i)}
+                                    strategy={verticalListSortingStrategy}
+                                >
+                                    {visibleMessages.map((msg, pageIndex) => {
+                                        const actualIndex = pageStartIndex + pageIndex
+                                        return (
+                                            <SortableMessage
+                                                key={actualIndex}
+                                                id={actualIndex}
+                                                index={actualIndex}
+                                                msg={msg}
+                                                isExpanded={expandedMessages.includes(actualIndex)}
+                                                isFirst={actualIndex === 0}
+                                                isLast={actualIndex === messages.length - 1}
+                                                onToggle={() => memoizedToggleMessage(actualIndex)}
+                                                onDelete={() => memoizedDeleteMessage(actualIndex)}
+                                                onDuplicate={() => memoizedDuplicateMessage(actualIndex)}
+                                                onUpdate={(data) => memoizedUpdateMessage(actualIndex, data)}
+                                                onMoveUp={() => memoizedMoveUp(actualIndex)}
+                                                onMoveDown={() => memoizedMoveDown(actualIndex)}
+                                                onTestMessage={() => handleTestMessage(actualIndex)}
+                                                onRandomize={() => memoizedRandomize(actualIndex, msg)}
+                                                onValidationChange={(isValid) => memoizedValidationChange(actualIndex, isValid)}
+                                                isTestingMessage={testingMessage}
+                                                isValid={messageValidationState.get(actualIndex) ?? true}
+                                                messages={messages}
+                                                setMessages={setMessages}
+                                            />
+                                        )
+                                    })}
+                                </SortableContext>
+                            </DndContext>
+                        </>
                     )}
                 </Box>
+
+                {/* Pagination - fixed between message list and footer */}
+                {totalPages > 1 && (
+                    <Box sx={{ display: 'flex', justifyContent: 'center', py: 1, borderTop: '1px solid #E0E0E0' }}>
+                        <Pagination
+                            count={totalPages}
+                            page={safeMessagePage}
+                            onChange={(_, page) => setMessagePage(page)}
+                            color="primary"
+                            showFirstButton
+                            showLastButton
+                        />
+                    </Box>
+                )}
 
                 {/* Fixed Footer */}
                 <Box sx={{padding: 3, borderTop: '1px solid #E0E0E0', display: 'flex', gap: 2, flexWrap: 'wrap'}}>
@@ -2422,12 +2504,12 @@ export const IRPSenderPage: React.FC = () => {
                     </Button>
                     <Button
                         variant="outlined"
-                        startIcon={expandedMessages.length === messages.length && messages.length > 0 ?
+                        startIcon={visibleIndices.length > 0 && visibleIndices.every(i => expandedMessages.includes(i)) ?
                             <UnfoldLessIcon/> : <UnfoldMoreIcon/>}
                         onClick={handleToggleAllMessages}
                         disabled={messages.length === 0}
                     >
-                        {expandedMessages.length === messages.length && messages.length > 0 ? 'Collapse All' : 'Expand All'}
+                        {visibleIndices.length > 0 && visibleIndices.every(i => expandedMessages.includes(i)) ? 'Collapse All' : 'Expand All'}
                     </Button>
                     <Button
                         variant="contained"

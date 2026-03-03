@@ -26,6 +26,7 @@ import {
     Chip,
     Tooltip,
     FormControlLabel,
+    Pagination,
 } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import AddIcon from '@mui/icons-material/Add';
@@ -85,6 +86,7 @@ export const SNMPPage: React.FC = () => {
         ...SNMP_FIELD_DEFAULTS,
     }]);
     const [expandedTraps, setExpandedTraps] = useState<number[]>([0]);
+    const [trapPage, setTrapPage] = useState(1);
     const [errors, setErrors] = useState<{ [key: number]: SNMPFormErrors }>({});
     const [scrollToTrapIndex, setScrollToTrapIndex] = useState<number | null>(null);
     const [snackbar, setSnackbar] = useState<{
@@ -128,9 +130,18 @@ export const SNMPPage: React.FC = () => {
         'packetCount', 'packetBandwidth', 'samples', 'risk', 'action', 'direction',
     ];
 
+    // Pagination computed values
+    const TRAPS_PER_PAGE = 20;
+    const totalPages = Math.max(1, Math.ceil(traps.length / TRAPS_PER_PAGE));
+    const safeTrapPage = Math.min(trapPage, totalPages);
+    const pageStartIndex = (safeTrapPage - 1) * TRAPS_PER_PAGE;
+    const visibleTraps = traps.slice(pageStartIndex, pageStartIndex + TRAPS_PER_PAGE);
+    const visibleIndices = visibleTraps.map((_, i) => pageStartIndex + i);
+
     const fileInputRef = useRef<HTMLInputElement>(null);
     const pcapFileInputRef = useRef<HTMLInputElement>(null);
     const [uploading, setUploading] = useState(false);
+    const [pcapProgress, setPcapProgress] = useState<number>(0);
     const [uploadError, setUploadError] = useState<string | null>(null);
 
     // Dialog / templates state
@@ -230,16 +241,24 @@ export const SNMPPage: React.FC = () => {
     }, [managementPorts]);
 
     const addTrap = () => {
+        const newIndex = traps.length;
         setTraps([...traps, {attackName: '', policy: '', ...SNMP_FIELD_DEFAULTS}]);
-        setExpandedTraps([...expandedTraps, traps.length]);
+        setExpandedTraps([...expandedTraps, newIndex]);
+        // Navigate to the page containing the new trap
+        const newTotalPages = Math.ceil((newIndex + 1) / TRAPS_PER_PAGE);
+        setTrapPage(newTotalPages);
     };
 
-    const handleToggleAllTraps = () => {
-        const allExpanded = expandedTraps.length === traps.length;
-        if (allExpanded) {
-            setExpandedTraps([]);
+    const handleToggleAllTraps = async () => {
+        const allVisibleExpanded = visibleIndices.length > 0 && visibleIndices.every(i => expandedTraps.includes(i));
+        if (allVisibleExpanded) {
+            setExpandedTraps(prev => prev.filter(i => !visibleIndices.includes(i)));
         } else {
-            setExpandedTraps(traps.map((_, i) => i));
+            const toExpand = visibleIndices.filter(i => !expandedTraps.includes(i));
+            for (const idx of toExpand) {
+                setExpandedTraps(prev => [...prev, idx]);
+                await new Promise(resolve => requestAnimationFrame(resolve));
+            }
         }
     };
 
@@ -261,6 +280,11 @@ export const SNMPPage: React.FC = () => {
             newErrors[newIndex] = errors[ki];
         });
         setErrors(newErrors);
+        // Adjust page if current page would be empty after deletion
+        const newTotalPages = Math.max(1, Math.ceil(newTraps.length / TRAPS_PER_PAGE));
+        if (trapPage > newTotalPages) {
+            setTrapPage(newTotalPages);
+        }
     };
 
     const duplicateTrap = (index: number) => {
@@ -278,6 +302,9 @@ export const SNMPPage: React.FC = () => {
             newErrors[ki > index ? ki + 1 : ki] = errors[ki];
         });
         setErrors(newErrors);
+        // Navigate to page containing the duplicated trap
+        const dupPage = Math.ceil((index + 2) / TRAPS_PER_PAGE);
+        setTrapPage(dupPage);
         setScrollToTrapIndex(index + 1);
     };
 
@@ -316,10 +343,11 @@ export const SNMPPage: React.FC = () => {
                 const data = JSON.parse(e.target?.result as string);
                 if (data.traps && Array.isArray(data.traps)) {
                     setTraps(data.traps);
-                    setExpandedTraps(data.traps.map((_: any, i: number) => i));
+                    setExpandedTraps([]);
+                    setTrapPage(1);
                     // Clear form store since we're loading new data
                     useFormStore.getState().clearSnmpFormState();
-                    setSnackbar({open: true, message: 'Traps imported successfully', severity: 'success'});
+                    setSnackbar({open: true, message: `${data.traps.length} traps imported successfully`, severity: 'success'});
                 } else {
                     setSnackbar({open: true, message: 'JSON does not contain traps array', severity: 'error'});
                 }
@@ -345,6 +373,7 @@ export const SNMPPage: React.FC = () => {
 
         setUploading(true);
         setUploadError(null);
+        setPcapProgress(0);
 
         const formData = new FormData();
         formData.append('file', file);
@@ -352,7 +381,18 @@ export const SNMPPage: React.FC = () => {
         try {
             const response = await apiClient.post('/reporter/snmp/import-from-pcap', formData, {
                 headers: {'Content-Type': 'multipart/form-data'},
+                timeout: 600000, // 10 minutes for large PCAP files
+                onUploadProgress: (progressEvent) => {
+                    if (progressEvent.total) {
+                        // Upload phase: 0-50%
+                        const uploadPercent = (progressEvent.loaded / progressEvent.total) * 50;
+                        setPcapProgress(uploadPercent);
+                    }
+                },
             });
+
+            // Server processing done — jump to 90%
+            setPcapProgress(90);
 
             const data = response.data || {};
 
@@ -368,11 +408,14 @@ export const SNMPPage: React.FC = () => {
             }
 
             // 3) Success - replace traps and show notifications
+            setPcapProgress(95);
             const normalizedTraps = mapPcapEnumsToFormValues(parsedTraps);
             setTraps(normalizedTraps.length > 0 ? normalizedTraps : parsedTraps);
-            setExpandedTraps(parsedTraps.map((_: any, i: number) => i));
+            setExpandedTraps([]);
+            setTrapPage(1);
             // Clear form store since we're loading new data
             useFormStore.getState().clearSnmpFormState();
+            setPcapProgress(100);
             setSnackbar({open: true, message: `Imported ${parsedTraps.length} trap(s) from PCAP`, severity: 'success'});
 
             if (data.warning) {
@@ -384,6 +427,7 @@ export const SNMPPage: React.FC = () => {
             setUploadError(msg);
         } finally {
             setUploading(false);
+            setPcapProgress(0);
             if (pcapFileInputRef.current) pcapFileInputRef.current.value = '';
         }
     };
@@ -427,10 +471,11 @@ export const SNMPPage: React.FC = () => {
         try {
             const template = await snmpTemplateService.getTemplate(currentCC!, name);
             setTraps(template.traps);
-            setExpandedTraps(template.traps.map((_: any, i: number) => i));
+            setExpandedTraps([]);
+            setTrapPage(1);
             // Clear form store since we're loading a template
             useFormStore.getState().clearSnmpFormState();
-            setSnackbar({open: true, message: `Template "${name}" loaded`, severity: 'success'});
+            setSnackbar({open: true, message: `Template "${name}" loaded (${template.traps.length} traps)`, severity: 'success'});
             setLoadDialogOpen(false);
         } catch (error: any) {
             setSnackbar({open: true, message: 'Failed to load template', severity: 'error'});
@@ -911,22 +956,24 @@ export const SNMPPage: React.FC = () => {
 
                 {/* Scrollable Trap List */}
                 <Box sx={{flex: 1, overflow: 'auto', padding: 3}}>
-                    {traps.map((t, index) => (
-                        <Paper key={index} id={`snmp-trap-${index}`} sx={{marginBottom: 2, padding: 2}}>
+                    {visibleTraps.map((t, i) => {
+                        const actualIndex = pageStartIndex + i;
+                        return (
+                        <Paper key={actualIndex} id={`snmp-trap-${actualIndex}`} sx={{marginBottom: 2, padding: 2}}>
                             <Box sx={{
                                 display: 'flex',
                                 justifyContent: 'space-between',
                                 alignItems: 'center',
                                 marginBottom: 2
                             }}>
-                                <Typography variant="h6">Trap {index + 1}</Typography>
+                                <Typography variant="h6">Trap {actualIndex + 1}</Typography>
                                 <Box>
-                                    <IconButton onClick={() => toggleTrap(index)}>
-                                        {expandedTraps.includes(index) ? <ExpandLessIcon/> : <ExpandMoreIcon/>}
+                                    <IconButton onClick={() => toggleTrap(actualIndex)}>
+                                        {expandedTraps.includes(actualIndex) ? <ExpandLessIcon/> : <ExpandMoreIcon/>}
                                     </IconButton>
                                     <Tooltip title={t.randomFields?.length === ALL_RANDOM_FIELDS.length ? 'Clear All Random' : 'Randomize All Fields'}>
                                         <IconButton
-                                            onClick={() => updateTrap(index, {
+                                            onClick={() => updateTrap(actualIndex, {
                                                 ...t,
                                                 randomFields: t.randomFields?.length === ALL_RANDOM_FIELDS.length ? [] : ALL_RANDOM_FIELDS,
                                             })}
@@ -936,26 +983,49 @@ export const SNMPPage: React.FC = () => {
                                         </IconButton>
                                     </Tooltip>
                                     <Tooltip title="Duplicate trap">
-                                        <IconButton onClick={() => duplicateTrap(index)} size="small">
+                                        <IconButton onClick={() => duplicateTrap(actualIndex)} size="small">
                                             <ContentCopyIcon fontSize="small"/>
                                         </IconButton>
                                     </Tooltip>
-                                    <IconButton onClick={() => deleteTrap(index)} color="error">
+                                    <IconButton onClick={() => deleteTrap(actualIndex)} color="error">
                                         <DeleteIcon/>
                                     </IconButton>
                                 </Box>
                             </Box>
 
-                            <Collapse in={expandedTraps.includes(index)}>
+                            <Collapse in={expandedTraps.includes(actualIndex)} unmountOnExit>
                                 <SNMPTrapForm
                                     trap={t}
-                                    onChange={(updatedTrap) => updateTrap(index, updatedTrap)}
-                                    errors={errors[index] || {}}
+                                    onChange={(updatedTrap) => updateTrap(actualIndex, updatedTrap)}
+                                    errors={errors[actualIndex] || {}}
                                 />
                             </Collapse>
                         </Paper>
-                    ))}
+                        );
+                    })}
                 </Box>
+
+                {/* Pagination controls - only show when more than one page */}
+                {totalPages > 1 && (
+                    <Box sx={{
+                        display: 'flex',
+                        justifyContent: 'center',
+                        alignItems: 'center',
+                        py: 1,
+                        borderTop: '1px solid #E0E0E0',
+                    }}>
+                        <Pagination
+                            count={totalPages}
+                            page={safeTrapPage}
+                            onChange={(_, page) => setTrapPage(page)}
+                            color="primary"
+                            size="medium"
+                        />
+                        <Typography variant="body2" color="text.secondary" sx={{ml: 2}}>
+                            {traps.length} traps
+                        </Typography>
+                    </Box>
+                )}
 
                 {/* Fixed Footer with Actions */}
                 <Box sx={{padding: 3, borderTop: '1px solid #E0E0E0', display: 'flex', gap: 2, flexWrap: 'wrap'}}>
@@ -965,10 +1035,10 @@ export const SNMPPage: React.FC = () => {
 
                     <Button
                         variant="outlined"
-                        startIcon={expandedTraps.length === traps.length ? <UnfoldLessIcon/> : <UnfoldMoreIcon/>}
+                        startIcon={visibleIndices.length > 0 && visibleIndices.every(i => expandedTraps.includes(i)) ? <UnfoldLessIcon/> : <UnfoldMoreIcon/>}
                         onClick={handleToggleAllTraps}
                     >
-                        {expandedTraps.length === traps.length ? 'Collapse All' : 'Expand All'}
+                        {visibleIndices.length > 0 && visibleIndices.every(i => expandedTraps.includes(i)) ? 'Collapse All' : 'Expand All'}
                     </Button>
 
                     <Button variant="outlined" startIcon={<SaveIcon/>} onClick={handleSave}>
@@ -1004,7 +1074,7 @@ export const SNMPPage: React.FC = () => {
                         onClick={() => pcapFileInputRef.current?.click()}
                         disabled={uploading}
                     >
-                        {uploading ? 'Importing PCAP...' : 'Import from PCAP'}
+                        {uploading ? `Importing PCAP... ${Math.round(pcapProgress)}%` : 'Import from PCAP'}
                     </Button>
                     <input
                         ref={pcapFileInputRef}

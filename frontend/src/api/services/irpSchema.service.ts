@@ -126,17 +126,19 @@ class IRPSchemaService {
     return response.data
   }
 
-  async listMessages(ccIp: string, schemaId: string): Promise<SchemaMessage[]> {
+  async listMessages(ccIp: string, schemaId: string, timeout?: number): Promise<SchemaMessage[]> {
     const response = await apiClient.get<{ messages: SchemaMessage[] }>(
-      `/cc/${ccIp}/irp/schemas/${schemaId}/messages`
+      `/cc/${ccIp}/irp/schemas/${schemaId}/messages`,
+      timeout ? { timeout } : undefined
     )
     return response.data.messages
   }
 
-  async getMessageTemplate(ccIp: string, schemaId: string, messageId: string): Promise<MessageTemplate> {
+  async getMessageTemplate(ccIp: string, schemaId: string, messageId: string, timeout?: number): Promise<MessageTemplate> {
     const response = await apiClient.post<MessageTemplate>(
       `/cc/${ccIp}/irp/template`,
-      { mongo_id: schemaId, message_id: messageId }
+      { mongo_id: schemaId, message_id: messageId },
+      timeout ? { timeout } : undefined
     )
     return response.data
   }

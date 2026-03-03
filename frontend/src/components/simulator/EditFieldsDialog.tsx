@@ -92,7 +92,7 @@ const deviceFieldToPath: Record<string, string> = Object.fromEntries(
 
 export const EditFieldsDialog: React.FC<EditFieldsDialogProps> = ({ open, simulators, onClose, onSuccess }) => {
   const isSingle = simulators.length === 1;
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading] = useState(false);
   const [isFetching, setIsFetching] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [fields, setFields] = useState<FieldStates>({});

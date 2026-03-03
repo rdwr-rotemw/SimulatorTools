@@ -109,4 +109,5 @@ class ActivityTracker {
 }
 
 // Export singleton instance
-export default new ActivityTracker();
+const activityTracker = new ActivityTracker();
+export default activityTracker;

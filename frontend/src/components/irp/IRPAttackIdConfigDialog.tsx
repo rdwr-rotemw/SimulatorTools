@@ -342,7 +342,7 @@ const IRPAttackIdConfigDialog: React.FC<IRPAttackIdConfigDialogProps> = ({
       setModifiedMessages(initial);
       setCurrentTab(0);
     }
-  }, [open, simulators, messages]);
+  }, [open, simulators, messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleConfirm = () => {
     onConfirm(modifiedMessages);

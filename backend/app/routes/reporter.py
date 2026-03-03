@@ -8,7 +8,8 @@ Reporter routes for CyberController simulators.
 
 ## IRP Endpoints:
 - POST   /api/cc/{cc_ip}/simulators/{simulator_ip}/reporter/irp          -> Send IRP message to simulator
-- POST   /api/cc/{cc_ip}/simulators/{simulator_ip}/reporter/irp/stream   -> Stream IRP messages to simulator
+- POST   /api/cc/{cc_ip}/simulators/{simulator_ip}/q
+   -> Stream IRP messages to simulator
 - POST   /api/cc/{cc_ip}/irp/template                                    -> Generate IRP template from schema
 - POST   /api/reporter/irp/test-message                                  -> Test IRP message parsing
 - POST   /api/reporter/irp/analyze-pcap                                  -> Analyze IRP messages in PCAP file
@@ -1579,18 +1580,13 @@ async def import_snmp_from_pcap(
                     except Exception:
                         pass
 
-            # Run PCAP parsing in thread pool to avoid event loop conflict
+            # Run PCAP parsing in thread pool to avoid event loop conflict (no trap limit)
             running_loop = asyncio.get_running_loop()
             result = await running_loop.run_in_executor(
-                _executor, _parse_in_thread, tmp_path, 50
+                _executor, _parse_in_thread, tmp_path, 999999
             )
 
             warning = None
-            if result.get("truncated"):
-                warning = (
-                    f"PCAP contained {result.get('total_extracted')} traps but only the first 50 are displayed. "
-                    "Please split the PCAP file if you need more traps."
-                )
 
             response = {
                 "success": True,
