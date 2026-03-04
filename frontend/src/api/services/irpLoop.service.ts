@@ -7,6 +7,8 @@ export interface IRPLoopStatus {
   start_time: string | null;
   batches_sent: number;
   failed_batches: number;
+  messages_sent: number;
+  failed_messages: number;
   last_error: string | null;
   elapsed_seconds: number;
   remaining_seconds: number;

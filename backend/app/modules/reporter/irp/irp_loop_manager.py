@@ -106,6 +106,10 @@ class IRPLoopManager:
         config.is_active = True
         config.start_time = datetime.now(timezone.utc)
         config.batches_sent = 0
+        config.failed_batches = 0
+        config.messages_sent = 0
+        config.failed_messages = 0
+        config.last_error = None
         config.created_at = datetime.now()
         config.updated_at = datetime.now()
 
@@ -193,6 +197,8 @@ class IRPLoopManager:
             start_time=config.start_time,
             batches_sent=config.batches_sent,
             failed_batches=config.failed_batches,
+            messages_sent=config.messages_sent,
+            failed_messages=config.failed_messages,
             last_error=config.last_error,
             elapsed_seconds=elapsed_seconds,
             remaining_seconds=remaining_seconds,
@@ -341,6 +347,8 @@ class IRPLoopManager:
                 return
 
             has_failures = False
+            batch_success = 0
+            batch_failed = 0
             for result in sim_results:
                 if isinstance(result, Exception):
                     has_failures = True
@@ -349,39 +357,52 @@ class IRPLoopManager:
                     simulator_ip, results = result
                     if isinstance(results, dict):
                         for message_name, (success, msg) in results.items():
-                            if not success:
+                            if success:
+                                batch_success += 1
+                            else:
+                                batch_failed += 1
                                 has_failures = True
                                 error_messages.append(f"{simulator_ip}/{message_name}: {msg}")
+
+            inc_fields: Dict[str, int] = {"batches_sent": 1}
+            if batch_success > 0:
+                inc_fields["messages_sent"] = batch_success
+            if batch_failed > 0:
+                inc_fields["failed_messages"] = batch_failed
 
             if has_failures:
                 error_msg = "; ".join(error_messages)
                 logger.error(f"IRP batch failed for user {config.user_id}: {error_msg}")
+                inc_fields["failed_batches"] = 1
 
                 await asyncio.to_thread(
                     self.collection.update_one,
                     {"user_id": config.user_id},
                     {
-                        "$inc": {"batches_sent": 1, "failed_batches": 1},
+                        "$inc": inc_fields,
                         "$set": {"updated_at": datetime.now(), "last_error": error_msg}
                     }
                 )
 
                 config.batches_sent += 1
                 config.failed_batches += 1
+                config.messages_sent += batch_success
+                config.failed_messages += batch_failed
                 config.last_error = error_msg
             else:
                 await asyncio.to_thread(
                     self.collection.update_one,
                     {"user_id": config.user_id},
                     {
-                        "$inc": {"batches_sent": 1},
+                        "$inc": inc_fields,
                         "$set": {"updated_at": datetime.now(), "last_error": None}
                     }
                 )
 
                 config.batches_sent += 1
+                config.messages_sent += batch_success
                 config.last_error = None
-                logger.debug(f"Sent IRP batch #{config.batches_sent} for user {config.user_id}")
+                logger.debug(f"Sent IRP batch #{config.batches_sent} ({batch_success} msgs) for user {config.user_id}")
 
         except Exception as e:
             error_msg = str(e)

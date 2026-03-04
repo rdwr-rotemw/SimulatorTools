@@ -109,11 +109,13 @@ export const SNMPPage: React.FC = () => {
     const [loopDelay, setLoopDelay] = useState<number>(15); // seconds - default 15s
     const [loopTimeout, setLoopTimeout] = useState<number>(600); // seconds - default 10 minutes, mandatory
     const [regenerateAttackId, setRegenerateAttackId] = useState<boolean>(false); // New: regenerate attack-ID each iteration
-    const [isLooping, setIsLooping] = useState<boolean>(false); // Backend loop status
-    const [batchesSent, setBatchesSent] = useState<number>(0); // Number of batches sent
-    const [failedBatches, setFailedBatches] = useState<number>(0); // Number of failed batches
-    const [lastError, setLastError] = useState<string | null>(null); // Most recent error
-    const [remainingSeconds, setRemainingSeconds] = useState<number>(0); // Time remaining
+    const [isLooping, setIsLooping] = useState<boolean>(false);
+    const [batchesSent, setBatchesSent] = useState<number>(0);
+    const [failedBatches, setFailedBatches] = useState<number>(0);
+    const [trapsSent, setTrapsSent] = useState<number>(0);
+    const [failedTraps, setFailedTraps] = useState<number>(0);
+    const [lastError, setLastError] = useState<string | null>(null);
+    const [remainingSeconds, setRemainingSeconds] = useState<number>(0);
     const statusPollIntervalRef = useRef<NodeJS.Timeout | null>(null); // Poll status from backend
     const formSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -265,6 +267,8 @@ export const SNMPPage: React.FC = () => {
                 setIsLooping(status.is_active);
                 setBatchesSent(status.batches_sent);
                 setFailedBatches(status.failed_batches);
+                setTrapsSent(status.traps_sent);
+                setFailedTraps(status.failed_traps);
                 setLastError(status.last_error);
                 setRemainingSeconds(status.remaining_seconds);
 
@@ -1312,12 +1316,12 @@ export const SNMPPage: React.FC = () => {
                             <Typography variant="body1">{isLooping ? 'Running' : 'Stopped'}</Typography>
                         </Box>
                         <Box>
-                            <Typography variant="subtitle2" color="textSecondary">Batches Sent</Typography>
-                            <Typography variant="h4" color="primary">{batchesSent}</Typography>
+                            <Typography variant="subtitle2" color="textSecondary">Traps Sent</Typography>
+                            <Typography variant="h4" color="primary">{trapsSent}</Typography>
                         </Box>
                         <Box>
-                            <Typography variant="subtitle2" color="textSecondary">Failed Batches</Typography>
-                            <Typography variant="h4" color={failedBatches > 0 ? "error" : "textSecondary"}>{failedBatches}</Typography>
+                            <Typography variant="subtitle2" color="textSecondary">Failed</Typography>
+                            <Typography variant="h4" color={failedTraps > 0 ? "error" : "textSecondary"}>{failedTraps}</Typography>
                         </Box>
                         {lastError && (
                             <Box>

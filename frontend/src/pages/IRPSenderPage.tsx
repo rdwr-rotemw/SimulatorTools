@@ -975,11 +975,13 @@ export const IRPSenderPage: React.FC = () => {
     const [loopStatusDialogOpen, setLoopStatusDialogOpen] = useState(false)
     const [loopDelay, setLoopDelay] = useState<number>(15)
     const [loopTimeout, setLoopTimeout] = useState<number>(600)
-    const [isLooping, setIsLooping] = useState<boolean>(false) // Backend loop status
-    const [batchesSent, setBatchesSent] = useState<number>(0) // Number of batches sent
-    const [failedBatches, setFailedBatches] = useState<number>(0) // Number of failed batches
-    const [lastError, setLastError] = useState<string | null>(null) // Most recent error
-    const [remainingSeconds, setRemainingSeconds] = useState<number>(0) // Time remaining
+    const [isLooping, setIsLooping] = useState<boolean>(false)
+    const [batchesSent, setBatchesSent] = useState<number>(0)
+    const [failedBatches, setFailedBatches] = useState<number>(0)
+    const [messagesSent, setMessagesSent] = useState<number>(0)
+    const [failedMessages, setFailedMessages] = useState<number>(0)
+    const [lastError, setLastError] = useState<string | null>(null)
+    const [remainingSeconds, setRemainingSeconds] = useState<number>(0)
     const statusPollIntervalRef = React.useRef<NodeJS.Timeout | null>(null)
     const formSaveTimerRef = React.useRef<NodeJS.Timeout | null>(null)
 
@@ -1135,6 +1137,8 @@ export const IRPSenderPage: React.FC = () => {
                 setIsLooping(status.is_active);
                 setBatchesSent(status.batches_sent);
                 setFailedBatches(status.failed_batches);
+                setMessagesSent(status.messages_sent);
+                setFailedMessages(status.failed_messages);
                 setLastError(status.last_error);
                 setRemainingSeconds(status.remaining_seconds);
 
@@ -2797,12 +2801,12 @@ export const IRPSenderPage: React.FC = () => {
                                 <Typography variant="body1">{isLooping ? 'Running' : 'Stopped'}</Typography>
                             </Box>
                             <Box>
-                                <Typography variant="subtitle2" color="textSecondary">Batches Sent</Typography>
-                                <Typography variant="h4" color="primary">{batchesSent}</Typography>
+                                <Typography variant="subtitle2" color="textSecondary">Messages Sent</Typography>
+                                <Typography variant="h4" color="primary">{messagesSent}</Typography>
                             </Box>
                             <Box>
-                                <Typography variant="subtitle2" color="textSecondary">Failed Batches</Typography>
-                                <Typography variant="h4" color={failedBatches > 0 ? "error" : "textSecondary"}>{failedBatches}</Typography>
+                                <Typography variant="subtitle2" color="textSecondary">Failed</Typography>
+                                <Typography variant="h4" color={failedMessages > 0 ? "error" : "textSecondary"}>{failedMessages}</Typography>
                             </Box>
                             {lastError && (
                                 <Box>

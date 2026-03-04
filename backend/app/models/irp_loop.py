@@ -16,6 +16,8 @@ class IRPLoopConfig(BaseModel):
     start_time: Optional[datetime] = Field(None, description="When loop started")
     batches_sent: int = Field(default=0, description="Number of batches sent so far")
     failed_batches: int = Field(default=0, description="Number of batches that failed")
+    messages_sent: int = Field(default=0, description="Total individual messages successfully sent")
+    failed_messages: int = Field(default=0, description="Total individual messages that failed")
     last_error: Optional[str] = Field(None, description="Most recent error message")
     simulator: Optional[str] = Field(None, description="Target simulator IP (backward compat)")
     simulators: List[str] = Field(default_factory=list, description="Target simulator IPs")
@@ -45,6 +47,8 @@ class IRPLoopStatus(BaseModel):
     start_time: Optional[datetime] = None
     batches_sent: int = 0
     failed_batches: int = 0
+    messages_sent: int = 0
+    failed_messages: int = 0
     last_error: Optional[str] = None
     elapsed_seconds: int = 0
     remaining_seconds: int = 0

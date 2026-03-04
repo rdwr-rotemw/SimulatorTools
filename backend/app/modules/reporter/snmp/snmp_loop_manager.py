@@ -107,6 +107,10 @@ class SNMPLoopManager:
         config.is_active = True
         config.start_time = datetime.now(timezone.utc)
         config.batches_sent = 0
+        config.failed_batches = 0
+        config.traps_sent = 0
+        config.failed_traps = 0
+        config.last_error = None
         config.created_at = datetime.now()
         config.updated_at = datetime.now()
 
@@ -195,6 +199,8 @@ class SNMPLoopManager:
             start_time=config.start_time,
             batches_sent=config.batches_sent,
             failed_batches=config.failed_batches,
+            traps_sent=config.traps_sent,
+            failed_traps=config.failed_traps,
             last_error=config.last_error,
             elapsed_seconds=elapsed_seconds,
             remaining_seconds=remaining_seconds,
@@ -354,41 +360,47 @@ class SNMPLoopManager:
                     if err:
                         error_messages.append(err)
 
-            # Check if there were any failures
+            # Build increment fields
+            inc_fields = {"batches_sent": 1}
+            if total_success > 0:
+                inc_fields["traps_sent"] = total_success
+            if total_failed > 0:
+                inc_fields["failed_traps"] = total_failed
+
             if total_failed > 0:
                 error_msg = "; ".join(error_messages)
                 logger.error(f"SNMP batch had failures for user {config.user_id}: {error_msg}")
+                inc_fields["failed_batches"] = 1
 
-                # Increment both counters and store error
                 await asyncio.to_thread(
                     self.collection.update_one,
                     {"user_id": config.user_id},
                     {
-                        "$inc": {"batches_sent": 1, "failed_batches": 1},
+                        "$inc": inc_fields,
                         "$set": {"updated_at": datetime.now(), "last_error": error_msg}
                     }
                 )
 
-                # Update local config
                 config.batches_sent += 1
                 config.failed_batches += 1
+                config.traps_sent += total_success
+                config.failed_traps += total_failed
                 config.last_error = error_msg
             else:
-                # All traps succeeded
                 await asyncio.to_thread(
                     self.collection.update_one,
                     {"user_id": config.user_id},
                     {
-                        "$inc": {"batches_sent": 1},
+                        "$inc": inc_fields,
                         "$set": {"updated_at": datetime.now(), "last_error": None}
                     }
                 )
 
-                # Update local config for next iteration
                 config.batches_sent += 1
+                config.traps_sent += total_success
                 config.last_error = None
 
-                logger.debug(f"Sent batch #{config.batches_sent} for user {config.user_id}")
+                logger.debug(f"Sent batch #{config.batches_sent} ({total_success} traps) for user {config.user_id}")
 
         except Exception as e:
             error_msg = str(e)

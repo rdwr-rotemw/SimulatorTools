@@ -16,6 +16,8 @@ class SNMPLoopConfig(BaseModel):
     start_time: Optional[datetime] = Field(None, description="When loop started")
     batches_sent: int = Field(default=0, description="Number of batches sent so far")
     failed_batches: int = Field(default=0, description="Number of batches that failed")
+    traps_sent: int = Field(default=0, description="Total individual traps successfully sent")
+    failed_traps: int = Field(default=0, description="Total individual traps that failed")
     last_error: Optional[str] = Field(None, description="Most recent error message")
     simulators: List[str] = Field(..., description="Target simulator IPs")
     simulator_maps: Dict[str, str] = Field(..., description="Map name for each simulator IP")
@@ -41,6 +43,8 @@ class SNMPLoopStatus(BaseModel):
     start_time: Optional[datetime] = None
     batches_sent: int = 0
     failed_batches: int = 0
+    traps_sent: int = 0
+    failed_traps: int = 0
     last_error: Optional[str] = None
     elapsed_seconds: int = 0
     remaining_seconds: int = 0

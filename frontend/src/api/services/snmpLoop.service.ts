@@ -7,6 +7,8 @@ export interface SNMPLoopStatus {
   start_time: string | null;
   batches_sent: number;
   failed_batches: number;
+  traps_sent: number;
+  failed_traps: number;
   last_error: string | null;
   elapsed_seconds: number;
   remaining_seconds: number;
