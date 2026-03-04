@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Dict, Optional, Any
 
@@ -37,6 +38,8 @@ class IRPLoopManager:
         self._running_tasks: Dict[str, asyncio.Task] = {}
         # Track stop events: user_id -> asyncio.Event
         self._stop_events: Dict[str, asyncio.Event] = {}
+        # Dedicated thread pool for loop sends — keeps main thread pool free for API requests
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="irp-loop")
 
     async def initialize(self):
         """Initialize the manager - restore active loops from database."""
@@ -86,6 +89,7 @@ class IRPLoopManager:
 
         self._running_tasks.clear()
         self._stop_events.clear()
+        self._executor.shutdown(wait=False)
 
     async def start_loop(self, user_id: str, config: IRPLoopConfig) -> None:
         """
@@ -288,8 +292,9 @@ class IRPLoopManager:
         except Exception as e:
             logger.error(f"Error in IRP loop executor for {user_id}: {e}", exc_info=True)
         finally:
-            # Mark as inactive in database
-            await asyncio.to_thread(
+            # Mark as inactive in database (use dedicated pool)
+            await asyncio.get_event_loop().run_in_executor(
+                self._executor,
                 self.collection.update_one,
                 {"user_id": user_id},
                 {"$set": {"is_active": False, "updated_at": datetime.now()}}
@@ -304,9 +309,11 @@ class IRPLoopManager:
             config: Loop configuration
             stop_event: Event to check between messages for early abort
         """
+        loop = asyncio.get_event_loop()
         try:
-            # Load schema from MongoDB
-            schema_obj = await asyncio.to_thread(
+            # Load schema from MongoDB (on dedicated pool)
+            schema_obj = await loop.run_in_executor(
+                self._executor,
                 load_schema_from_mongo,
                 self.db,
                 config.schema_id
@@ -327,7 +334,8 @@ class IRPLoopManager:
                         break
                     name = message['message']
                     cleaned = {k: v for k, v in message.items() if k not in ('message', 'pause')}
-                    ok, msg = await asyncio.to_thread(
+                    ok, msg = await loop.run_in_executor(
+                        self._executor,
                         send_irp_message, schema_obj, name, cleaned,
                         simulator_ip, config.destination_port
                     )
@@ -375,7 +383,8 @@ class IRPLoopManager:
                 logger.error(f"IRP batch failed for user {config.user_id}: {error_msg}")
                 inc_fields["failed_batches"] = 1
 
-                await asyncio.to_thread(
+                await loop.run_in_executor(
+                    self._executor,
                     self.collection.update_one,
                     {"user_id": config.user_id},
                     {
@@ -390,7 +399,8 @@ class IRPLoopManager:
                 config.failed_messages += batch_failed
                 config.last_error = error_msg
             else:
-                await asyncio.to_thread(
+                await loop.run_in_executor(
+                    self._executor,
                     self.collection.update_one,
                     {"user_id": config.user_id},
                     {
@@ -408,7 +418,8 @@ class IRPLoopManager:
             error_msg = str(e)
             logger.error(f"Error sending IRP batch for user {config.user_id}: {e}", exc_info=True)
 
-            await asyncio.to_thread(
+            await loop.run_in_executor(
+                self._executor,
                 self.collection.update_one,
                 {"user_id": config.user_id},
                 {

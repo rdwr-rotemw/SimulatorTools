@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Dict, Optional, Any
 import random
@@ -38,6 +39,8 @@ class SNMPLoopManager:
         self._running_tasks: Dict[str, asyncio.Task] = {}
         # Track stop events: user_id -> asyncio.Event
         self._stop_events: Dict[str, asyncio.Event] = {}
+        # Dedicated thread pool for loop sends — keeps main thread pool free for API requests
+        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="snmp-loop")
 
     async def initialize(self):
         """Initialize the manager - restore active loops from database."""
@@ -87,6 +90,7 @@ class SNMPLoopManager:
 
         self._running_tasks.clear()
         self._stop_events.clear()
+        self._executor.shutdown(wait=False)
 
     async def start_loop(self, user_id: str, config: SNMPLoopConfig) -> None:
         """
@@ -289,8 +293,9 @@ class SNMPLoopManager:
         except Exception as e:
             logger.error(f"Error in loop executor for {user_id}: {e}", exc_info=True)
         finally:
-            # Mark as inactive in database
-            await asyncio.to_thread(
+            # Mark as inactive in database (use dedicated pool)
+            await asyncio.get_event_loop().run_in_executor(
+                self._executor,
                 self.collection.update_one,
                 {"user_id": user_id},
                 {"$set": {"is_active": False, "updated_at": datetime.now()}}
@@ -303,6 +308,7 @@ class SNMPLoopManager:
         Args:
             config: Loop configuration
         """
+        loop = asyncio.get_event_loop()
         try:
             # Send to all simulators in parallel
             error_messages = []
@@ -332,7 +338,8 @@ class SNMPLoopManager:
                     "traps": traps_to_send
                 }
 
-                success_count, failed_count, total_count = await asyncio.to_thread(
+                success_count, failed_count, total_count = await loop.run_in_executor(
+                    self._executor,
                     send_attack_traps,
                     config.destination_port,
                     simulator_ip,
@@ -372,7 +379,8 @@ class SNMPLoopManager:
                 logger.error(f"SNMP batch had failures for user {config.user_id}: {error_msg}")
                 inc_fields["failed_batches"] = 1
 
-                await asyncio.to_thread(
+                await loop.run_in_executor(
+                    self._executor,
                     self.collection.update_one,
                     {"user_id": config.user_id},
                     {
@@ -387,7 +395,8 @@ class SNMPLoopManager:
                 config.failed_traps += total_failed
                 config.last_error = error_msg
             else:
-                await asyncio.to_thread(
+                await loop.run_in_executor(
+                    self._executor,
                     self.collection.update_one,
                     {"user_id": config.user_id},
                     {
@@ -406,8 +415,8 @@ class SNMPLoopManager:
             error_msg = str(e)
             logger.error(f"Error sending batch for user {config.user_id}: {e}", exc_info=True)
 
-            # Increment both counters and store error
-            await asyncio.to_thread(
+            await loop.run_in_executor(
+                self._executor,
                 self.collection.update_one,
                 {"user_id": config.user_id},
                 {
@@ -416,7 +425,6 @@ class SNMPLoopManager:
                 }
             )
 
-            # Update local config
             config.batches_sent += 1
             config.failed_batches += 1
             config.last_error = error_msg
