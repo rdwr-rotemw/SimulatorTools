@@ -41,6 +41,7 @@ from backend.app.routes.user import router as user_router
 from backend.app.routes.role import router as role_router
 from backend.app.routes.permission import router as permission_router
 from backend.app.routes import snmp_templates
+from backend.app.routes.cc_favorites import router as cc_favorites_router
 
 
 # Remove simple basicConfig and replace with structured configurator
@@ -293,6 +294,7 @@ app.include_router(user_router, prefix="", tags=["users"])
 app.include_router(role_router)
 app.include_router(permission_router)
 app.include_router(snmp_templates.router)
+app.include_router(cc_favorites_router)
 
 # Mount static files (React build) - serve frontend build at root if present
 BUILD_DIR = Path(__file__).parent.parent.parent / "frontend" / "build"
