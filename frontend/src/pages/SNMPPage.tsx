@@ -155,19 +155,20 @@ export const SNMPPage: React.FC = () => {
 
     const hasTrapsData = traps.length > 1 || (traps.length === 1 && (traps[0].attackName || traps[0].policy));
 
-    const confirmImport = (newItems: SNMPTrap[], expandedItems: number[]) => {
+    const confirmImport = (newItems: SNMPTrap[], expandedItems: number[]): boolean => {
         if (newItems.length > MAX_SNMP_TRAPS) {
             setSnackbar({open: true, message: `Cannot import ${newItems.length} traps. Maximum is ${MAX_SNMP_TRAPS}.`, severity: 'error'});
-            return;
+            return false;
         }
         if (!hasTrapsData) {
             setTraps(newItems);
             setExpandedTraps(expandedItems);
             setTrapPage(1);
-            return;
+            return true;
         }
         pendingImportRef.current = { items: newItems, expanded: expandedItems };
         setImportModeDialogOpen(true);
+        return true;
     };
 
     const handleImportReplace = () => {
@@ -420,8 +421,10 @@ export const SNMPPage: React.FC = () => {
             try {
                 const data = JSON.parse(e.target?.result as string);
                 if (data.traps && Array.isArray(data.traps)) {
-                    confirmImport(data.traps, []);
-                    setSnackbar({open: true, message: `${data.traps.length} traps imported successfully`, severity: 'success'});
+                    const accepted = confirmImport(data.traps, []);
+                    if (accepted) {
+                        setSnackbar({open: true, message: `${data.traps.length} traps imported successfully`, severity: 'success'});
+                    }
                 } else {
                     setSnackbar({open: true, message: 'JSON does not contain traps array', severity: 'error'});
                 }
@@ -485,9 +488,11 @@ export const SNMPPage: React.FC = () => {
             setPcapProgress(95);
             const normalizedTraps = mapPcapEnumsToFormValues(parsedTraps);
             const trapsToImport = normalizedTraps.length > 0 ? normalizedTraps : parsedTraps;
-            confirmImport(trapsToImport, []);
+            const accepted = confirmImport(trapsToImport, []);
             setPcapProgress(100);
-            setSnackbar({open: true, message: `Imported ${parsedTraps.length} trap(s) from PCAP`, severity: 'success'});
+            if (accepted) {
+                setSnackbar({open: true, message: `Imported ${parsedTraps.length} trap(s) from PCAP`, severity: 'success'});
+            }
 
             if (data.warning) {
                 setSnackbar({open: true, message: data.warning, severity: 'info'});
@@ -542,8 +547,10 @@ export const SNMPPage: React.FC = () => {
         try {
             const template = await snmpTemplateService.getTemplate(currentCC!, name);
             setLoadDialogOpen(false);
-            confirmImport(template.traps, []);
-            setSnackbar({open: true, message: `Template "${name}" loaded (${template.traps.length} traps)`, severity: 'success'});
+            const accepted = confirmImport(template.traps, []);
+            if (accepted) {
+                setSnackbar({open: true, message: `Template "${name}" loaded (${template.traps.length} traps)`, severity: 'success'});
+            }
         } catch (error: any) {
             setSnackbar({open: true, message: 'Failed to load template', severity: 'error'});
         }
@@ -1099,7 +1106,22 @@ export const SNMPPage: React.FC = () => {
                 )}
 
                 {/* Fixed Footer with Actions */}
-                <Box sx={{padding: 3, borderTop: '1px solid #E0E0E0', display: 'flex', gap: 2, flexWrap: 'wrap'}}>
+                <Box sx={{
+                    padding: {xs: 1.5, md: 3},
+                    borderTop: '1px solid #E0E0E0',
+                    display: 'flex',
+                    gap: {xs: 0.5, sm: 1, md: 2},
+                    flexWrap: 'wrap',
+                    '& .MuiButton-root': {
+                        whiteSpace: 'nowrap',
+                        minWidth: 'auto',
+                        fontSize: {xs: '0.7rem', sm: '0.8rem', md: '0.875rem'},
+                        padding: {xs: '4px 8px', sm: '5px 12px', md: '6px 16px'},
+                    },
+                    '& .MuiButton-startIcon': {
+                        display: {xs: 'none', md: 'inherit'},
+                    },
+                }}>
                     <Button variant="outlined" startIcon={<AddIcon/>} onClick={addTrap}>
                         Add Trap
                     </Button>
@@ -1179,7 +1201,7 @@ export const SNMPPage: React.FC = () => {
                         </Box>
                     )}
 
-                    <Box sx={{flex: 1}}/>
+                    <Box sx={{flex: 1, minWidth: 8}}/>
 
                     <Button
                         variant="contained"

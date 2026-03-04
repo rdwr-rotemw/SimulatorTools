@@ -2195,7 +2195,7 @@ async def stop_irp_loop(
 # ============================================================
 
 
-MAX_IRP_MESSAGES = 100
+MAX_IRP_MESSAGES = 200
 MAX_SNMP_TRAPS = 1000
 
 

@@ -1011,23 +1011,24 @@ export const IRPSenderPage: React.FC = () => {
     const jsonFileInputRef = React.useRef<HTMLInputElement>(null)
 
     // Import mode dialog (replace vs add)
-    const MAX_IRP_MESSAGES = 100
+    const MAX_IRP_MESSAGES = 200
     const [importModeDialogOpen, setImportModeDialogOpen] = useState(false)
     const pendingImportRef = React.useRef<{ items: any[], expanded: number[] } | null>(null)
 
-    const confirmImport = (newItems: any[], expandedItems: number[]) => {
+    const confirmImport = (newItems: any[], expandedItems: number[]): boolean => {
         if (newItems.length > MAX_IRP_MESSAGES) {
             setSnackbar({open: true, message: `Cannot import ${newItems.length} messages. Maximum is ${MAX_IRP_MESSAGES}.`, severity: 'error'})
-            return
+            return false
         }
         if (messages.length === 0) {
             setMessages(newItems)
             setExpandedMessages(expandedItems)
             setMessagePage(1)
-            return
+            return true
         }
         pendingImportRef.current = { items: newItems, expanded: expandedItems }
         setImportModeDialogOpen(true)
+        return true
     }
 
     const handleImportReplace = () => {
@@ -1692,20 +1693,22 @@ export const IRPSenderPage: React.FC = () => {
 
             setPcapDialogOpen(false)
             const expandedIndices = loadedMessages.map((_: any, index: number) => index)
-            confirmImport(loadedMessages, expandedIndices)
+            const accepted = confirmImport(loadedMessages, expandedIndices)
 
-            if (failedMessages.length > 0) {
-                setSnackbar({
-                    open: true,
-                    message: `Loaded ${loadedMessages.length} message(s). ${failedMessages.length} message(s) not found in current schema: ${failedMessages.join(', ')}`,
-                    severity: 'warning'
-                })
-            } else {
-                setSnackbar({
-                    open: true,
-                    message: `Loaded ${loadedMessages.length} message(s) from PCAP`,
-                    severity: 'success'
-                })
+            if (accepted) {
+                if (failedMessages.length > 0) {
+                    setSnackbar({
+                        open: true,
+                        message: `Loaded ${loadedMessages.length} message(s). ${failedMessages.length} message(s) not found in current schema: ${failedMessages.join(', ')}`,
+                        severity: 'warning'
+                    })
+                } else {
+                    setSnackbar({
+                        open: true,
+                        message: `Loaded ${loadedMessages.length} message(s) from PCAP`,
+                        severity: 'success'
+                    })
+                }
             }
         } catch (error: any) {
             setSnackbar({open: true, message: 'Failed to load messages', severity: 'error'})
@@ -1970,33 +1973,35 @@ export const IRPSenderPage: React.FC = () => {
             await yieldToUI()
 
             // 6. Single state update (don't auto-expand — rendering many expanded forms freezes UI)
-            confirmImport(successfulMessages, [])
+            const accepted = confirmImport(successfulMessages, [])
 
-            // 7. Show summary
-            const successful = results.filter(r => r.success).length
-            const failed = results.filter(r => !r.success).length
-            const withWarnings = results.filter(r => r.success && r.warnings?.length).length
+            // 7. Show summary (only if not rejected by limit check)
+            if (accepted) {
+                const successful = results.filter(r => r.success).length
+                const failed = results.filter(r => !r.success).length
+                const withWarnings = results.filter(r => r.success && r.warnings?.length).length
 
-            let message = `Imported ${successful}/${results.length} messages`
-            if (withWarnings > 0) message += ` (${withWarnings} with warnings)`
-            if (failed > 0) message += ` - ${failed} failed`
+                let message = `Imported ${successful}/${results.length} messages`
+                if (withWarnings > 0) message += ` (${withWarnings} with warnings)`
+                if (failed > 0) message += ` - ${failed} failed`
 
-            setSnackbar({
-                open: true,
-                message,
-                severity: failed > 0 ? 'warning' : 'success'
-            })
-
-            if (failed > 0 || withWarnings > 0) {
-                console.group('Import Details')
-                results.forEach(r => {
-                    if (!r.success) {
-                        console.error(`Failed: ${r.messageName}: ${r.error}`)
-                    } else if (r.warnings?.length) {
-                        console.warn(`Warning: ${r.messageName}:`, r.warnings.join(', '))
-                    }
+                setSnackbar({
+                    open: true,
+                    message,
+                    severity: failed > 0 ? 'warning' : 'success'
                 })
-                console.groupEnd()
+
+                if (failed > 0 || withWarnings > 0) {
+                    console.group('Import Details')
+                    results.forEach(r => {
+                        if (!r.success) {
+                            console.error(`Failed: ${r.messageName}: ${r.error}`)
+                        } else if (r.warnings?.length) {
+                            console.warn(`Warning: ${r.messageName}:`, r.warnings.join(', '))
+                        }
+                    })
+                    console.groupEnd()
+                }
             }
 
         } catch (error: any) {
@@ -2620,7 +2625,22 @@ export const IRPSenderPage: React.FC = () => {
                 )}
 
                 {/* Fixed Footer */}
-                <Box sx={{padding: 3, borderTop: '1px solid #E0E0E0', display: 'flex', gap: 2, flexWrap: 'wrap'}}>
+                <Box sx={{
+                    padding: {xs: 1.5, md: 3},
+                    borderTop: '1px solid #E0E0E0',
+                    display: 'flex',
+                    gap: {xs: 0.5, sm: 1, md: 2},
+                    flexWrap: 'wrap',
+                    '& .MuiButton-root': {
+                        whiteSpace: 'nowrap',
+                        minWidth: 'auto',
+                        fontSize: {xs: '0.7rem', sm: '0.8rem', md: '0.875rem'},
+                        padding: {xs: '4px 8px', sm: '5px 12px', md: '6px 16px'},
+                    },
+                    '& .MuiButton-startIcon': {
+                        display: {xs: 'none', md: 'inherit'},
+                    },
+                }}>
                     <Button variant="outlined" startIcon={<AddIcon/>} onClick={() => setAddMessageDialogOpen(true)}>
                         Add Message
                     </Button>
@@ -2687,7 +2707,7 @@ export const IRPSenderPage: React.FC = () => {
                     >
                         Import from PCAP
                     </Button>
-                    <Box sx={{flex: 1}}/>
+                    <Box sx={{flex: 1, minWidth: 8}}/>
                     <Button
                         variant="contained"
                         color="primary"
