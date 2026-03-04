@@ -346,6 +346,22 @@ class SNMPLoopManager:
                     payload
                 )
 
+                # Update DB per-simulator for real-time progress
+                inc_fields: Dict[str, int] = {}
+                if success_count > 0:
+                    inc_fields["traps_sent"] = success_count
+                    config.traps_sent += success_count
+                if failed_count > 0:
+                    inc_fields["failed_traps"] = failed_count
+                    config.failed_traps += failed_count
+                if inc_fields:
+                    await loop.run_in_executor(
+                        self._executor,
+                        self.collection.update_one,
+                        {"user_id": config.user_id},
+                        {"$inc": inc_fields}
+                    )
+
                 error_msg = f"{simulator_ip}: {failed_count}/{total_count} traps failed" if failed_count > 0 else None
                 return success_count, failed_count, error_msg
 
@@ -354,7 +370,6 @@ class SNMPLoopManager:
                 return_exceptions=True,
             )
 
-            total_success = 0
             total_failed = 0
             for result in sim_results:
                 if isinstance(result, Exception):
@@ -362,18 +377,12 @@ class SNMPLoopManager:
                     total_failed += len(config.traps)
                 else:
                     sc, fc, err = result
-                    total_success += sc
                     total_failed += fc
                     if err:
                         error_messages.append(err)
 
-            # Build increment fields
-            inc_fields = {"batches_sent": 1}
-            if total_success > 0:
-                inc_fields["traps_sent"] = total_success
-            if total_failed > 0:
-                inc_fields["failed_traps"] = total_failed
-
+            # Batch-end: update batches_sent, failed_batches, last_error
+            inc_fields: Dict[str, int] = {"batches_sent": 1}
             if total_failed > 0:
                 error_msg = "; ".join(error_messages)
                 logger.error(f"SNMP batch had failures for user {config.user_id}: {error_msg}")
@@ -391,8 +400,6 @@ class SNMPLoopManager:
 
                 config.batches_sent += 1
                 config.failed_batches += 1
-                config.traps_sent += total_success
-                config.failed_traps += total_failed
                 config.last_error = error_msg
             else:
                 await loop.run_in_executor(
@@ -406,10 +413,9 @@ class SNMPLoopManager:
                 )
 
                 config.batches_sent += 1
-                config.traps_sent += total_success
                 config.last_error = None
 
-                logger.debug(f"Sent batch #{config.batches_sent} ({total_success} traps) for user {config.user_id}")
+                logger.debug(f"Sent batch #{config.batches_sent} ({config.traps_sent} total traps) for user {config.user_id}")
 
         except Exception as e:
             error_msg = str(e)
