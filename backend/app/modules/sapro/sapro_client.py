@@ -1309,6 +1309,36 @@ class SaproCommunicationHandler:
 
         return fields
 
+    # Field name -> Sapro subdirectory for resolving bare filenames to full paths
+    FIELD_SUBDIRS: Dict[str, str] = {
+        "MibFile": "cmf",
+        "AgentFile": "var",
+        "SSHFile": "telnet",
+        "SoapModFile": "xml",
+        "ModelingFile": "tcl",
+    }
+
+    def _resolve_field_paths(self, fields: Dict[str, str], workspace: str) -> Dict[str, str]:
+        """Resolve bare filenames to full Sapro paths based on field type and workspace.
+
+        If a field value is already an absolute path (starts with '/'), it is left unchanged.
+        Otherwise, the appropriate Sapro directory prefix is prepended.
+
+        Default workspace:  /opt/sapro/<subdir>/<filename>
+        Custom workspace:   /opt/sapro/projects/<workspace>/<subdir>/<filename>
+        """
+        resolved = {}
+        for field_name, value in fields.items():
+            if field_name in self.FIELD_SUBDIRS and value and not value.startswith("/"):
+                subdir = self.FIELD_SUBDIRS[field_name]
+                if workspace == "default":
+                    value = f"/opt/sapro/{subdir}/{value}"
+                else:
+                    value = f"/opt/sapro/projects/{workspace}/{subdir}/{value}"
+                logger.info(f"Resolved bare filename for {field_name}: {value}")
+            resolved[field_name] = value
+        return resolved
+
     def update_device_fields(
         self, device_ip: str, fields: Dict[str, str], map_path: str
     ) -> Tuple[bool, str]:
@@ -1332,6 +1362,10 @@ class SaproCommunicationHandler:
         """
         try:
             ssh_client = get_sapro_ssh_client()
+
+            # Resolve bare filenames to full Sapro paths
+            workspace, _ = self._extract_workspace_and_map_name(map_path)
+            fields = self._resolve_field_paths(fields, workspace)
 
             # Step 1: Read the map file
             read_cmd = f"cat {map_path}"
