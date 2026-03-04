@@ -17,7 +17,7 @@ from typing import Dict, Optional, Any
 from pymongo.database import Database
 
 from backend.app.models.irp_loop import IRPLoopConfig, IRPLoopStatus
-from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo, send_irp_messages
+from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo, send_irp_message
 
 logger = logging.getLogger("sim-tools.irp-loop-manager")
 
@@ -249,7 +249,7 @@ class IRPLoopManager:
             logger.info(f"IRP loop executor started for user {user_id}, will run for {config.loop_timeout}s")
 
             # Send first batch immediately
-            await self._send_batch(config)
+            await self._send_batch(config, stop_event)
 
             # Loop until timeout or stopped
             while True:
@@ -274,7 +274,7 @@ class IRPLoopManager:
                     pass
 
                 # Send next batch
-                await self._send_batch(config)
+                await self._send_batch(config, stop_event)
 
         except asyncio.CancelledError:
             logger.info(f"IRP loop task cancelled for {user_id}")
@@ -289,12 +289,14 @@ class IRPLoopManager:
                 {"$set": {"is_active": False, "updated_at": datetime.now()}}
             )
 
-    async def _send_batch(self, config: IRPLoopConfig) -> None:
+    async def _send_batch(self, config: IRPLoopConfig, stop_event: asyncio.Event) -> None:
         """
         Send one batch of IRP messages to all simulators.
+        Sends messages one at a time so the stop event can interrupt mid-batch.
 
         Args:
             config: Loop configuration
+            stop_event: Event to check between messages for early abort
         """
         try:
             # Load schema from MongoDB
@@ -306,26 +308,37 @@ class IRPLoopManager:
 
             error_messages = []
 
-            # Send to all simulators in parallel
+            # Send to all simulators in parallel, but within each simulator
+            # send messages one at a time so stop_event can interrupt
             async def send_to_simulator(simulator_ip: str):
                 sim_messages = config.messages
                 if config.per_simulator_messages and simulator_ip in config.per_simulator_messages:
                     sim_messages = config.per_simulator_messages[simulator_ip]
 
-                payload = {"messages": sim_messages}
+                results: Dict[str, Any] = {}
+                for message in sim_messages:
+                    if stop_event.is_set():
+                        break
+                    name = message['message']
+                    cleaned = {k: v for k, v in message.items() if k not in ('message', 'pause')}
+                    ok, msg = await asyncio.to_thread(
+                        send_irp_message, schema_obj, name, cleaned,
+                        simulator_ip, config.destination_port
+                    )
+                    results[name] = (ok, msg)
+                    if not stop_event.is_set():
+                        await asyncio.sleep(0.5)
 
-                return simulator_ip, await asyncio.to_thread(
-                    send_irp_messages,
-                    schema_obj,
-                    payload,
-                    simulator_ip,
-                    config.destination_port
-                )
+                return simulator_ip, results
 
             sim_results = await asyncio.gather(
                 *[send_to_simulator(sim_ip) for sim_ip in config.simulators],
                 return_exceptions=True,
             )
+
+            # If stopped mid-batch, don't count it
+            if stop_event.is_set():
+                return
 
             has_failures = False
             for result in sim_results:
@@ -334,21 +347,16 @@ class IRPLoopManager:
                     error_messages.append(str(result))
                 else:
                     simulator_ip, results = result
-                    if isinstance(results, tuple):
-                        has_failures = True
-                        error_messages.append(f"{simulator_ip}: {results[1]}")
-                    elif isinstance(results, dict):
+                    if isinstance(results, dict):
                         for message_name, (success, msg) in results.items():
                             if not success:
                                 has_failures = True
                                 error_messages.append(f"{simulator_ip}/{message_name}: {msg}")
 
             if has_failures:
-                # Some or all messages failed
                 error_msg = "; ".join(error_messages)
                 logger.error(f"IRP batch failed for user {config.user_id}: {error_msg}")
 
-                # Increment both counters and store error
                 await asyncio.to_thread(
                     self.collection.update_one,
                     {"user_id": config.user_id},
@@ -358,12 +366,10 @@ class IRPLoopManager:
                     }
                 )
 
-                # Update local config
                 config.batches_sent += 1
                 config.failed_batches += 1
                 config.last_error = error_msg
             else:
-                # All messages succeeded
                 await asyncio.to_thread(
                     self.collection.update_one,
                     {"user_id": config.user_id},
@@ -373,17 +379,14 @@ class IRPLoopManager:
                     }
                 )
 
-                # Update local config for next iteration
                 config.batches_sent += 1
                 config.last_error = None
-
                 logger.debug(f"Sent IRP batch #{config.batches_sent} for user {config.user_id}")
 
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Error sending IRP batch for user {config.user_id}: {e}", exc_info=True)
 
-            # Increment both counters and store error
             await asyncio.to_thread(
                 self.collection.update_one,
                 {"user_id": config.user_id},
@@ -393,7 +396,6 @@ class IRPLoopManager:
                 }
             )
 
-            # Update local config
             config.batches_sent += 1
             config.failed_batches += 1
             config.last_error = error_msg
