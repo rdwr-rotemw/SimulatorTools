@@ -63,6 +63,7 @@ import {
 } from '../utils/snmp.utils';
 import {snmpTemplateService} from '../api/services/snmpTemplate.service';
 import {snmpLoopService} from '../api/services/snmpLoop.service';
+import {formStateService} from '../api/services/formState.service';
 import apiClient from '../api/client';
 
 export const SNMPPage: React.FC = () => {
@@ -112,6 +113,7 @@ export const SNMPPage: React.FC = () => {
     const [lastError, setLastError] = useState<string | null>(null); // Most recent error
     const [remainingSeconds, setRemainingSeconds] = useState<number>(0); // Time remaining
     const statusPollIntervalRef = useRef<NodeJS.Timeout | null>(null); // Poll status from backend
+    const formSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
 
     // Fullscreen mode (hides header, shows only trap list + action bar)
     const [isFullscreen, setIsFullscreen] = useState(false);
@@ -160,30 +162,37 @@ export const SNMPPage: React.FC = () => {
         }
     }, [currentCC, navigate]);
 
-    // Set current session and restore form state on mount
+    // Set current session and restore form state from MongoDB on mount
     useEffect(() => {
-        // Step 1: Set current session (auto-clears if session changed)
         if (currentCC && user) {
             useFormStore.getState().setCurrentSession(currentCC, user.username);
         }
 
-        // Step 2: Try to restore form state (will be null if session was cleared)
-        const formState = useFormStore.getState().getSnmpFormState();
+        if (!currentCC) return
 
-        // Only restore if we have saved form state AND current traps is still the default empty trap
         const hasDefaultTrap = traps.length === 1 &&
             !traps[0].attackName &&
             !traps[0].policy;
 
-        if (formState.traps && formState.traps.length > 0 && hasDefaultTrap) {
-            setTraps(formState.traps);
-            setExpandedTraps(formState.expandedTraps);
-            setSnackbar({
-                open: true,
-                message: `Form restored from previous session (${formState.traps.length} trap(s))`,
-                severity: 'info'
-            });
-        }
+        if (!hasDefaultTrap) return
+
+        let cancelled = false;
+        formStateService.loadSnmpFormState(currentCC).then(formState => {
+            if (cancelled) return;
+            if (formState.traps && formState.traps.length > 0) {
+                setTraps(formState.traps);
+                setExpandedTraps(formState.expandedTraps);
+                setSnackbar({
+                    open: true,
+                    message: `Form restored from previous session (${formState.traps.length} trap(s))`,
+                    severity: 'info'
+                });
+            }
+        }).catch(err => {
+            console.error('Failed to load SNMP form state:', err);
+        });
+
+        return () => { cancelled = true; };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
     // Fetch loop status from backend on mount and set up polling
@@ -346,7 +355,11 @@ export const SNMPPage: React.FC = () => {
                     setExpandedTraps([]);
                     setTrapPage(1);
                     // Clear form store since we're loading new data
-                    useFormStore.getState().clearSnmpFormState();
+                    if (currentCC) {
+                        formStateService.clearSnmpFormState(currentCC).catch(err => {
+                            console.error('Failed to clear SNMP form state:', err);
+                        });
+                    }
                     setSnackbar({open: true, message: `${data.traps.length} traps imported successfully`, severity: 'success'});
                 } else {
                     setSnackbar({open: true, message: 'JSON does not contain traps array', severity: 'error'});
@@ -414,7 +427,11 @@ export const SNMPPage: React.FC = () => {
             setExpandedTraps([]);
             setTrapPage(1);
             // Clear form store since we're loading new data
-            useFormStore.getState().clearSnmpFormState();
+            if (currentCC) {
+                formStateService.clearSnmpFormState(currentCC).catch(err => {
+                    console.error('Failed to clear SNMP form state:', err);
+                });
+            }
             setPcapProgress(100);
             setSnackbar({open: true, message: `Imported ${parsedTraps.length} trap(s) from PCAP`, severity: 'success'});
 
@@ -474,7 +491,11 @@ export const SNMPPage: React.FC = () => {
             setExpandedTraps([]);
             setTrapPage(1);
             // Clear form store since we're loading a template
-            useFormStore.getState().clearSnmpFormState();
+            if (currentCC) {
+                formStateService.clearSnmpFormState(currentCC).catch(err => {
+                    console.error('Failed to clear SNMP form state:', err);
+                });
+            }
             setSnackbar({open: true, message: `Template "${name}" loaded (${template.traps.length} traps)`, severity: 'success'});
             setLoadDialogOpen(false);
         } catch (error: any) {
@@ -610,12 +631,31 @@ export const SNMPPage: React.FC = () => {
         setScrollToTrapIndex(null);
     }, [scrollToTrapIndex]);
 
-    // Auto-save form state to localStorage on every change
+    // Auto-save form state to MongoDB (debounced 2s)
     useEffect(() => {
-        // Save whenever traps or expandedTraps changes
-        // This keeps localStorage in sync with current form state
-        useFormStore.getState().setSnmpFormState(traps, expandedTraps);
-    }, [traps, expandedTraps]);
+        if (!currentCC) return;
+
+        if (formSaveTimerRef.current) {
+            clearTimeout(formSaveTimerRef.current);
+        }
+        formSaveTimerRef.current = setTimeout(() => {
+            if (traps.length > 0) {
+                formStateService.saveSnmpFormState(currentCC, traps, expandedTraps).catch(err => {
+                    console.error('Failed to save SNMP form state:', err);
+                });
+            } else {
+                formStateService.clearSnmpFormState(currentCC).catch(err => {
+                    console.error('Failed to clear SNMP form state:', err);
+                });
+            }
+        }, 2000);
+
+        return () => {
+            if (formSaveTimerRef.current) {
+                clearTimeout(formSaveTimerRef.current);
+            }
+        };
+    }, [traps, expandedTraps, currentCC]);
 
     const handleStartLoop = async () => {
         // Validation for loop parameters only (other validations done in handleOpenLoopDialog)

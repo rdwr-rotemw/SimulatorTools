@@ -2188,3 +2188,120 @@ async def stop_irp_loop(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to stop loop: {str(e)}",
         )
+
+
+# ============================================================
+# Form State Persistence (IRP + SNMP)
+# ============================================================
+
+
+@router.put("/cc/{cc_ip}/reporter/irp/form-state")
+async def save_irp_form_state(
+    cc_ip: str,
+    body: dict,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    mongo_db=Depends(get_mongo_db),
+):
+    """Save IRP form state for the authenticated user."""
+    user_id = current_user.get("sub") or current_user.get("id")
+    mongo_db["irp_form_state"].replace_one(
+        {"user_id": user_id, "cc_ip": cc_ip},
+        {
+            "user_id": user_id,
+            "cc_ip": cc_ip,
+            "messages": sanitize_for_mongo(body.get("messages", [])),
+            "expanded_messages": body.get("expanded_messages", []),
+            "updated_at": datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )
+    return {"success": True}
+
+
+@router.get("/cc/{cc_ip}/reporter/irp/form-state")
+async def load_irp_form_state(
+    cc_ip: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    mongo_db=Depends(get_mongo_db),
+):
+    """Load IRP form state for the authenticated user."""
+    user_id = current_user.get("sub") or current_user.get("id")
+    doc = mongo_db["irp_form_state"].find_one(
+        {"user_id": user_id, "cc_ip": cc_ip}
+    )
+    if not doc:
+        return {"messages": None, "expanded_messages": []}
+    return {
+        "messages": deserialize_from_mongo(doc.get("messages")),
+        "expanded_messages": doc.get("expanded_messages", []),
+    }
+
+
+@router.delete("/cc/{cc_ip}/reporter/irp/form-state")
+async def clear_irp_form_state(
+    cc_ip: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    mongo_db=Depends(get_mongo_db),
+):
+    """Clear IRP form state for the authenticated user."""
+    user_id = current_user.get("sub") or current_user.get("id")
+    mongo_db["irp_form_state"].delete_one(
+        {"user_id": user_id, "cc_ip": cc_ip}
+    )
+    return {"success": True}
+
+
+@router.put("/cc/{cc_ip}/reporter/snmp/form-state")
+async def save_snmp_form_state(
+    cc_ip: str,
+    body: dict,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    mongo_db=Depends(get_mongo_db),
+):
+    """Save SNMP form state for the authenticated user."""
+    user_id = current_user.get("sub") or current_user.get("id")
+    mongo_db["snmp_form_state"].replace_one(
+        {"user_id": user_id, "cc_ip": cc_ip},
+        {
+            "user_id": user_id,
+            "cc_ip": cc_ip,
+            "traps": body.get("traps", []),
+            "expanded_traps": body.get("expanded_traps", []),
+            "updated_at": datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )
+    return {"success": True}
+
+
+@router.get("/cc/{cc_ip}/reporter/snmp/form-state")
+async def load_snmp_form_state(
+    cc_ip: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    mongo_db=Depends(get_mongo_db),
+):
+    """Load SNMP form state for the authenticated user."""
+    user_id = current_user.get("sub") or current_user.get("id")
+    doc = mongo_db["snmp_form_state"].find_one(
+        {"user_id": user_id, "cc_ip": cc_ip}
+    )
+    if not doc:
+        return {"traps": None, "expanded_traps": []}
+    return {
+        "traps": doc.get("traps"),
+        "expanded_traps": doc.get("expanded_traps", []),
+    }
+
+
+@router.delete("/cc/{cc_ip}/reporter/snmp/form-state")
+async def clear_snmp_form_state(
+    cc_ip: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+    mongo_db=Depends(get_mongo_db),
+):
+    """Clear SNMP form state for the authenticated user."""
+    user_id = current_user.get("sub") or current_user.get("id")
+    mongo_db["snmp_form_state"].delete_one(
+        {"user_id": user_id, "cc_ip": cc_ip}
+    )
+    return {"success": True}

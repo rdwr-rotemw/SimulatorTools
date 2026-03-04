@@ -73,6 +73,7 @@ import useFormStore from '../store/useFormStore'
 import useAuthStore from '../store/authStore'
 import {irpSchemaService, SchemaMessage} from '../api/services/irpSchema.service'
 import {irpLoopService} from '../api/services/irpLoop.service'
+import {formStateService} from '../api/services/formState.service'
 import IRPMessageForm from '../components/irp/IRPMessageForm'
 
 // ============================================================================
@@ -978,6 +979,7 @@ export const IRPSenderPage: React.FC = () => {
     const [lastError, setLastError] = useState<string | null>(null) // Most recent error
     const [remainingSeconds, setRemainingSeconds] = useState<number>(0) // Time remaining
     const statusPollIntervalRef = React.useRef<NodeJS.Timeout | null>(null)
+    const formSaveTimerRef = React.useRef<NodeJS.Timeout | null>(null)
 
     // Check if any message data (at any nesting level) contains attack-id fields
     const hasAttackIdFields = (data: any): boolean => {
@@ -1038,23 +1040,31 @@ export const IRPSenderPage: React.FC = () => {
         }
     }, [currentCC, schemaId, navigate])
 
-    // Set current session and restore form state on mount
+    // Set current session and restore form state from MongoDB on mount
     useEffect(() => {
         if (currentCC && user) {
             useFormStore.getState().setCurrentSession(currentCC, user.username)
         }
 
-        const formState = useFormStore.getState().getIrpFormState()
+        if (!currentCC || messages.length > 0) return
 
-        if (formState.messages && formState.messages.length > 0 && messages.length === 0) {
-            setMessages(formState.messages)
-            setExpandedMessages(formState.expandedMessages)
-            setSnackbar({
-                open: true,
-                message: `Messages restored from previous session (${formState.messages.length} message(s))`,
-                severity: 'info'
-            })
-        }
+        let cancelled = false
+        formStateService.loadIrpFormState(currentCC).then(formState => {
+            if (cancelled) return
+            if (formState.messages && formState.messages.length > 0) {
+                setMessages(formState.messages)
+                setExpandedMessages(formState.expandedMessages)
+                setSnackbar({
+                    open: true,
+                    message: `Messages restored from previous session (${formState.messages.length} message(s))`,
+                    severity: 'info'
+                })
+            }
+        }).catch(err => {
+            console.error('Failed to load IRP form state:', err)
+        })
+
+        return () => { cancelled = true }
     }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
     // Poll loop status from backend every 10 seconds
@@ -1441,7 +1451,11 @@ export const IRPSenderPage: React.FC = () => {
 
             setMessages(messagesWithSchemas)
             setLoadDialogOpen(false)
-            useFormStore.getState().clearIrpFormState()
+            if (currentCC) {
+                formStateService.clearIrpFormState(currentCC).catch(err => {
+                    console.error('Failed to clear IRP form state:', err)
+                })
+            }
             alert('Template loaded successfully')
         } catch (error) {
             alert('Failed to load template')
@@ -1727,28 +1741,34 @@ export const IRPSenderPage: React.FC = () => {
                 }
             }
 
-            // 4. Fetch only unique templates in parallel
+            // 4. Fetch unique templates in batches of MESSAGES_PER_PAGE
             const templateCache = new Map<string, any>()
             const templateErrors = new Map<string, string>()
             const uniqueEntries = Array.from(uniqueMessageTypes.entries())
-            const uniqueResults = await Promise.all(
-                uniqueEntries.map(([messageType, messageName]) =>
-                    irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageType, 600000)
-                        .then(tmpl => ({ messageType, tmpl, error: false as const }))
-                        .catch(err => ({ messageType, tmpl: null, error: true as const, reason: err.message, messageName }))
+
+            for (let batchStart = 0; batchStart < uniqueEntries.length; batchStart += MESSAGES_PER_PAGE) {
+                const batch = uniqueEntries.slice(batchStart, batchStart + MESSAGES_PER_PAGE)
+                const batchResults = await Promise.all(
+                    batch.map(([messageType, messageName]) =>
+                        irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageType, 600000)
+                            .then(tmpl => ({ messageType, tmpl, error: false as const }))
+                            .catch(err => ({ messageType, tmpl: null, error: true as const, reason: err.message, messageName }))
+                    )
                 )
-            )
 
-            for (const result of uniqueResults) {
-                if (!result.error) {
-                    templateCache.set(result.messageType, result.tmpl)
-                } else {
-                    templateErrors.set(result.messageType, (result as any).reason)
+                for (const result of batchResults) {
+                    if (!result.error) {
+                        templateCache.set(result.messageType, result.tmpl)
+                    } else {
+                        templateErrors.set(result.messageType, (result as any).reason)
+                    }
                 }
-            }
 
-            setImportProgress(50)
-            await yieldToUI()
+                // Update progress: 20% (parsing) + 30% (template fetching spread across batches)
+                const fetchProgress = 20 + ((batchStart + batch.length) / uniqueEntries.length) * 30
+                setImportProgress(fetchProgress)
+                await yieldToUI()
+            }
 
             // 5. Process each message (all in memory, no more API calls)
             const results: Array<{
@@ -2057,12 +2077,31 @@ export const IRPSenderPage: React.FC = () => {
         setScrollToMessageIndex(null)
     }, [scrollToMessageIndex])
 
-    // Auto-save form state to localStorage on every change
+    // Auto-save form state to MongoDB (debounced 2s)
     useEffect(() => {
-        if (messages.length > 0) {
-            useFormStore.getState().setIrpFormState(messages, expandedMessages)
+        if (!currentCC) return
+
+        if (formSaveTimerRef.current) {
+            clearTimeout(formSaveTimerRef.current)
         }
-    }, [messages, expandedMessages])
+        formSaveTimerRef.current = setTimeout(() => {
+            if (messages.length > 0) {
+                formStateService.saveIrpFormState(currentCC, messages, expandedMessages).catch(err => {
+                    console.error('Failed to save IRP form state:', err)
+                })
+            } else {
+                formStateService.clearIrpFormState(currentCC).catch(err => {
+                    console.error('Failed to clear IRP form state:', err)
+                })
+            }
+        }, 2000)
+
+        return () => {
+            if (formSaveTimerRef.current) {
+                clearTimeout(formSaveTimerRef.current)
+            }
+        }
+    }, [messages, expandedMessages, currentCC])
 
     const handleStartLoop = async () => {
         if (!selectedSimulators.length) {
