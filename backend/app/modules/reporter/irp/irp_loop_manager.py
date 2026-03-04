@@ -340,6 +340,23 @@ class IRPLoopManager:
                         simulator_ip, config.destination_port
                     )
                     results[name] = (ok, msg)
+                    # Update DB immediately per message so status reflects real-time progress
+                    if ok:
+                        await loop.run_in_executor(
+                            self._executor,
+                            self.collection.update_one,
+                            {"user_id": config.user_id},
+                            {"$inc": {"messages_sent": 1}}
+                        )
+                        config.messages_sent += 1
+                    else:
+                        await loop.run_in_executor(
+                            self._executor,
+                            self.collection.update_one,
+                            {"user_id": config.user_id},
+                            {"$inc": {"failed_messages": 1}}
+                        )
+                        config.failed_messages += 1
                     if not stop_event.is_set():
                         await asyncio.sleep(0.1)
 
@@ -354,9 +371,8 @@ class IRPLoopManager:
             if stop_event.is_set():
                 return
 
+            # Check for errors (message counts already updated per-message above)
             has_failures = False
-            batch_success = 0
-            batch_failed = 0
             for result in sim_results:
                 if isinstance(result, Exception):
                     has_failures = True
@@ -365,38 +381,26 @@ class IRPLoopManager:
                     simulator_ip, results = result
                     if isinstance(results, dict):
                         for message_name, (success, msg) in results.items():
-                            if success:
-                                batch_success += 1
-                            else:
-                                batch_failed += 1
+                            if not success:
                                 has_failures = True
                                 error_messages.append(f"{simulator_ip}/{message_name}: {msg}")
-
-            inc_fields: Dict[str, int] = {"batches_sent": 1}
-            if batch_success > 0:
-                inc_fields["messages_sent"] = batch_success
-            if batch_failed > 0:
-                inc_fields["failed_messages"] = batch_failed
 
             if has_failures:
                 error_msg = "; ".join(error_messages)
                 logger.error(f"IRP batch failed for user {config.user_id}: {error_msg}")
-                inc_fields["failed_batches"] = 1
 
                 await loop.run_in_executor(
                     self._executor,
                     self.collection.update_one,
                     {"user_id": config.user_id},
                     {
-                        "$inc": inc_fields,
+                        "$inc": {"batches_sent": 1, "failed_batches": 1},
                         "$set": {"updated_at": datetime.now(), "last_error": error_msg}
                     }
                 )
 
                 config.batches_sent += 1
                 config.failed_batches += 1
-                config.messages_sent += batch_success
-                config.failed_messages += batch_failed
                 config.last_error = error_msg
             else:
                 await loop.run_in_executor(
@@ -404,15 +408,14 @@ class IRPLoopManager:
                     self.collection.update_one,
                     {"user_id": config.user_id},
                     {
-                        "$inc": inc_fields,
+                        "$inc": {"batches_sent": 1},
                         "$set": {"updated_at": datetime.now(), "last_error": None}
                     }
                 )
 
                 config.batches_sent += 1
-                config.messages_sent += batch_success
                 config.last_error = None
-                logger.debug(f"Sent IRP batch #{config.batches_sent} ({batch_success} msgs) for user {config.user_id}")
+                logger.debug(f"Sent IRP batch #{config.batches_sent} ({config.messages_sent} total msgs) for user {config.user_id}")
 
         except Exception as e:
             error_msg = str(e)

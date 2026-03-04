@@ -2830,6 +2830,20 @@ export const IRPSenderPage: React.FC = () => {
                         </Box>
                     </DialogContent>
                     <DialogActions>
+                        <Button onClick={async () => {
+                            try {
+                                const status = await irpLoopService.getStatus();
+                                setIsLooping(status.is_active);
+                                setBatchesSent(status.batches_sent);
+                                setFailedBatches(status.failed_batches);
+                                setMessagesSent(status.messages_sent);
+                                setFailedMessages(status.failed_messages);
+                                setLastError(status.last_error);
+                                setRemainingSeconds(status.remaining_seconds);
+                            } catch (error: any) {
+                                console.error('Failed to refresh IRP loop status:', error);
+                            }
+                        }}>Refresh</Button>
                         <Button onClick={() => setLoopStatusDialogOpen(false)}>Close</Button>
                     </DialogActions>
                 </Dialog>

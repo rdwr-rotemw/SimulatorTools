@@ -1345,6 +1345,20 @@ export const SNMPPage: React.FC = () => {
                     </Box>
                 </DialogContent>
                 <DialogActions>
+                    <Button onClick={async () => {
+                        try {
+                            const status = await snmpLoopService.getStatus();
+                            setIsLooping(status.is_active);
+                            setBatchesSent(status.batches_sent);
+                            setFailedBatches(status.failed_batches);
+                            setTrapsSent(status.traps_sent);
+                            setFailedTraps(status.failed_traps);
+                            setLastError(status.last_error);
+                            setRemainingSeconds(status.remaining_seconds);
+                        } catch (error: any) {
+                            console.error('Failed to refresh SNMP loop status:', error);
+                        }
+                    }}>Refresh</Button>
                     <Button onClick={() => setLoopStatusDialogOpen(false)}>Close</Button>
                 </DialogActions>
             </Dialog>
