@@ -1427,27 +1427,39 @@ export const IRPSenderPage: React.FC = () => {
             const result = await irpSchemaService.loadTemplate(currentCC!, templateId)
             const template = result.template
 
-            const messagesWithSchemas = await Promise.all(
-                template.messages.map(async (msg: any) => {
-                    try {
-                        const templateData = await irpSchemaService.getMessageTemplate(currentCC!, schemaId!, msg.messageType)
-                        const transformedData = transformToAttackId(msg.data, templateData.schema)
-                        const transformedSchema = transformSchemaForAttackId(templateData.schema)
-                        return {
-                            ...msg,
-                            data: transformedData,
-                            schema: transformedSchema,
-                            originalSchema: templateData.schema
-                        }
-                    } catch {
-                        return {
-                            ...msg,
-                            schema: {},
-                            originalSchema: {}
-                        }
+            // Deduplicate: fetch only unique message types, batched
+            const uniqueTypes = new Set<string>(template.messages.map((msg: any) => msg.messageType))
+            const schemaCache = new Map<string, any>()
+            const uniqueEntries = Array.from(uniqueTypes)
+
+            for (let batchStart = 0; batchStart < uniqueEntries.length; batchStart += MESSAGES_PER_PAGE) {
+                const batch = uniqueEntries.slice(batchStart, batchStart + MESSAGES_PER_PAGE)
+                const batchResults = await Promise.all(
+                    batch.map(messageType =>
+                        irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageType, 600000)
+                            .then(tmpl => ({ messageType, tmpl }))
+                            .catch(() => ({ messageType, tmpl: null }))
+                    )
+                )
+                for (const { messageType, tmpl } of batchResults) {
+                    if (tmpl) schemaCache.set(messageType, tmpl)
+                }
+            }
+
+            const messagesWithSchemas = template.messages.map((msg: any) => {
+                const cached = schemaCache.get(msg.messageType)
+                if (cached) {
+                    const transformedData = transformToAttackId(msg.data, cached.schema)
+                    const transformedSchema = transformSchemaForAttackId(cached.schema)
+                    return {
+                        ...msg,
+                        data: transformedData,
+                        schema: transformedSchema,
+                        originalSchema: cached.schema
                     }
-                })
-            )
+                }
+                return { ...msg, schema: {}, originalSchema: {} }
+            })
 
             setMessages(messagesWithSchemas)
             setLoadDialogOpen(false)
@@ -1577,30 +1589,47 @@ export const IRPSenderPage: React.FC = () => {
             setMessages([])
             setExpandedMessages([])
 
+            // Deduplicate: fetch only unique message types, batched
+            const uniqueTypes = new Set<string>(selectedMessageIds)
+            const schemaCache = new Map<string, any>()
+            const fetchErrors = new Set<string>()
+            const uniqueEntries = Array.from(uniqueTypes)
+
+            for (let batchStart = 0; batchStart < uniqueEntries.length; batchStart += MESSAGES_PER_PAGE) {
+                const batch = uniqueEntries.slice(batchStart, batchStart + MESSAGES_PER_PAGE)
+                const batchResults = await Promise.all(
+                    batch.map(messageType =>
+                        irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageType, 600000)
+                            .then(tmpl => ({ messageType, tmpl }))
+                            .catch(() => ({ messageType, tmpl: null }))
+                    )
+                )
+                for (const { messageType, tmpl } of batchResults) {
+                    if (tmpl) schemaCache.set(messageType, tmpl)
+                    else fetchErrors.add(messageType)
+                }
+            }
+
             const loadedMessages: any[] = []
             const failedMessages: string[] = []
 
-            // Add selected messages one by one
             for (const messageId of selectedMessageIds) {
                 const message = pcapResults?.messages.find(msg => msg.message_id === messageId)
-                if (message) {
-                    try {
-                        const template = await irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageId)
+                if (!message) continue
 
-                        const transformedData = transformToAttackId(template.template, template.schema)
-                        const transformedSchema = transformSchemaForAttackId(template.schema)
-
-                        loadedMessages.push({
-                            messageType: messageId,
-                            messageName: message.message_name,
-                            data: transformedData,
-                            schema: transformedSchema,
-                            originalSchema: template.schema,
-                        })
-                    } catch (error) {
-                        // Message not found in current schema
-                        failedMessages.push(`${message.message_name} (ID: ${messageId})`)
-                    }
+                const cached = schemaCache.get(messageId)
+                if (cached) {
+                    const transformedData = transformToAttackId(cached.template, cached.schema)
+                    const transformedSchema = transformSchemaForAttackId(cached.schema)
+                    loadedMessages.push({
+                        messageType: messageId,
+                        messageName: message.message_name,
+                        data: transformedData,
+                        schema: transformedSchema,
+                        originalSchema: cached.schema,
+                    })
+                } else {
+                    failedMessages.push(`${message.message_name} (ID: ${messageId})`)
                 }
             }
 
