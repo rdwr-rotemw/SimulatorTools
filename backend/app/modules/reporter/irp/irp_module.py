@@ -655,7 +655,7 @@ def send_irp_messages(schema_obj, message_data, from_ip: str, to_ip: str) -> Uni
             cleaned_message = {k: v for k, v in message.items() if k not in ('message', 'pause')}
             ok, msg = send_irp_message(schema_obj, name, cleaned_message, from_ip, to_ip)
             results[name] = ok, msg
-            sleep(0.5)
+            sleep(0.1)
         return results
     except Exception as exc:
         return False, f"send_irp_message error: {exc!s}"

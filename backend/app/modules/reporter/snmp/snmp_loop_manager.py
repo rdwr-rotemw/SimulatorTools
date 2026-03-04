@@ -40,7 +40,7 @@ class SNMPLoopManager:
         # Track stop events: user_id -> asyncio.Event
         self._stop_events: Dict[str, asyncio.Event] = {}
         # Dedicated thread pool for loop sends — keeps main thread pool free for API requests
-        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="snmp-loop")
+        self._executor = ThreadPoolExecutor(max_workers=64, thread_name_prefix="snmp-loop")
 
     async def initialize(self):
         """Initialize the manager - restore active loops from database."""
