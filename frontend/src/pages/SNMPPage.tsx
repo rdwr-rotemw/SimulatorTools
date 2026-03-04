@@ -45,6 +45,7 @@ import UnfoldLessIcon from '@mui/icons-material/UnfoldLess';
 import CasinoIcon from '@mui/icons-material/Casino';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
+import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
 
 import Layout from '../components/common/Layout';
 import ImportModeDialog from '../components/common/ImportModeDialog';
@@ -1101,6 +1102,22 @@ export const SNMPPage: React.FC = () => {
                 <Box sx={{padding: 3, borderTop: '1px solid #E0E0E0', display: 'flex', gap: 2, flexWrap: 'wrap'}}>
                     <Button variant="outlined" startIcon={<AddIcon/>} onClick={addTrap}>
                         Add Trap
+                    </Button>
+
+                    <Button
+                        variant="outlined"
+                        color="error"
+                        startIcon={<DeleteSweepIcon/>}
+                        disabled={!hasTrapsData}
+                        onClick={() => {
+                            if (window.confirm(`Delete all ${traps.length} trap(s)?`)) {
+                                setTraps([{attackName: '', policy: '', ...SNMP_FIELD_DEFAULTS}]);
+                                setExpandedTraps([]);
+                                setTrapPage(1);
+                            }
+                        }}
+                    >
+                        Delete All
                     </Button>
 
                     <Button

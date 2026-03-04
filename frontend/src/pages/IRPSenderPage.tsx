@@ -46,6 +46,7 @@ import UploadIcon from '@mui/icons-material/Upload'
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward'
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward'
 import DragIndicatorIcon from '@mui/icons-material/DragIndicator'
+import DeleteSweepIcon from '@mui/icons-material/DeleteSweep'
 import {IRPPcapAnalysisResponse} from '../api/services/irpSchema.service'
 import Checkbox from '@mui/material/Checkbox'
 import IRPAttackIdConfigDialog from '../components/irp/IRPAttackIdConfigDialog'
@@ -2622,6 +2623,21 @@ export const IRPSenderPage: React.FC = () => {
                 <Box sx={{padding: 3, borderTop: '1px solid #E0E0E0', display: 'flex', gap: 2, flexWrap: 'wrap'}}>
                     <Button variant="outlined" startIcon={<AddIcon/>} onClick={() => setAddMessageDialogOpen(true)}>
                         Add Message
+                    </Button>
+                    <Button
+                        variant="outlined"
+                        color="error"
+                        startIcon={<DeleteSweepIcon/>}
+                        disabled={messages.length === 0}
+                        onClick={() => {
+                            if (window.confirm(`Delete all ${messages.length} message(s)?`)) {
+                                setMessages([])
+                                setExpandedMessages([])
+                                setMessagePage(1)
+                            }
+                        }}
+                    >
+                        Delete All
                     </Button>
                     <Button
                         variant="outlined"
