@@ -68,6 +68,7 @@ import {useSortable} from '@dnd-kit/sortable'
 import {CSS} from '@dnd-kit/utilities'
 
 import Layout from '../components/common/Layout'
+import ImportModeDialog from '../components/common/ImportModeDialog'
 import useCCStore from '../store/ccStore'
 import useFormStore from '../store/useFormStore'
 import useAuthStore from '../store/authStore'
@@ -1008,6 +1009,63 @@ export const IRPSenderPage: React.FC = () => {
     const MESSAGES_PER_PAGE = 20
     const jsonFileInputRef = React.useRef<HTMLInputElement>(null)
 
+    // Import mode dialog (replace vs add)
+    const MAX_IRP_MESSAGES = 100
+    const [importModeDialogOpen, setImportModeDialogOpen] = useState(false)
+    const pendingImportRef = React.useRef<{ items: any[], expanded: number[] } | null>(null)
+
+    const confirmImport = (newItems: any[], expandedItems: number[]) => {
+        if (newItems.length > MAX_IRP_MESSAGES) {
+            setSnackbar({open: true, message: `Cannot import ${newItems.length} messages. Maximum is ${MAX_IRP_MESSAGES}.`, severity: 'error'})
+            return
+        }
+        if (messages.length === 0) {
+            setMessages(newItems)
+            setExpandedMessages(expandedItems)
+            setMessagePage(1)
+            return
+        }
+        pendingImportRef.current = { items: newItems, expanded: expandedItems }
+        setImportModeDialogOpen(true)
+    }
+
+    const handleImportReplace = () => {
+        if (pendingImportRef.current) {
+            if (pendingImportRef.current.items.length > MAX_IRP_MESSAGES) {
+                setSnackbar({open: true, message: `Cannot import ${pendingImportRef.current.items.length} messages. Maximum is ${MAX_IRP_MESSAGES}.`, severity: 'error'})
+                pendingImportRef.current = null
+                setImportModeDialogOpen(false)
+                return
+            }
+            setMessages(pendingImportRef.current.items)
+            setExpandedMessages(pendingImportRef.current.expanded)
+            setMessagePage(1)
+            pendingImportRef.current = null
+        }
+        setImportModeDialogOpen(false)
+    }
+
+    const handleImportAdd = () => {
+        if (pendingImportRef.current) {
+            const totalAfterAdd = messages.length + pendingImportRef.current.items.length
+            if (totalAfterAdd > MAX_IRP_MESSAGES) {
+                setSnackbar({open: true, message: `Cannot add ${pendingImportRef.current.items.length} messages. Total would be ${totalAfterAdd}, maximum is ${MAX_IRP_MESSAGES}.`, severity: 'error'})
+                pendingImportRef.current = null
+                setImportModeDialogOpen(false)
+                return
+            }
+            setMessages(prev => [...prev, ...pendingImportRef.current!.items])
+            setMessagePage(1)
+            pendingImportRef.current = null
+        }
+        setImportModeDialogOpen(false)
+    }
+
+    const handleImportCancel = () => {
+        pendingImportRef.current = null
+        setImportModeDialogOpen(false)
+    }
+
     // Pagination computed values
     const totalPages = Math.max(1, Math.ceil(messages.length / MESSAGES_PER_PAGE))
     const safeMessagePage = Math.min(messagePage, totalPages)
@@ -1153,6 +1211,10 @@ export const IRPSenderPage: React.FC = () => {
 
     // Message management
     const addMessage = async (messageType: string, messageName: string) => {
+        if (messages.length >= MAX_IRP_MESSAGES) {
+            setSnackbar({open: true, message: `Cannot add message. Maximum of ${MAX_IRP_MESSAGES} messages reached.`, severity: 'error'})
+            return
+        }
         try {
             setIsLoading(true)
             const template = await irpSchemaService.getMessageTemplate(currentCC!, schemaId!, messageType)
@@ -1203,6 +1265,10 @@ export const IRPSenderPage: React.FC = () => {
     }
 
     const duplicateMessage = (index: number) => {
+        if (messages.length >= MAX_IRP_MESSAGES) {
+            setSnackbar({open: true, message: `Cannot duplicate. Maximum of ${MAX_IRP_MESSAGES} messages reached.`, severity: 'error'})
+            return
+        }
         setMessages((prev) => {
             const clone = JSON.parse(JSON.stringify(prev[index]))
             const next = [...prev]
@@ -1461,14 +1527,8 @@ export const IRPSenderPage: React.FC = () => {
                 return { ...msg, schema: {}, originalSchema: {} }
             })
 
-            setMessages(messagesWithSchemas)
             setLoadDialogOpen(false)
-            if (currentCC) {
-                formStateService.clearIrpFormState(currentCC).catch(err => {
-                    console.error('Failed to clear IRP form state:', err)
-                })
-            }
-            alert('Template loaded successfully')
+            confirmImport(messagesWithSchemas, [])
         } catch (error) {
             alert('Failed to load template')
         }
@@ -1585,10 +1645,6 @@ export const IRPSenderPage: React.FC = () => {
         try {
             setIsLoading(true)
 
-            // Clear current messages
-            setMessages([])
-            setExpandedMessages([])
-
             // Deduplicate: fetch only unique message types, batched
             const uniqueTypes = new Set<string>(selectedMessageIds)
             const schemaCache = new Map<string, any>()
@@ -1633,12 +1689,9 @@ export const IRPSenderPage: React.FC = () => {
                 }
             }
 
-            setMessages(loadedMessages)
-
-            // Expand all added messages
-            setExpandedMessages(loadedMessages.map((_, index) => index))
-
             setPcapDialogOpen(false)
+            const expandedIndices = loadedMessages.map((_: any, index: number) => index)
+            confirmImport(loadedMessages, expandedIndices)
 
             if (failedMessages.length > 0) {
                 setSnackbar({
@@ -1916,8 +1969,7 @@ export const IRPSenderPage: React.FC = () => {
             await yieldToUI()
 
             // 6. Single state update (don't auto-expand — rendering many expanded forms freezes UI)
-            setMessages(prev => [...prev, ...successfulMessages])
-            setMessagePage(1)
+            confirmImport(successfulMessages, [])
 
             // 7. Show summary
             const successful = results.filter(r => r.success).length
@@ -2117,6 +2169,7 @@ export const IRPSenderPage: React.FC = () => {
             if (messages.length > 0) {
                 formStateService.saveIrpFormState(currentCC, messages, expandedMessages).catch(err => {
                     console.error('Failed to save IRP form state:', err)
+                    setSnackbar({open: true, message: `Auto-save failed: ${err.message}`, severity: 'error'})
                 })
             } else {
                 formStateService.clearIrpFormState(currentCC).catch(err => {
@@ -2778,6 +2831,17 @@ export const IRPSenderPage: React.FC = () => {
                         </Button>
                     </DialogActions>
                 </Dialog>
+
+                {/* Import Mode Dialog (Replace vs Add) */}
+                <ImportModeDialog
+                    open={importModeDialogOpen}
+                    onClose={handleImportCancel}
+                    onReplace={handleImportReplace}
+                    onAdd={handleImportAdd}
+                    itemCount={messages.length}
+                    importCount={pendingImportRef.current?.items.length ?? 0}
+                    itemLabel="message"
+                />
 
                 {/* Load Template Dialog */}
                 <Dialog

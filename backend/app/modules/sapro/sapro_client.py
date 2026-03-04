@@ -247,7 +247,7 @@ class SaproCommunicationHandler:
                 if version and ":" in version:
                     version = version.split(":")[1].strip()
                 device_type = "DefensePro"
-                logger.info(f"Device {device_ip}: DefensePro {version}")
+                logger.debug(f"Device {device_ip}: DefensePro {version}")
                 return device_type, version
 
             elif device_type and "Application" in device_type:
@@ -255,7 +255,7 @@ class SaproCommunicationHandler:
                 version = snmp_client.get("1.3.6.1.4.1.1872.2.5.1.1.1.10.0")
                 logger.debug(f"Version query result for {device_ip}: {version}")
                 device_type = "Alteon"
-                logger.info(f"Device {device_ip}: Alteon {version}")
+                logger.debug(f"Device {device_ip}: Alteon {version}")
                 return device_type, version
 
             else:

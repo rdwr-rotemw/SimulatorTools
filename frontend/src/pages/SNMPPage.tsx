@@ -47,6 +47,7 @@ import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
 
 import Layout from '../components/common/Layout';
+import ImportModeDialog from '../components/common/ImportModeDialog';
 import useCCStore from '../store/ccStore';
 import useFormStore from '../store/useFormStore';
 import useAuthStore from '../store/authStore';
@@ -145,6 +146,65 @@ export const SNMPPage: React.FC = () => {
     const [uploading, setUploading] = useState(false);
     const [pcapProgress, setPcapProgress] = useState<number>(0);
     const [uploadError, setUploadError] = useState<string | null>(null);
+
+    // Import mode dialog (replace vs add)
+    const MAX_SNMP_TRAPS = 1000;
+    const [importModeDialogOpen, setImportModeDialogOpen] = useState(false);
+    const pendingImportRef = useRef<{ items: SNMPTrap[], expanded: number[] } | null>(null);
+
+    const hasTrapsData = traps.length > 1 || (traps.length === 1 && (traps[0].attackName || traps[0].policy));
+
+    const confirmImport = (newItems: SNMPTrap[], expandedItems: number[]) => {
+        if (newItems.length > MAX_SNMP_TRAPS) {
+            setSnackbar({open: true, message: `Cannot import ${newItems.length} traps. Maximum is ${MAX_SNMP_TRAPS}.`, severity: 'error'});
+            return;
+        }
+        if (!hasTrapsData) {
+            setTraps(newItems);
+            setExpandedTraps(expandedItems);
+            setTrapPage(1);
+            return;
+        }
+        pendingImportRef.current = { items: newItems, expanded: expandedItems };
+        setImportModeDialogOpen(true);
+    };
+
+    const handleImportReplace = () => {
+        if (pendingImportRef.current) {
+            if (pendingImportRef.current.items.length > MAX_SNMP_TRAPS) {
+                setSnackbar({open: true, message: `Cannot import ${pendingImportRef.current.items.length} traps. Maximum is ${MAX_SNMP_TRAPS}.`, severity: 'error'});
+                pendingImportRef.current = null;
+                setImportModeDialogOpen(false);
+                return;
+            }
+            setTraps(pendingImportRef.current.items);
+            setExpandedTraps(pendingImportRef.current.expanded);
+            setTrapPage(1);
+            pendingImportRef.current = null;
+        }
+        setImportModeDialogOpen(false);
+    };
+
+    const handleImportAdd = () => {
+        if (pendingImportRef.current) {
+            const totalAfterAdd = traps.length + pendingImportRef.current.items.length;
+            if (totalAfterAdd > MAX_SNMP_TRAPS) {
+                setSnackbar({open: true, message: `Cannot add ${pendingImportRef.current.items.length} traps. Total would be ${totalAfterAdd}, maximum is ${MAX_SNMP_TRAPS}.`, severity: 'error'});
+                pendingImportRef.current = null;
+                setImportModeDialogOpen(false);
+                return;
+            }
+            setTraps(prev => [...prev, ...pendingImportRef.current!.items]);
+            setTrapPage(1);
+            pendingImportRef.current = null;
+        }
+        setImportModeDialogOpen(false);
+    };
+
+    const handleImportCancel = () => {
+        pendingImportRef.current = null;
+        setImportModeDialogOpen(false);
+    };
 
     // Dialog / templates state
     const [saveDialogOpen, setSaveDialogOpen] = useState(false);
@@ -250,6 +310,10 @@ export const SNMPPage: React.FC = () => {
     }, [managementPorts]);
 
     const addTrap = () => {
+        if (traps.length >= MAX_SNMP_TRAPS) {
+            setSnackbar({open: true, message: `Cannot add trap. Maximum of ${MAX_SNMP_TRAPS} traps reached.`, severity: 'error'});
+            return;
+        }
         const newIndex = traps.length;
         setTraps([...traps, {attackName: '', policy: '', ...SNMP_FIELD_DEFAULTS}]);
         setExpandedTraps([...expandedTraps, newIndex]);
@@ -297,6 +361,10 @@ export const SNMPPage: React.FC = () => {
     };
 
     const duplicateTrap = (index: number) => {
+        if (traps.length >= MAX_SNMP_TRAPS) {
+            setSnackbar({open: true, message: `Cannot duplicate. Maximum of ${MAX_SNMP_TRAPS} traps reached.`, severity: 'error'});
+            return;
+        }
         const clone = JSON.parse(JSON.stringify(traps[index]));
         const newTraps = [...traps];
         newTraps.splice(index + 1, 0, clone);
@@ -351,15 +419,7 @@ export const SNMPPage: React.FC = () => {
             try {
                 const data = JSON.parse(e.target?.result as string);
                 if (data.traps && Array.isArray(data.traps)) {
-                    setTraps(data.traps);
-                    setExpandedTraps([]);
-                    setTrapPage(1);
-                    // Clear form store since we're loading new data
-                    if (currentCC) {
-                        formStateService.clearSnmpFormState(currentCC).catch(err => {
-                            console.error('Failed to clear SNMP form state:', err);
-                        });
-                    }
+                    confirmImport(data.traps, []);
                     setSnackbar({open: true, message: `${data.traps.length} traps imported successfully`, severity: 'success'});
                 } else {
                     setSnackbar({open: true, message: 'JSON does not contain traps array', severity: 'error'});
@@ -423,15 +483,8 @@ export const SNMPPage: React.FC = () => {
             // 3) Success - replace traps and show notifications
             setPcapProgress(95);
             const normalizedTraps = mapPcapEnumsToFormValues(parsedTraps);
-            setTraps(normalizedTraps.length > 0 ? normalizedTraps : parsedTraps);
-            setExpandedTraps([]);
-            setTrapPage(1);
-            // Clear form store since we're loading new data
-            if (currentCC) {
-                formStateService.clearSnmpFormState(currentCC).catch(err => {
-                    console.error('Failed to clear SNMP form state:', err);
-                });
-            }
+            const trapsToImport = normalizedTraps.length > 0 ? normalizedTraps : parsedTraps;
+            confirmImport(trapsToImport, []);
             setPcapProgress(100);
             setSnackbar({open: true, message: `Imported ${parsedTraps.length} trap(s) from PCAP`, severity: 'success'});
 
@@ -487,17 +540,9 @@ export const SNMPPage: React.FC = () => {
     const handleLoadTemplate = async (name: string) => {
         try {
             const template = await snmpTemplateService.getTemplate(currentCC!, name);
-            setTraps(template.traps);
-            setExpandedTraps([]);
-            setTrapPage(1);
-            // Clear form store since we're loading a template
-            if (currentCC) {
-                formStateService.clearSnmpFormState(currentCC).catch(err => {
-                    console.error('Failed to clear SNMP form state:', err);
-                });
-            }
-            setSnackbar({open: true, message: `Template "${name}" loaded (${template.traps.length} traps)`, severity: 'success'});
             setLoadDialogOpen(false);
+            confirmImport(template.traps, []);
+            setSnackbar({open: true, message: `Template "${name}" loaded (${template.traps.length} traps)`, severity: 'success'});
         } catch (error: any) {
             setSnackbar({open: true, message: 'Failed to load template', severity: 'error'});
         }
@@ -642,6 +687,7 @@ export const SNMPPage: React.FC = () => {
             if (traps.length > 0) {
                 formStateService.saveSnmpFormState(currentCC, traps, expandedTraps).catch(err => {
                     console.error('Failed to save SNMP form state:', err);
+                    setSnackbar({open: true, message: `Auto-save failed: ${err.message}`, severity: 'error'});
                 });
             } else {
                 formStateService.clearSnmpFormState(currentCC).catch(err => {
@@ -1279,6 +1325,17 @@ export const SNMPPage: React.FC = () => {
                     <Button onClick={handleSaveConfirm} variant="contained">Save</Button>
                 </DialogActions>
             </Dialog>
+
+            {/* Import Mode Dialog (Replace vs Add) */}
+            <ImportModeDialog
+                open={importModeDialogOpen}
+                onClose={handleImportCancel}
+                onReplace={handleImportReplace}
+                onAdd={handleImportAdd}
+                itemCount={traps.length}
+                importCount={pendingImportRef.current?.items.length ?? 0}
+                itemLabel="trap"
+            />
 
             {/* Load Template Dialog */}
             <Dialog open={loadDialogOpen} onClose={() => setLoadDialogOpen(false)} maxWidth="sm" fullWidth>

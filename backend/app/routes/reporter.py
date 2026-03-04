@@ -2195,6 +2195,10 @@ async def stop_irp_loop(
 # ============================================================
 
 
+MAX_IRP_MESSAGES = 100
+MAX_SNMP_TRAPS = 1000
+
+
 @router.put("/cc/{cc_ip}/reporter/irp/form-state")
 async def save_irp_form_state(
     cc_ip: str,
@@ -2203,6 +2207,12 @@ async def save_irp_form_state(
     mongo_db=Depends(get_mongo_db),
 ):
     """Save IRP form state for the authenticated user."""
+    messages = body.get("messages", [])
+    if len(messages) > MAX_IRP_MESSAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many messages ({len(messages)}). Maximum is {MAX_IRP_MESSAGES}.",
+        )
     user_id = current_user.get("sub") or current_user.get("id")
     mongo_db["irp_form_state"].replace_one(
         {"user_id": user_id, "cc_ip": cc_ip},
@@ -2259,6 +2269,12 @@ async def save_snmp_form_state(
     mongo_db=Depends(get_mongo_db),
 ):
     """Save SNMP form state for the authenticated user."""
+    traps = body.get("traps", [])
+    if len(traps) > MAX_SNMP_TRAPS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many traps ({len(traps)}). Maximum is {MAX_SNMP_TRAPS}.",
+        )
     user_id = current_user.get("sub") or current_user.get("id")
     mongo_db["snmp_form_state"].replace_one(
         {"user_id": user_id, "cc_ip": cc_ip},
