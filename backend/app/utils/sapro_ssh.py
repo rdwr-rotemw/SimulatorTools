@@ -436,7 +436,7 @@ class SaproSSHClient:
 
 
 # Module-level connection pool
-_SSH_POOL_SIZE = 8
+_SSH_POOL_SIZE = 24
 _sapro_ssh_pool: Optional[List[SaproSSHClient]] = None
 _pool_index = 0
 _pool_lock = threading.Lock()
