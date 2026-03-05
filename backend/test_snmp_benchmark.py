@@ -13,11 +13,11 @@ Usage:
         --duration 15
 
 Strategies tested:
-    A) Serial baseline     — one simulator at a time through the existing singleton SSH
-    B) Concurrent/locked   — 48 simulators via ThreadPoolExecutor, but still hitting the
-                             singleton SSH lock (current production behavior)
-    C) Concurrent/unlocked — 48 simulators each with their OWN SSH connection
-                             (bypasses the singleton lock to isolate Sapro-side throughput)
+    A) Serial baseline     — one simulator at a time, single SSH connection
+    B) Concurrent/locked   — N simulators via ThreadPoolExecutor, single shared SSH
+                             (current production behavior)
+    C) Concurrent/pool     — N simulators, small SSH connection pool (--ssh-pool-size)
+    D) Concurrent/combined — Like C but merges write+exec+cleanup into 1 SSH call
 """
 
 import argparse
@@ -314,9 +314,35 @@ def strategy_concurrent_single_ssh(
 
 
 # ---------------------------------------------------------------------------
-# Strategy C: Concurrent with DEDICATED SSH per thread
+# Strategy C: Concurrent with SSH connection POOL
 # ---------------------------------------------------------------------------
-def strategy_concurrent_multi_ssh(
+class SSHPool:
+    """Round-robin pool of N SSH connections. Connections are established
+    sequentially with a small delay to avoid overwhelming sshd."""
+
+    def __init__(self, host: str, username: str, password: str, size: int):
+        self._connections: List[BenchmarkSSHClient] = []
+        self._index = 0
+        self._index_lock = threading.Lock()
+        for i in range(size):
+            ssh = BenchmarkSSHClient(host, username, password)
+            ssh.connect()
+            self._connections.append(ssh)
+            if i < size - 1:
+                time.sleep(0.1)  # stagger connections to avoid MaxStartups rejection
+
+    def get(self) -> BenchmarkSSHClient:
+        with self._index_lock:
+            conn = self._connections[self._index % len(self._connections)]
+            self._index += 1
+            return conn
+
+    def close_all(self):
+        for c in self._connections:
+            c.close()
+
+
+def strategy_concurrent_pool(
     ssh_host: str,
     ssh_user: str,
     ssh_pass: str,
@@ -326,21 +352,21 @@ def strategy_concurrent_multi_ssh(
     duration: float,
     traps_per_batch: int,
     max_workers: int,
+    pool_size: int,
 ) -> StrategyResult:
-    """Each simulator gets its own SSH connection — isolates Sapro throughput."""
-    result = StrategyResult(strategy_name=f"C) Concurrent ({max_workers} threads, 1 SSH per thread)")
+    """Simulators share a pool of N SSH connections (round-robin)."""
+    result = StrategyResult(strategy_name=f"C) Concurrent ({max_workers} threads, {pool_size} SSH pool)")
+    print(f"  Creating SSH pool with {pool_size} connections...")
+    ssh_pool = SSHPool(ssh_host, ssh_user, ssh_pass, pool_size)
+    print(f"  SSH pool ready")
     stop_event = threading.Event()
 
     def worker(sim_ip: str):
-        ssh = BenchmarkSSHClient(ssh_host, ssh_user, ssh_pass)
-        ssh.connect()
+        ssh = ssh_pool.get()
         local_batches = []
-        try:
-            while not stop_event.is_set():
-                br = send_single_batch(ssh, cc_ip, sim_ip, device_map, traps_per_batch)
-                local_batches.append(br)
-        finally:
-            ssh.close()
+        while not stop_event.is_set():
+            br = send_single_batch(ssh, cc_ip, sim_ip, device_map, traps_per_batch)
+            local_batches.append(br)
         return local_batches
 
     start = time.perf_counter()
@@ -352,7 +378,11 @@ def strategy_concurrent_multi_ssh(
             stop_event.set()
 
             for future in as_completed(futures):
-                batches = future.result()
+                try:
+                    batches = future.result()
+                except Exception as e:
+                    logger.error(f"Worker failed: {e}")
+                    continue
                 for br in batches:
                     result.batches.append(br)
                     result.total_traps_attempted += br.trap_count
@@ -362,6 +392,115 @@ def strategy_concurrent_multi_ssh(
                         result.total_traps_failed += br.trap_count
     finally:
         result.duration_seconds = time.perf_counter() - start
+        ssh_pool.close_all()
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Combined single-SSH-command batch sender (for Strategy D)
+# ---------------------------------------------------------------------------
+def send_single_batch_combined(
+    ssh: BenchmarkSSHClient,
+    cc_ip: str,
+    simulator_ip: str,
+    device_map: str,
+    traps_per_batch: int,
+) -> BatchResult:
+    """Send one batch using a single SSH command (write + exec + cleanup combined)."""
+    result = BatchResult(simulator_ip=simulator_ip, trap_count=traps_per_batch, success=False)
+    t_total_start = time.perf_counter()
+
+    # 1. Build TCL content (CPU-only)
+    t0 = time.perf_counter()
+    traps = [_make_random_trap() for _ in range(traps_per_batch)]
+    try:
+        tcl_content = build_batch_tcl_content(cc_ip, traps)
+    except Exception as e:
+        result.error = f"TCL build error: {e}"
+        result.total_ms = (time.perf_counter() - t_total_start) * 1000
+        return result
+    result.tcl_build_ms = (time.perf_counter() - t0) * 1000
+
+    # 2. Single SSH command: write file, execute sapcnsl, cleanup — all in one call
+    batch_id = uuid.uuid4().hex[:12]
+    temp_path = f"/tmp/sapro_bench_{batch_id}.tcl"
+    timeout = max(30, traps_per_batch * 2)
+
+    combined_cmd = (
+        f"cat > {temp_path} << 'SAPRO_BATCH_EOF'\n{tcl_content}SAPRO_BATCH_EOF\n"
+        f"/opt/sapro/bin/sapcnsl -m {device_map} -c tcl -d {simulator_ip} -f {temp_path}; "
+        f"rm -f {temp_path}"
+    )
+
+    t0 = time.perf_counter()
+    ok, out = ssh.execute(combined_cmd, timeout=timeout)
+    result.ssh_exec_ms = (time.perf_counter() - t0) * 1000
+
+    result.total_ms = (time.perf_counter() - t_total_start) * 1000
+
+    if ok and "Trap(s) Sent" in out:
+        result.success = True
+    else:
+        result.error = f"Combined {'succeeded but no confirmation' if ok else 'failed'}: {out[:200]}"
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Strategy D: Concurrent with SSH pool + combined command
+# ---------------------------------------------------------------------------
+def strategy_concurrent_combined(
+    ssh_host: str,
+    ssh_user: str,
+    ssh_pass: str,
+    cc_ip: str,
+    simulators: List[str],
+    device_map: str,
+    duration: float,
+    traps_per_batch: int,
+    max_workers: int,
+    pool_size: int,
+) -> StrategyResult:
+    """SSH pool + combined write/exec/cleanup in single SSH call."""
+    result = StrategyResult(strategy_name=f"D) Combined cmd ({max_workers} threads, {pool_size} SSH pool)")
+    print(f"  Creating SSH pool with {pool_size} connections...")
+    ssh_pool = SSHPool(ssh_host, ssh_user, ssh_pass, pool_size)
+    print(f"  SSH pool ready")
+    stop_event = threading.Event()
+
+    def worker(sim_ip: str):
+        ssh = ssh_pool.get()
+        local_batches = []
+        while not stop_event.is_set():
+            br = send_single_batch_combined(ssh, cc_ip, sim_ip, device_map, traps_per_batch)
+            local_batches.append(br)
+        return local_batches
+
+    start = time.perf_counter()
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(worker, sim): sim for sim in simulators}
+
+            time.sleep(duration)
+            stop_event.set()
+
+            for future in as_completed(futures):
+                try:
+                    batches = future.result()
+                except Exception as e:
+                    logger.error(f"Worker failed: {e}")
+                    continue
+                for br in batches:
+                    result.batches.append(br)
+                    result.total_traps_attempted += br.trap_count
+                    if br.success:
+                        result.total_traps_sent += br.trap_count
+                    else:
+                        result.total_traps_failed += br.trap_count
+    finally:
+        result.duration_seconds = time.perf_counter() - start
+        ssh_pool.close_all()
 
     return result
 
@@ -515,9 +654,11 @@ def main():
                         help="Number of traps per sapcnsl execution (default: 1, max: 10)")
     parser.add_argument("--workers", type=int, default=48,
                         help="Thread pool size for concurrent strategies (default: 48)")
-    parser.add_argument("--strategies", default="A,B,C",
+    parser.add_argument("--ssh-pool-size", type=int, default=8,
+                        help="Number of SSH connections in pool for strategies C/D (default: 8)")
+    parser.add_argument("--strategies", default="A,B,C,D",
                         help="Comma-separated strategies to run: A=serial, B=concurrent-single-ssh, "
-                             "C=concurrent-multi-ssh (default: A,B,C)")
+                             "C=concurrent-pool, D=concurrent-combined (default: A,B,C,D)")
     parser.add_argument("--ssh-host", default=None,
                         help="SSH host (default: from settings)")
     parser.add_argument("--ssh-user", default=None,
@@ -547,6 +688,7 @@ def main():
     print(f"  Traps/batch:       {traps_per_batch}")
     print(f"  Workers:           {args.workers}")
     print(f"  SSH host:          {ssh_host}")
+    print(f"  SSH pool size:     {args.ssh_pool_size}")
     print(f"  Strategies:        {', '.join(strategies)}")
     print(f"{'#' * 70}\n")
 
@@ -616,11 +758,24 @@ def main():
 
     # --- Strategy C ---
     if "C" in strategies:
-        print(f"\n>>> Running Strategy C: Concurrent, multi SSH ({args.duration}s)...")
-        sr = strategy_concurrent_multi_ssh(
+        print(f"\n>>> Running Strategy C: Concurrent, SSH pool ({args.duration}s)...")
+        sr = strategy_concurrent_pool(
             ssh_host, ssh_user, ssh_pass,
             args.cc_ip, simulators, args.map,
             args.duration, traps_per_batch, args.workers,
+            args.ssh_pool_size,
+        )
+        results.append(sr)
+        print_strategy_report(sr)
+
+    # --- Strategy D ---
+    if "D" in strategies:
+        print(f"\n>>> Running Strategy D: Combined cmd + SSH pool ({args.duration}s)...")
+        sr = strategy_concurrent_combined(
+            ssh_host, ssh_user, ssh_pass,
+            args.cc_ip, simulators, args.map,
+            args.duration, traps_per_batch, args.workers,
+            args.ssh_pool_size,
         )
         results.append(sr)
         print_strategy_report(sr)
@@ -643,26 +798,17 @@ def main():
             for sr in results[1:]:
                 ratio = sr.throughput / a_tp
                 if ratio > 1.5:
-                    print(f"  {sr.strategy_name} is {ratio:.1f}x faster than serial")
+                    print(f"  {sr.strategy_name}: {ratio:.1f}x faster than serial")
                 elif ratio > 0.7:
-                    print(f"  {sr.strategy_name} is ~same as serial ({ratio:.1f}x)")
+                    print(f"  {sr.strategy_name}: ~same as serial ({ratio:.1f}x)")
                 else:
-                    print(f"  {sr.strategy_name} is {ratio:.1f}x SLOWER than serial (contention!)")
+                    print(f"  {sr.strategy_name}: {ratio:.1f}x SLOWER than serial (contention!)")
 
-        if len(results) >= 3:
-            b_tp = results[1].throughput if results[1].throughput > 0 else 0.001
-            c_tp = results[2].throughput if results[2].throughput > 0 else 0.001
-            if c_tp > b_tp * 1.5:
-                print(f"\n  VERDICT: The SSH singleton lock is the bottleneck.")
-                print(f"           Multi-SSH ({c_tp:.0f} traps/s) >> Single-SSH ({b_tp:.0f} traps/s)")
-                print(f"           Consider using a connection pool instead of a singleton.")
-            elif c_tp < b_tp * 0.7:
-                print(f"\n  VERDICT: Sapro/sapcnsl itself is the bottleneck.")
-                print(f"           More SSH connections made it WORSE (contention on Sapro side).")
-                print(f"           Optimization needs to be inside Sapro or batching strategy.")
-            else:
-                print(f"\n  VERDICT: SSH lock and Sapro contribute roughly equally.")
-                print(f"           Both multi-SSH ({c_tp:.0f}) and single-SSH ({b_tp:.0f}) are similar.")
+        # Find best result
+        best = max(results, key=lambda r: r.throughput)
+        print(f"\n  BEST: {best.strategy_name}")
+        print(f"        {best.throughput:.0f} traps/sec, "
+              f"{best.total_traps_sent} traps in {best.duration_seconds:.1f}s")
 
     print(f"\n{'#' * 70}")
     print(f"  Benchmark complete.")
