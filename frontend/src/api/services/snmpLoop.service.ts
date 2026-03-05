@@ -43,6 +43,23 @@ export interface SNMPLoopStopResponse {
   elapsed_seconds: number;
 }
 
+export interface ActiveLoopInfo {
+  user_id: string;
+  traps_per_15s: number;
+  remaining_seconds: number;
+  simulators_count: number;
+  loop_delay: number;
+}
+
+export interface CapacityInfo {
+  system_capacity: number;
+  current_usage: number;
+  requested: number;
+  available: number;
+  max_traps: number;
+  active_loops: ActiveLoopInfo[];
+}
+
 export const snmpLoopService = {
   /**
    * Get the current SNMP loop status for the authenticated user

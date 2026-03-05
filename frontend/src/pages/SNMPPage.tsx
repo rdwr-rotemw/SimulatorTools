@@ -46,6 +46,7 @@ import CasinoIcon from '@mui/icons-material/Casino';
 import FullscreenIcon from '@mui/icons-material/Fullscreen';
 import FullscreenExitIcon from '@mui/icons-material/FullscreenExit';
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
+import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 
 import Layout from '../components/common/Layout';
 import ImportModeDialog from '../components/common/ImportModeDialog';
@@ -64,7 +65,7 @@ import {
     mapPcapEnumsToFormValues
 } from '../utils/snmp.utils';
 import {snmpTemplateService} from '../api/services/snmpTemplate.service';
-import {snmpLoopService} from '../api/services/snmpLoop.service';
+import {snmpLoopService, CapacityInfo} from '../api/services/snmpLoop.service';
 import {formStateService} from '../api/services/formState.service';
 import apiClient from '../api/client';
 
@@ -151,9 +152,13 @@ export const SNMPPage: React.FC = () => {
     const [uploadError, setUploadError] = useState<string | null>(null);
 
     // Import mode dialog (replace vs add)
-    const MAX_SNMP_TRAPS = 1000;
+    const MAX_SNMP_TRAPS = 500;
     const [importModeDialogOpen, setImportModeDialogOpen] = useState(false);
     const pendingImportRef = useRef<{ items: SNMPTrap[], expanded: number[] } | null>(null);
+
+    // Capacity warning dialog state
+    const [capacityDialogOpen, setCapacityDialogOpen] = useState(false);
+    const [capacityInfo, setCapacityInfo] = useState<CapacityInfo | null>(null);
 
     const hasTrapsData = traps.length > 1 || (traps.length === 1 && (traps[0].attackName || traps[0].policy));
 
@@ -770,8 +775,63 @@ export const SNMPPage: React.FC = () => {
             setPendingAction(null);
 
         } catch (error: any) {
-            const errorMsg = error.response?.data?.detail || error.message || 'Failed to start loop';
-            setSnackbar({open: true, message: errorMsg, severity: 'error'});
+            if (error.response?.status === 409 && error.response?.data?.detail?.capacity_info) {
+                setCapacityInfo(error.response.data.detail.capacity_info);
+                setCapacityDialogOpen(true);
+            } else {
+                const errorMsg = error.response?.data?.detail || error.message || 'Failed to start loop';
+                setSnackbar({open: true, message: errorMsg, severity: 'error'});
+            }
+        }
+    };
+
+    const handleCapacityConfirm = async () => {
+        if (!capacityInfo || capacityInfo.max_traps <= 0) return;
+
+        setCapacityDialogOpen(false);
+        const trimmedTraps = traps.slice(0, capacityInfo.max_traps);
+
+        try {
+            const mapDict: Record<string, string> = {};
+            for (const simulatorIp of selectedSimulators) {
+                const saproSim = saproSimulators.find(sim => sim.ip_address === simulatorIp);
+                if (!saproSim || !saproSim.map) {
+                    setSnackbar({open: true, message: `No map found for simulator ${simulatorIp}`, severity: 'error'});
+                    return;
+                }
+                mapDict[simulatorIp] = saproSim.map;
+            }
+
+            const result = await snmpLoopService.startLoop({
+                cc_ip: currentCC!,
+                loop_delay: loopDelay,
+                loop_timeout: loopTimeout,
+                simulators: selectedSimulators,
+                simulator_maps: mapDict,
+                destination_port: selectedDestinationPort,
+                traps: trimmedTraps,
+                configured_attack_ids: configuredAttackIds,
+                regenerate_attack_id: regenerateAttackId,
+            });
+
+            setIsLooping(true);
+            setBatchesSent(result.batches_sent);
+            setRemainingSeconds(result.loop_timeout);
+            setSnackbar({
+                open: true,
+                message: `${result.message} (using ${trimmedTraps.length} of ${traps.length} traps)`,
+                severity: 'success'
+            });
+            setConfiguredAttackIds(null);
+            setPendingAction(null);
+        } catch (error: any) {
+            if (error.response?.status === 409 && error.response?.data?.detail?.capacity_info) {
+                setCapacityInfo(error.response.data.detail.capacity_info);
+                setCapacityDialogOpen(true);
+            } else {
+                const errorMsg = error.response?.data?.detail || error.message || 'Failed to start loop';
+                setSnackbar({open: true, message: errorMsg, severity: 'error'});
+            }
         }
     };
 
@@ -1360,6 +1420,77 @@ export const SNMPPage: React.FC = () => {
                         }
                     }}>Refresh</Button>
                     <Button onClick={() => setLoopStatusDialogOpen(false)}>Close</Button>
+                </DialogActions>
+            </Dialog>
+
+            {/* Capacity Warning Dialog */}
+            <Dialog open={capacityDialogOpen} onClose={() => setCapacityDialogOpen(false)} maxWidth="sm" fullWidth>
+                <DialogTitle sx={{display: 'flex', alignItems: 'center', gap: 1}}>
+                    <WarningAmberIcon color="warning" />
+                    System Capacity Warning
+                </DialogTitle>
+                <DialogContent>
+                    {capacityInfo && (
+                        <Box sx={{display: 'flex', flexDirection: 'column', gap: 2, mt: 1}}>
+                            <Box sx={{display: 'flex', justifyContent: 'space-between'}}>
+                                <Typography variant="body2" color="textSecondary">System limit:</Typography>
+                                <Typography variant="body2" fontWeight="bold">{capacityInfo.system_capacity.toLocaleString()} traps / 15s</Typography>
+                            </Box>
+                            <Box sx={{display: 'flex', justifyContent: 'space-between'}}>
+                                <Typography variant="body2" color="textSecondary">Currently in use:</Typography>
+                                <Typography variant="body2" fontWeight="bold" color="warning.main">{capacityInfo.current_usage.toLocaleString()} traps / 15s</Typography>
+                            </Box>
+                            <Box sx={{display: 'flex', justifyContent: 'space-between'}}>
+                                <Typography variant="body2" color="textSecondary">Your request:</Typography>
+                                <Typography variant="body2" fontWeight="bold" color="error.main">{capacityInfo.requested.toLocaleString()} traps / 15s</Typography>
+                            </Box>
+                            <Box sx={{display: 'flex', justifyContent: 'space-between'}}>
+                                <Typography variant="body2" color="textSecondary">Available:</Typography>
+                                <Typography variant="body2" fontWeight="bold" color={capacityInfo.available > 0 ? 'success.main' : 'error.main'}>{capacityInfo.available.toLocaleString()} traps / 15s</Typography>
+                            </Box>
+
+                            {capacityInfo.active_loops.length > 0 && (
+                                <Box>
+                                    <Typography variant="subtitle2" sx={{mb: 1}}>Active loops:</Typography>
+                                    <Box sx={{border: '1px solid', borderColor: 'divider', borderRadius: 1, overflow: 'hidden'}}>
+                                        <Box sx={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 0, bgcolor: 'action.hover', p: 1}}>
+                                            <Typography variant="caption" fontWeight="bold">User</Typography>
+                                            <Typography variant="caption" fontWeight="bold">Traps/15s</Typography>
+                                            <Typography variant="caption" fontWeight="bold">Remaining</Typography>
+                                            <Typography variant="caption" fontWeight="bold">Sims x Delay</Typography>
+                                        </Box>
+                                        {capacityInfo.active_loops.map((loop, i) => (
+                                            <Box key={i} sx={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 0, p: 1, borderTop: '1px solid', borderColor: 'divider'}}>
+                                                <Typography variant="body2">{loop.user_id}</Typography>
+                                                <Typography variant="body2">{loop.traps_per_15s.toLocaleString()}</Typography>
+                                                <Typography variant="body2">{loop.remaining_seconds}s</Typography>
+                                                <Typography variant="body2">{loop.simulators_count} x {loop.loop_delay}s</Typography>
+                                            </Box>
+                                        ))}
+                                    </Box>
+                                </Box>
+                            )}
+
+                            {capacityInfo.max_traps > 0 ? (
+                                <Alert severity="warning">
+                                    You can proceed with up to <strong>{capacityInfo.max_traps}</strong> traps (you configured {traps.length}).
+                                    The first {capacityInfo.max_traps} traps will be used.
+                                </Alert>
+                            ) : (
+                                <Alert severity="error">
+                                    No capacity available. Please wait for active loops to finish.
+                                </Alert>
+                            )}
+                        </Box>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setCapacityDialogOpen(false)}>Cancel</Button>
+                    {capacityInfo && capacityInfo.max_traps > 0 && (
+                        <Button onClick={handleCapacityConfirm} variant="contained" color="warning">
+                            Proceed with {capacityInfo.max_traps} traps
+                        </Button>
+                    )}
                 </DialogActions>
             </Dialog>
 

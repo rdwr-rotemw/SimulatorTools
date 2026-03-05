@@ -41,6 +41,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import queue
 import tempfile
@@ -1926,6 +1927,15 @@ async def get_snmp_loop_status(
         )
 
 
+SYSTEM_TRAP_CAPACITY_15S = 24000
+
+
+def _calc_traps_per_15s(num_traps: int, num_simulators: int, loop_delay: int) -> int:
+    """Calculate how many traps a loop produces in a 15-second window."""
+    batches_per_15s = math.ceil(15 / loop_delay)
+    return num_traps * num_simulators * batches_per_15s
+
+
 @router.post(
     "/reporter/snmp/loop/start",
     status_code=status.HTTP_200_OK,
@@ -1944,22 +1954,12 @@ async def start_snmp_loop(
     3. Stop automatically after timeout duration (loop_timeout)
     4. Run in background independent of client connection
 
-    Args:
-        request: Loop configuration including:
-            - cc_ip: CyberController IP
-            - loop_delay: Delay between sends (minimum 1 second)
-            - loop_timeout: Total loop duration (minimum 1 second)
-            - simulators: List of target simulator IPs
-            - destination_port: Destination port IP
-            - traps: List of SNMP trap configurations
-            - configured_attack_ids: Optional pre-configured attack IDs per simulator
-            - regenerate_attack_id: Whether to regenerate attack-ID on each iteration
-
     Returns:
         Success message with loop details
 
     Raises:
         HTTPException 400: If loop already running for user
+        HTTPException 409: If system trap capacity would be exceeded
         HTTPException 500: If failed to start loop
     """
     try:
@@ -1968,6 +1968,63 @@ async def start_snmp_loop(
         workspace = current_user.workspace
         if workspace == "*":
             workspace = "default"
+
+        # --- System-wide capacity check ---
+        requested_per_15s = _calc_traps_per_15s(
+            len(request.traps), len(request.simulators), request.loop_delay
+        )
+
+        active_loops = await asyncio.to_thread(
+            lambda: list(loop_manager.collection.find({"is_active": True}))
+        )
+
+        current_usage = 0
+        active_loop_info = []
+        now = datetime.now(timezone.utc)
+
+        for loop_doc in active_loops:
+            loop_config = SNMPLoopConfig(**loop_doc)
+            # Skip the current user's own loop (will be replaced)
+            if loop_config.user_id == user_id:
+                continue
+            loop_traps_per_15s = _calc_traps_per_15s(
+                len(loop_config.traps), len(loop_config.simulators), loop_config.loop_delay
+            )
+            current_usage += loop_traps_per_15s
+
+            remaining_seconds = 0
+            if loop_config.start_time:
+                elapsed = (now - loop_config.start_time.replace(tzinfo=timezone.utc)).total_seconds()
+                remaining_seconds = max(0, int(loop_config.loop_timeout - elapsed))
+
+            active_loop_info.append({
+                "user_id": loop_config.user_id,
+                "traps_per_15s": loop_traps_per_15s,
+                "remaining_seconds": remaining_seconds,
+                "simulators_count": len(loop_config.simulators),
+                "loop_delay": loop_config.loop_delay,
+            })
+
+        if current_usage + requested_per_15s > SYSTEM_TRAP_CAPACITY_15S:
+            available = max(0, SYSTEM_TRAP_CAPACITY_15S - current_usage)
+            batches_per_15s = math.ceil(15 / request.loop_delay)
+            divisor = len(request.simulators) * batches_per_15s
+            max_traps = available // divisor if divisor > 0 else 0
+
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "message": "System trap capacity exceeded",
+                    "capacity_info": {
+                        "system_capacity": SYSTEM_TRAP_CAPACITY_15S,
+                        "current_usage": current_usage,
+                        "requested": requested_per_15s,
+                        "available": available,
+                        "max_traps": max_traps,
+                        "active_loops": active_loop_info,
+                    },
+                },
+            )
 
         # Resolve map names to full paths
         resolved_maps = {}
@@ -1999,6 +2056,8 @@ async def start_snmp_loop(
             "batches_sent": 0,
         }
 
+    except HTTPException:
+        raise
     except ValueError as e:
         # Loop already running
         raise HTTPException(
@@ -2196,7 +2255,7 @@ async def stop_irp_loop(
 
 
 MAX_IRP_MESSAGES = 200
-MAX_SNMP_TRAPS = 1000
+MAX_SNMP_TRAPS = 500
 
 
 @router.put("/cc/{cc_ip}/reporter/irp/form-state")
