@@ -435,69 +435,64 @@ class SaproSSHClient:
             }
 
 
-# Module-level singleton instance
-_sapro_ssh_client: Optional[SaproSSHClient] = None
-_client_lock = threading.Lock()
+# Module-level connection pool
+_SSH_POOL_SIZE = 8
+_sapro_ssh_pool: Optional[List[SaproSSHClient]] = None
+_pool_index = 0
+_pool_lock = threading.Lock()
 
 
 def get_sapro_ssh_client() -> SaproSSHClient:
-    """Get singleton SSH client instance for Sapro server operations.
+    """Get an SSH client from the connection pool (round-robin).
 
-    The client maintains a persistent connection pool and automatically
-    reconnects on connection failures.
+    On first call, creates a pool of _SSH_POOL_SIZE connections with staggered
+    initialization to avoid overwhelming sshd's MaxStartups limit.
+    Subsequent calls rotate through the pool, allowing parallel SSH commands.
 
     Returns:
-        SaproSSHClient instance
-
-    Examples:
-        >>> from backend.app.utils.sapro_ssh import get_sapro_ssh_client
-        >>>
-        >>> # Direct usage
-        >>> client = get_sapro_ssh_client()
-        >>> success, output = client.execute_command("/opt/sapro/sapcnsl -h")
-        >>>
-        >>> # Context manager usage
-        >>> with get_sapro_ssh_client() as client:
-        ...     success, output = client.execute_command("ls /opt/sapro")
+        SaproSSHClient instance from the pool
     """
-    global _sapro_ssh_client
+    global _sapro_ssh_pool, _pool_index
 
-    with _client_lock:
-        if _sapro_ssh_client is None:
-            logger.info("Initializing singleton SaproSSHClient")
-            _sapro_ssh_client = SaproSSHClient()
+    with _pool_lock:
+        if _sapro_ssh_pool is None:
+            logger.info(f"Initializing SSH connection pool with {_SSH_POOL_SIZE} connections")
+            _sapro_ssh_pool = []
+            for i in range(_SSH_POOL_SIZE):
+                client = SaproSSHClient()
+                _sapro_ssh_pool.append(client)
+                if i < _SSH_POOL_SIZE - 1:
+                    time.sleep(0.1)  # stagger to avoid MaxStartups rejection
+            logger.info(f"SSH connection pool ready ({_SSH_POOL_SIZE} connections)")
 
-        return _sapro_ssh_client
+        client = _sapro_ssh_pool[_pool_index % _SSH_POOL_SIZE]
+        _pool_index += 1
+        return client
 
 
 def close_sapro_ssh_client():
-    """Close the singleton SSH client connection.
+    """Close all SSH connections in the pool.
 
     Typically called during application shutdown to ensure graceful cleanup.
-    The connection will be re-established automatically on next use.
+    The pool will be re-created automatically on next use.
     """
-    global _sapro_ssh_client
+    global _sapro_ssh_pool, _pool_index
 
-    with _client_lock:
-        if _sapro_ssh_client is not None:
-            logger.info("Closing singleton SaproSSHClient")
-            _sapro_ssh_client.close()
-            _sapro_ssh_client = None
+    with _pool_lock:
+        if _sapro_ssh_pool is not None:
+            logger.info(f"Closing SSH connection pool ({len(_sapro_ssh_pool)} connections)")
+            for client in _sapro_ssh_pool:
+                client.close()
+            _sapro_ssh_pool = None
+            _pool_index = 0
 
 
 @contextmanager
 def sapro_ssh_context():
-    """Context manager that ensures SSH client cleanup on exit.
-
-    This is useful for ensuring connections are closed in specific contexts,
-    though generally the connection pool should be reused.
+    """Context manager that returns a pooled SSH client.
 
     Yields:
-        SaproSSHClient instance
-
-    Examples:
-        >>> with sapro_ssh_context() as client:
-        ...     success, output = client.execute_command("uptime")
+        SaproSSHClient instance from the pool
     """
     client = get_sapro_ssh_client()
     try:

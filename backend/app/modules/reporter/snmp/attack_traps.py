@@ -380,6 +380,9 @@ _MAX_TRAPS_PER_BATCH = 10
 def _execute_trap_batch(cc_ip, device_ip, device_map, traps, batch_label=""):
     """Execute a single sub-batch of traps via sapcnsl.
 
+    Uses a single SSH command that writes the TCL file, executes sapcnsl,
+    and cleans up — avoiding 3 separate SSH round-trips.
+
     Returns:
         Tuple of (success_count: int, failed_count: int)
     """
@@ -397,26 +400,18 @@ def _execute_trap_batch(cc_ip, device_ip, device_map, traps, batch_label=""):
     total_pause = sum(trap.get('pause', 0) or 0 for trap in traps)
     timeout = max(30, trap_count * 2) + int(total_pause)
 
-    write_command = (
+    # Combined command: write TCL file, execute sapcnsl, cleanup — all in one SSH call
+    combined_command = (
         f"cat > {temp_tcl_path} << 'SAPRO_BATCH_EOF'\n"
         f"{tcl_content}"
-        f"SAPRO_BATCH_EOF"
+        f"SAPRO_BATCH_EOF\n"
+        f"/opt/sapro/bin/sapcnsl -m {device_map} -c tcl -d {device_ip} -f {temp_tcl_path}; "
+        f"rm -f {temp_tcl_path}"
     )
-    logger.info(f"Writing batch TCL script{batch_label} to {temp_tcl_path} ({trap_count} traps)")
-    write_success, write_output = execute_sapro_command(write_command, timeout=30)
-    if not write_success:
-        logger.error(f"Failed to write batch TCL file{batch_label}: {write_output[:500]}")
-        return 0, trap_count
 
-    exec_command = (
-        f"/opt/sapro/bin/sapcnsl -m {device_map} -c tcl -d {device_ip} "
-        f"-f {temp_tcl_path}"
-    )
     logger.info(f"Executing batch{batch_label} of {trap_count} trap(s) from {device_ip} to {cc_ip} (timeout={timeout}s)")
-    success, output = execute_sapro_command(exec_command, timeout=timeout)
+    success, output = execute_sapro_command(combined_command, timeout=timeout)
     logger.info(f"Batch{batch_label} execution output: {output[:1000]}")
-
-    execute_sapro_command(f"rm -f {temp_tcl_path}", timeout=10)
 
     if success and "Trap(s) Sent" in output:
         logger.info(f"Batch{batch_label} sent {trap_count} trap(s) from {device_ip} to {cc_ip}")
