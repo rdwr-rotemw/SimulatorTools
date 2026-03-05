@@ -28,7 +28,7 @@ export const CCLoginPage: React.FC = () => {
   const error = useCCStore((state) => state.error);
   const clearError = useCCStore((state) => state.clearError);
 
-  const { register, handleSubmit, reset } = useForm<FormValues>({
+  const { register, handleSubmit } = useForm<FormValues>({
     defaultValues: { cc_ip: '', username: '', password: '' },
   });
 

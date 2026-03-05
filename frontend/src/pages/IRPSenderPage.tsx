@@ -976,8 +976,8 @@ export const IRPSenderPage: React.FC = () => {
     const [loopDelay, setLoopDelay] = useState<number>(15)
     const [loopTimeout, setLoopTimeout] = useState<number>(600)
     const [isLooping, setIsLooping] = useState<boolean>(false)
-    const [batchesSent, setBatchesSent] = useState<number>(0)
-    const [failedBatches, setFailedBatches] = useState<number>(0)
+    const [, setBatchesSent] = useState<number>(0)
+    const [, setFailedBatches] = useState<number>(0)
     const [messagesSent, setMessagesSent] = useState<number>(0)
     const [failedMessages, setFailedMessages] = useState<number>(0)
     const [lastError, setLastError] = useState<string | null>(null)
@@ -1427,7 +1427,7 @@ export const IRPSenderPage: React.FC = () => {
 
     const memoizedDuplicateMessage = React.useCallback((index: number) => {
         duplicateMessage(index)
-    }, [])
+    }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
     const memoizedUpdateMessage = React.useCallback((index: number, data: Record<string, any>) => {
         updateMessage(index, data)

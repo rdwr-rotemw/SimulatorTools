@@ -111,8 +111,8 @@ export const SNMPPage: React.FC = () => {
     const [loopTimeout, setLoopTimeout] = useState<number>(600); // seconds - default 10 minutes, mandatory
     const [regenerateAttackId, setRegenerateAttackId] = useState<boolean>(false); // New: regenerate attack-ID each iteration
     const [isLooping, setIsLooping] = useState<boolean>(false);
-    const [batchesSent, setBatchesSent] = useState<number>(0);
-    const [failedBatches, setFailedBatches] = useState<number>(0);
+    const [, setBatchesSent] = useState<number>(0);
+    const [, setFailedBatches] = useState<number>(0);
     const [trapsSent, setTrapsSent] = useState<number>(0);
     const [failedTraps, setFailedTraps] = useState<number>(0);
     const [lastError, setLastError] = useState<string | null>(null);
