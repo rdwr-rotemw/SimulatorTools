@@ -122,7 +122,7 @@ def pre_build_payloads(schema_obj, messages: List[Tuple[str, Dict]]) -> List[Tup
     formatter = IrpFormatter(schema_obj.schema, "0.0.0.0", "0.0.0.0")
     payloads = []
     for name, data in messages:
-        message_id = formatter.message_resolver.resolve(name)
+        message_id = formatter.message_resolver.resolve_message_identifier(name)
         binary_data = formatter.message_builder.build_message(message_id, data)
         # Build full UDP packet (header + data)
         version = 0x91
