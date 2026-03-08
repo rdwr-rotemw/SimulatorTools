@@ -348,7 +348,9 @@ class IRPLoopManager:
 
             async def send_to_simulator(simulator_ip: str):
                 payloads = per_sim_payloads.get(simulator_ip, default_payloads)
-                results: Dict[str, tuple] = {}
+                sent = 0
+                failed = 0
+                sim_errors = []
                 for name, msg_id, binary_body in payloads:
                     if stop_event.is_set():
                         break
@@ -358,13 +360,15 @@ class IRPLoopManager:
                         simulator_ip, config.destination_port,
                         msg_id, binary_body,
                     )
-                    results[name] = (ok, msg)
                     if ok:
+                        sent += 1
                         config.messages_sent += 1
                     else:
+                        failed += 1
                         config.failed_messages += 1
+                        sim_errors.append(f"{simulator_ip}/{name}: {msg}")
 
-                return simulator_ip, results
+                return simulator_ip, sent, failed, sim_errors
 
             sim_results = await asyncio.gather(
                 *[send_to_simulator(sim_ip) for sim_ip in config.simulators],
@@ -376,29 +380,22 @@ class IRPLoopManager:
                 return
 
             # Batch DB update (single write instead of per-message writes)
-            total_sent = sum(
-                1 for r in sim_results if not isinstance(r, Exception)
-                for _, (ok, _) in r[1].items() if ok
-            )
-            total_failed = sum(
-                1 for r in sim_results if not isinstance(r, Exception)
-                for _, (ok, _) in r[1].items() if not ok
-            )
-
-            # Check for errors
+            total_sent = 0
+            total_failed = 0
             has_failures = False
+
             for result in sim_results:
                 if isinstance(result, Exception):
                     has_failures = True
                     error_messages.append(str(result))
                     total_failed += 1
                 else:
-                    simulator_ip, results = result
-                    if isinstance(results, dict):
-                        for message_name, (success, msg) in results.items():
-                            if not success:
-                                has_failures = True
-                                error_messages.append(f"{simulator_ip}/{message_name}: {msg}")
+                    _, sent, failed, sim_errors = result
+                    total_sent += sent
+                    total_failed += failed
+                    if sim_errors:
+                        has_failures = True
+                        error_messages.extend(sim_errors)
 
             update_inc = {
                 "batches_sent": 1,
