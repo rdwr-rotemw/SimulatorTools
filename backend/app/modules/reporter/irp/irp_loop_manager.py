@@ -18,7 +18,11 @@ from typing import Dict, Optional, Any
 from pymongo.database import Database
 
 from backend.app.models.irp_loop import IRPLoopConfig, IRPLoopStatus
-from backend.app.modules.reporter.irp.irp_module import load_schema_from_mongo, send_irp_message
+from backend.app.modules.reporter.irp.irp_module import (
+    load_schema_from_mongo,
+    build_irp_payloads,
+    send_irp_udp,
+)
 
 logger = logging.getLogger("sim-tools.irp-loop-manager")
 
@@ -303,7 +307,9 @@ class IRPLoopManager:
     async def _send_batch(self, config: IRPLoopConfig, stop_event: asyncio.Event) -> None:
         """
         Send one batch of IRP messages to all simulators.
-        Sends messages one at a time so the stop event can interrupt mid-batch.
+
+        Pre-builds binary payloads once, then sends raw UDP to each simulator
+        in parallel — avoids rebuilding messages per simulator.
 
         Args:
             config: Loop configuration
@@ -319,46 +325,44 @@ class IRPLoopManager:
                 config.schema_id
             )
 
+            # Pre-build binary payloads once for all simulators
+            default_payloads = await loop.run_in_executor(
+                self._executor,
+                build_irp_payloads,
+                schema_obj,
+                config.messages,
+            )
+
+            # Pre-build per-simulator payloads if configured
+            per_sim_payloads: Dict[str, list] = {}
+            if config.per_simulator_messages:
+                for sim_ip, sim_messages in config.per_simulator_messages.items():
+                    per_sim_payloads[sim_ip] = await loop.run_in_executor(
+                        self._executor,
+                        build_irp_payloads,
+                        schema_obj,
+                        sim_messages,
+                    )
+
             error_messages = []
 
-            # Send to all simulators in parallel, but within each simulator
-            # send messages one at a time so stop_event can interrupt
             async def send_to_simulator(simulator_ip: str):
-                sim_messages = config.messages
-                if config.per_simulator_messages and simulator_ip in config.per_simulator_messages:
-                    sim_messages = config.per_simulator_messages[simulator_ip]
-
-                results: Dict[str, Any] = {}
-                for message in sim_messages:
+                payloads = per_sim_payloads.get(simulator_ip, default_payloads)
+                results: Dict[str, tuple] = {}
+                for name, msg_id, binary_body in payloads:
                     if stop_event.is_set():
                         break
-                    name = message['message']
-                    cleaned = {k: v for k, v in message.items() if k not in ('message', 'pause')}
                     ok, msg = await loop.run_in_executor(
                         self._executor,
-                        send_irp_message, schema_obj, name, cleaned,
-                        simulator_ip, config.destination_port
+                        send_irp_udp,
+                        simulator_ip, config.destination_port,
+                        msg_id, binary_body,
                     )
                     results[name] = (ok, msg)
-                    # Update DB immediately per message so status reflects real-time progress
                     if ok:
-                        await loop.run_in_executor(
-                            self._executor,
-                            self.collection.update_one,
-                            {"user_id": config.user_id},
-                            {"$inc": {"messages_sent": 1}}
-                        )
                         config.messages_sent += 1
                     else:
-                        await loop.run_in_executor(
-                            self._executor,
-                            self.collection.update_one,
-                            {"user_id": config.user_id},
-                            {"$inc": {"failed_messages": 1}}
-                        )
                         config.failed_messages += 1
-                    if not stop_event.is_set():
-                        await asyncio.sleep(0.1)
 
                 return simulator_ip, results
 
@@ -371,12 +375,23 @@ class IRPLoopManager:
             if stop_event.is_set():
                 return
 
-            # Check for errors (message counts already updated per-message above)
+            # Batch DB update (single write instead of per-message writes)
+            total_sent = sum(
+                1 for r in sim_results if not isinstance(r, Exception)
+                for _, (ok, _) in r[1].items() if ok
+            )
+            total_failed = sum(
+                1 for r in sim_results if not isinstance(r, Exception)
+                for _, (ok, _) in r[1].items() if not ok
+            )
+
+            # Check for errors
             has_failures = False
             for result in sim_results:
                 if isinstance(result, Exception):
                     has_failures = True
                     error_messages.append(str(result))
+                    total_failed += 1
                 else:
                     simulator_ip, results = result
                     if isinstance(results, dict):
@@ -385,37 +400,32 @@ class IRPLoopManager:
                                 has_failures = True
                                 error_messages.append(f"{simulator_ip}/{message_name}: {msg}")
 
+            update_inc = {
+                "batches_sent": 1,
+                "messages_sent": total_sent,
+                "failed_messages": total_failed,
+            }
+            update_set: Dict[str, Any] = {"updated_at": datetime.now()}
+
             if has_failures:
                 error_msg = "; ".join(error_messages)
                 logger.error(f"IRP batch failed for user {config.user_id}: {error_msg}")
-
-                await loop.run_in_executor(
-                    self._executor,
-                    self.collection.update_one,
-                    {"user_id": config.user_id},
-                    {
-                        "$inc": {"batches_sent": 1, "failed_batches": 1},
-                        "$set": {"updated_at": datetime.now(), "last_error": error_msg}
-                    }
-                )
-
-                config.batches_sent += 1
+                update_inc["failed_batches"] = 1
+                update_set["last_error"] = error_msg
                 config.failed_batches += 1
                 config.last_error = error_msg
             else:
-                await loop.run_in_executor(
-                    self._executor,
-                    self.collection.update_one,
-                    {"user_id": config.user_id},
-                    {
-                        "$inc": {"batches_sent": 1},
-                        "$set": {"updated_at": datetime.now(), "last_error": None}
-                    }
-                )
-
-                config.batches_sent += 1
+                update_set["last_error"] = None
                 config.last_error = None
-                logger.debug(f"Sent IRP batch #{config.batches_sent} ({config.messages_sent} total msgs) for user {config.user_id}")
+
+            await loop.run_in_executor(
+                self._executor,
+                self.collection.update_one,
+                {"user_id": config.user_id},
+                {"$inc": update_inc, "$set": update_set}
+            )
+            config.batches_sent += 1
+            logger.debug(f"Sent IRP batch #{config.batches_sent} ({config.messages_sent} total msgs) for user {config.user_id}")
 
         except Exception as e:
             error_msg = str(e)

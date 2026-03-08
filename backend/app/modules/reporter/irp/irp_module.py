@@ -1,8 +1,9 @@
 import logging
+import socket
+import struct
 import time
 from time import sleep
-from typing import Dict, Any, Optional, Union
-from typing import Tuple
+from typing import Dict, Any, List, Optional, Tuple, Union
 
 from backend.app.modules.reporter.irp.tools.convert_xml import ConvertXml
 from backend.app.modules.reporter.irp.tools.message_resolver import MessageResolver
@@ -602,6 +603,68 @@ def send_irp_message(schema_obj, message_id, message_data, from_ip: str, to_ip: 
         return True, "Sent"
     except Exception as exc:
         return False, f"send_irp_message error: {exc!s}"
+
+
+def build_irp_payloads(schema_obj, messages: List[Dict[str, Any]]) -> List[Tuple[str, int, bytes]]:
+    """Pre-build binary payloads for a list of IRP messages.
+
+    Builds each message once so it can be sent to multiple simulators
+    without repeating the expensive schema parsing / binary construction.
+
+    Args:
+        schema_obj: ConvertXml-like object with `schema` attribute
+        messages: List of message dicts, each with 'message' key + field values
+
+    Returns:
+        List of (message_name, message_id_int, binary_body) tuples.
+        binary_body is the raw message bytes (no UDP header yet).
+    """
+    formatter = IrpFormatter(schema_obj.schema, "0.0.0.0", "0.0.0.0")
+    payloads: List[Tuple[str, int, bytes]] = []
+    for message in messages:
+        name = message["message"]
+        cleaned = {k: v for k, v in message.items() if k not in ("message", "pause")}
+        message_id = formatter.message_resolver.resolve_message_identifier(name)
+        binary_data = formatter.message_builder.build_message(message_id, cleaned)
+        payloads.append((name, int(message_id), binary_data))
+    return payloads
+
+
+def send_irp_udp(from_ip: str, to_ip: str, message_id: int, binary_body: bytes) -> Tuple[bool, str]:
+    """Send a pre-built IRP binary payload via UDP.
+
+    Constructs a fresh UDP header (with current timestamp) and sends.
+
+    Args:
+        from_ip: Source IP to bind from
+        to_ip: Destination IP (port 2088)
+        message_id: Numeric message ID for the UDP header
+        binary_body: Pre-built binary message body
+
+    Returns:
+        (True, "Sent") on success or (False, error_message)
+    """
+    try:
+        data_header = struct.pack(
+            '<BBIBBIB',
+            0x91,               # version
+            4,                  # event_type
+            int(time.time()),   # timestamp (fresh)
+            2,                  # parser_version
+            1,                  # byte_order
+            100600,             # schema_version
+            message_id,         # code
+        )
+        data = data_header + binary_body
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.bind((from_ip, 0))
+            sock.sendto(data, (to_ip, 2088))
+        finally:
+            sock.close()
+        return True, "Sent"
+    except Exception as exc:
+        return False, f"send_irp_udp error: {exc!s}"
 
 
 def create_irp_template(schema_obj, message_identifier) -> Dict[str, Any]:
