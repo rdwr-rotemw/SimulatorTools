@@ -535,7 +535,7 @@ const IRPMessageForm: React.FC<IRPMessageFormProps> = ({messageData, schema, onC
 
                                 if (k.toLowerCase().includes('url')) {
                                     result[k] = fieldDef?.default ?? 'radware.com'
-                                } else if (fieldDef?.fieldType === 'object' && fieldDef?.fields) {
+                                } else if ((fieldDef?.fieldType === 'object' || fieldDef?.type === 'object') && fieldDef?.fields) {
                                     result[k] = initializeFields(fieldDef)
                                 } else if (fieldDef?.fieldType === 'array') {
                                     result[k] = []

@@ -482,7 +482,7 @@ class TemplateGenerator:
 
                     for enum_key in enum_keys:
                         template_dict[protocols_name][enum_key] = {}
-                        schema_dict[protocols_name]["fields"][enum_key] = {"type": "object", "fields": {}}
+                        schema_dict[protocols_name]["fields"][enum_key] = {"type": "object", "fieldType": "object", "fields": {}}
                         self._process_clone_body_with_metadata(
                             element.body,
                             template_dict[protocols_name][enum_key],
