@@ -2821,8 +2821,8 @@ export const IRPSenderPage: React.FC = () => {
                                 <Typography variant="body1">{remainingSeconds} seconds</Typography>
                             </Box>
                             <Box>
-                                <Typography variant="subtitle2" color="textSecondary">Target Simulator</Typography>
-                                <Typography variant="body1">{selectedSimulators.length > 0 ? selectedSimulators[0] : 'N/A'}</Typography>
+                                <Typography variant="subtitle2" color="textSecondary">Target Simulators</Typography>
+                                <Typography variant="body1">{selectedSimulators.length} simulator(s)</Typography>
                             </Box>
                             <Alert severity="info">
                                 Status updates every 10 seconds automatically.
