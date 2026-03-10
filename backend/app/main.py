@@ -31,6 +31,7 @@ from backend.app.db.seed_roles import seed_roles
 from backend.app.db.seed_users import seed_test_user, seed_cc_admin_user
 from backend.app.db.verify_setup import verify_setup
 from backend.app.db.seed_templates import seed_device_templates
+from backend.scripts.seed_polling_structures import seed_all as seed_polling_structures
 
 
 # Import route modules directly and mount under /api
@@ -221,6 +222,13 @@ async def lifespan(app: FastAPI):
         logger.info("Device templates seeding completed")
     except Exception as exc:
         logger.exception("Failed to seed device templates: %s", exc)
+
+    # Seed polling structure templates into MongoDB
+    try:
+        seed_polling_structures()
+        logger.info("Polling structure templates seeding completed")
+    except Exception as exc:
+        logger.exception("Failed to seed polling structure templates: %s", exc)
 
     # Initialize SNMP Loop Manager
     try:
