@@ -49,8 +49,9 @@ class ReporterSNMPPayload(BaseModel):
     map can be:
     - str: single map name used for all simulators (backward compatible)
     - Dict[str, str]: map of simulator_ip -> map_name for multi-simulator support
+    - None/omitted: map will be looked up from simulator database
     """
-    map: Union[str, Dict[str, str]]
+    map: Optional[Union[str, Dict[str, str]]] = Field(None, description="Map name(s) for simulator(s). If omitted, will be looked up from database.")
     traps: List[TrapConfig]
     per_simulator_traps: Optional[Dict[str, List[TrapConfig]]] = None
 
