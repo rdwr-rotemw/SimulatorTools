@@ -122,7 +122,6 @@ class IRPPcapAnalysisResponse(BaseModel):
 class IRPSendPayload(BaseModel):
     """Payload for sending IRP messages via custom data."""
     mongo_id: str = Field(..., description="MongoDB _id of the IRP schema to use")
-    map: Optional[str] = Field(None, description="Simulator workspace map folder (not used by IRP, kept for API consistency)")
     message_data: Dict[str, Any] = Field(..., description="Message data to populate the template")
     per_simulator_data: Optional[Dict[str, Dict[str, Any]]] = Field(
         None,
