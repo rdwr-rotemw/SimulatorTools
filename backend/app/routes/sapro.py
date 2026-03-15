@@ -43,6 +43,7 @@ from backend.app.schemas.sapro_simulator import (
     DeviceFieldsResponse,
     BulkActionResult,
 )
+from backend.app.utils.simulator_lock import get_simulator_lock_manager
 from backend.app.utils.auth import require_sapro_access, require_admin
 from backend.app.utils.database import get_db, get_mongo_db
 from backend.app.utils.logger import logger
@@ -642,42 +643,46 @@ def list_simulators(
         logger.exception("Failed to query Sapro for devices: %s", exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to query Sapro: {exc}")
 
-    # Upsert devices returned by Sapro into DB using PostgreSQL INSERT ON CONFLICT
-    for device in devices:
-        stmt = insert(Simulator).values(
-            ip_address=device.ip_address,
-            type=device.type or "",  # Default to empty string if SNMP query failed
-            version=device.version or "",  # Default to empty string if SNMP query failed
-            map=device.map,
-            status=device.status,
-            created_at=datetime.now(timezone.utc)
-        ).on_conflict_do_update(
-            index_elements=['ip_address'],
-            set_={
-                'type': device.type or "",
-                'version': device.version or "",
-                'map': device.map,
-                'status': device.status
-            }
-        )
-        db.execute(stmt)
-    db.commit()
-
-    # Build set of Sapro IPs and remove any DB records not present in Sapro
-    sapro_ips = {d.ip_address for d in devices}
-
-    db_sims = db.query(Simulator).all()
-    removed = 0
-    for sim in db_sims:
-        if sim.ip_address not in sapro_ips:
-            try:
-                db.delete(sim)
-                removed += 1
-            except Exception:
-                logger.exception("Failed to delete orphaned simulator %s from DB", sim.ip_address)
-    if removed:
+    # Acquire exclusive lock to prevent concurrent upsert/cleanup operations
+    # which can cause PostgreSQL deadlocks
+    simulator_lock_mgr = get_simulator_lock_manager()
+    with simulator_lock_mgr.lock():
+        # Upsert devices returned by Sapro into DB using PostgreSQL INSERT ON CONFLICT
+        for device in devices:
+            stmt = insert(Simulator).values(
+                ip_address=device.ip_address,
+                type=device.type or "",  # Default to empty string if SNMP query failed
+                version=device.version or "",  # Default to empty string if SNMP query failed
+                map=device.map,
+                status=device.status,
+                created_at=datetime.now(timezone.utc)
+            ).on_conflict_do_update(
+                index_elements=['ip_address'],
+                set_={
+                    'type': device.type or "",
+                    'version': device.version or "",
+                    'map': device.map,
+                    'status': device.status
+                }
+            )
+            db.execute(stmt)
         db.commit()
-        logger.info("Removed %d orphaned simulator(s) from DB not present in Sapro", removed)
+
+        # Build set of Sapro IPs and remove any DB records not present in Sapro
+        sapro_ips = {d.ip_address for d in devices}
+
+        db_sims = db.query(Simulator).all()
+        removed = 0
+        for sim in db_sims:
+            if sim.ip_address not in sapro_ips:
+                try:
+                    db.delete(sim)
+                    removed += 1
+                except Exception:
+                    logger.exception("Failed to delete orphaned simulator %s from DB", sim.ip_address)
+        if removed:
+            db.commit()
+            logger.info("Removed %d orphaned simulator(s) from DB not present in Sapro", removed)
 
     # Get maps for user's workspace (or all if super user)
     workspace = current_user.workspace if current_user.workspace else "default"
