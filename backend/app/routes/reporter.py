@@ -88,8 +88,9 @@ from backend.app.schemas.reporter import (
     IRPTemplatePayload,
 )
 from backend.app.modules.reporter.snmp.snmp_loop_manager import get_loop_manager
+from backend.app.modules.reporter.map_resolver import get_simulator_map
 from backend.app.utils.auth import require_cc_access, get_current_user
-from backend.app.utils.database import get_mongo_db
+from backend.app.utils.database import get_db, get_mongo_db
 from backend.app.utils.pcap_converter import pcap_to_traps, PcapParseError
 
 router = APIRouter(prefix="/api", tags=["reporter"])
@@ -110,6 +111,7 @@ async def send_snmp_trap_endpoint(
     payload: ReporterSNMPPayload,
     _current_user: User = Depends(require_cc_access),
     sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
+    db=Depends(get_db),
 ) -> ReporterResponse:
     """Send SNMP trap to simulator(s) via CyberController.
 
@@ -162,15 +164,14 @@ async def send_snmp_trap_endpoint(
             if isinstance(trap_data["map"], dict):
                 map_dict = trap_data["map"]
             else:
-                # Single map string - use for all simulators
+                # Single map string or empty - resolve per simulator
                 for sim_ip in simulator_ips:
-                    map_dict[sim_ip] = trap_data["map"]
+                    map_dict[sim_ip] = trap_data.get("map")
 
-            # Resolve map names to full paths
+            # Resolve map names - look up from DB if not provided
             for sim_ip in simulator_ips:
-                map_name = map_dict.get(sim_ip)
-                if map_name:
-                    map_dict[sim_ip] = sapro_handler.get_full_map_path(map_name, workspace)
+                map_name = get_simulator_map(db, sim_ip, map_dict.get(sim_ip))
+                map_dict[sim_ip] = sapro_handler.get_full_map_path(map_name, workspace)
 
             # Extract per-simulator traps (different attack IDs per simulator)
             per_simulator_traps = trap_data.pop("per_simulator_traps", None)
@@ -233,15 +234,14 @@ async def send_snmp_trap_endpoint(
             # Handle map field
             if isinstance(trap_data["map"], dict):
                 # Dict provided but only one simulator - extract map for this simulator
-                trap_data["map"] = trap_data["map"].get(simulator_ip, "")
-                if not trap_data["map"]:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Map not found for simulator {simulator_ip}",
-                    )
+                map_name = trap_data["map"].get(simulator_ip)
+            else:
+                map_name = trap_data.get("map")
 
+            # Get map from DB if not provided
+            map_name = get_simulator_map(db, simulator_ip, map_name)
             # Resolve map name to full path
-            trap_data["map"] = sapro_handler.get_full_map_path(trap_data["map"], workspace)
+            trap_data["map"] = sapro_handler.get_full_map_path(map_name, workspace)
 
             # Use per-simulator traps if provided
             per_simulator_traps = trap_data.pop("per_simulator_traps", None)
@@ -641,6 +641,7 @@ async def set_polling_config(
     current_user: User = Depends(require_cc_access),
     mongo_db=Depends(get_mongo_db),
     sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
+    db=Depends(get_db),
 ) -> ReporterResponse:
     """Set polling configuration on simulator(s) (saves XMF and loads to device).
 
@@ -695,7 +696,7 @@ async def set_polling_config(
             if isinstance(payload.map, dict):
                 map_dict = payload.map
             else:
-                # Single map string - use for all simulators
+                # Single map string or empty - resolve per simulator
                 for sim_ip in simulator_ips:
                     map_dict[sim_ip] = payload.map
 
@@ -708,12 +709,7 @@ async def set_polling_config(
             if write_xmf:
                 # Use first simulator's map path for writing XMF
                 first_sim_ip = simulator_ips[0]
-                first_map_name = map_dict.get(first_sim_ip)
-                if not first_map_name:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Map not found for simulator {first_sim_ip}",
-                    )
+                first_map_name = get_simulator_map(db, first_sim_ip, map_dict.get(first_sim_ip))
 
                 try:
                     first_map_path = sapro_handler.get_full_map_path(first_map_name, workspace)
@@ -744,12 +740,13 @@ async def set_polling_config(
 
             # Load XMF to each simulator
             for sim_ip in simulator_ips:
-                map_name = map_dict.get(sim_ip)
-                if not map_name:
+                try:
+                    map_name = get_simulator_map(db, sim_ip, map_dict.get(sim_ip))
+                except HTTPException as e:
                     results.append({
                         "simulator_ip": sim_ip,
                         "success": False,
-                        "message": f"Map not found for simulator {sim_ip}"
+                        "message": e.detail
                     })
                     continue
 
@@ -804,24 +801,13 @@ async def set_polling_config(
         else:
             # Single simulator (original logic)
             # Load XMF to simulator
-            # Get map from payload (matches SNMP pattern)
-            if not payload.map:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Map is required for loading configuration to simulator",
-                )
-
-            # Extract map name for this specific simulator
+            # Get map from payload or database
             if isinstance(payload.map, dict):
                 map_name = payload.map.get(simulator_ip)
-                if not map_name:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Map not found for simulator {simulator_ip}",
-                    )
             else:
                 map_name = payload.map
 
+            map_name = get_simulator_map(db, simulator_ip, map_name)
             workspace = current_user.workspace
 
             # Get full map path once at route level
@@ -1703,6 +1689,7 @@ async def send_snmp_trap_stream_endpoint(
     payload: ReporterSNMPPayload,
     _current_user: User = Depends(require_cc_access),
     sapro_handler: SaproCommunicationHandler = Depends(get_sapro_handler),
+    db=Depends(get_db),
 ):
     """Send SNMP traps with real-time progress via Server-Sent Events.
 
@@ -1746,15 +1733,14 @@ async def send_snmp_trap_stream_endpoint(
             if isinstance(trap_data["map"], dict):
                 map_dict = trap_data["map"]
             else:
-                # Single map string - use for all simulators
+                # Single map string or empty - resolve per simulator
                 for sim_ip in simulator_ips:
-                    map_dict[sim_ip] = trap_data["map"]
+                    map_dict[sim_ip] = trap_data.get("map")
 
-            # Resolve map names to full paths
+            # Resolve map names - look up from DB if not provided
             for sim_ip in simulator_ips:
-                map_name = map_dict.get(sim_ip)
-                if map_name:
-                    map_dict[sim_ip] = sapro_handler.get_full_map_path(map_name, workspace)
+                map_name = get_simulator_map(db, sim_ip, map_dict.get(sim_ip))
+                map_dict[sim_ip] = sapro_handler.get_full_map_path(map_name, workspace)
 
             # Extract per-simulator traps (different attack IDs per simulator)
             per_simulator_traps = trap_data.pop("per_simulator_traps", None)
@@ -1831,15 +1817,14 @@ async def send_snmp_trap_stream_endpoint(
             # Handle map field
             if isinstance(trap_data["map"], dict):
                 # Dict provided but only one simulator - extract map for this simulator
-                trap_data["map"] = trap_data["map"].get(simulator_ip, "")
-                if not trap_data["map"]:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Map not found for simulator {simulator_ip}",
-                    )
+                map_name = trap_data["map"].get(simulator_ip)
+            else:
+                map_name = trap_data.get("map")
 
+            # Get map from DB if not provided
+            map_name = get_simulator_map(db, simulator_ip, map_name)
             # Resolve map name to full path
-            trap_data["map"] = sapro_handler.get_full_map_path(trap_data["map"], workspace)
+            trap_data["map"] = sapro_handler.get_full_map_path(map_name, workspace)
 
             # Use per-simulator traps if provided
             per_simulator_traps = trap_data.pop("per_simulator_traps", None)
