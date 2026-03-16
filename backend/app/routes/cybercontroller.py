@@ -14,11 +14,13 @@ handled via username/password in request body or query parameters.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Union
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
@@ -27,7 +29,7 @@ from sqlalchemy.orm import Session
 from backend.app.models.cc_session import CCSession
 from backend.app.models.user import User
 from backend.app.modules.cc.cc_client import get_cc_handler, CCHandler, CCCredentials
-from backend.app.modules.mongo_models import DeviceDriverDeploy
+from backend.app.modules.mongo_models import DeviceDriverDeploy, DriverDeployJob
 from backend.app.modules.reporter.irp.irp_module import convert_xml
 from backend.app.modules.sapro.sapro_client import get_sapro_handler
 from backend.app.schemas.cybercontroller import (
@@ -1995,6 +1997,82 @@ async def upload_device_driver(
         )
 
 
+async def _run_deploy_job(
+    cc_ip: str,
+    driver_filenames: list,
+    job_id: str,
+    mongo_db
+) -> None:
+    """Background task for deploying drivers and updating job status in MongoDB.
+
+    Updates job status in real-time:
+    - status: "running"
+    - status: "completed" when done
+    """
+    job_collection = mongo_db["driver_deploy_jobs"]
+    device_drivers_collection = mongo_db["device_drivers"]
+
+    try:
+        # Update job status to running
+        job_collection.update_one(
+            {"job_id": job_id},
+            {"$set": {"status": "running"}}
+        )
+
+        # Run deployment in thread executor (deploy is sync/blocking SSH operations)
+        loop = asyncio.get_event_loop()
+        summary = await loop.run_in_executor(
+            None,
+            deploy_multiple_drivers,
+            cc_ip,
+            driver_filenames,
+            job_collection,
+            job_id
+        )
+
+        # Update device_drivers collection for successful deployments
+        now = datetime.now(timezone.utc)
+        for result in summary["results"]:
+            if result["success"]:
+                device_drivers_collection.update_one(
+                    {"filename": result["filename"]},
+                    {
+                        "$set": {
+                            "status": "deployed",
+                            "last_deployed": now
+                        }
+                    },
+                    upsert=True
+                )
+
+        # Mark job as completed
+        job_collection.update_one(
+            {"job_id": job_id},
+            {
+                "$set": {
+                    "status": "completed",
+                    "completed_at": datetime.now(timezone.utc)
+                }
+            }
+        )
+
+        logger.info(
+            f"Deployment job {job_id} complete: {summary['succeeded']}/{summary['total']} succeeded"
+        )
+
+    except Exception as e:
+        logger.error(f"Deployment job {job_id} failed: {e}", exc_info=True)
+        job_collection.update_one(
+            {"job_id": job_id},
+            {
+                "$set": {
+                    "status": "failed",
+                    "completed_at": datetime.now(timezone.utc)
+                }
+            }
+        )
+
+
 @router.post("/cc/{cc_ip}/device-drivers/deploy")
 async def deploy_device_drivers(
         cc_ip: str,
@@ -2002,13 +2080,16 @@ async def deploy_device_drivers(
         _current_user=Depends(require_cc_access),
         mongo_db=Depends(get_mongo_db),
 ) -> Dict[str, Any]:
-    """Deploy selected device drivers to CyberController.
+    """Deploy selected device drivers to CyberController (async, returns job_id).
+
+    Validates drivers exist, creates a job in MongoDB, launches async deployment,
+    and returns immediately with job_id for polling status.
 
     Workflow:
     1. Validate all driver filenames exist
-    2. Deploy each driver sequentially (continue on failure)
-    3. Update MongoDB deployment status
-    4. Return summary with succeeded/failed counts
+    2. Create job record in MongoDB
+    3. Launch background deployment task (asyncio.create_task)
+    4. Return job_id immediately (no timeout)
 
     Args:
         cc_ip: CyberController IP address
@@ -2016,10 +2097,9 @@ async def deploy_device_drivers(
 
     Returns:
         Dict with:
-        - total: Total drivers attempted
-        - succeeded: Number of successful deployments
-        - failed: Number of failed deployments
-        - results: Per-driver results with filename, success, message
+        - job_id: Unique job identifier for polling status
+        - status: "pending" (initial status)
+        - total: Total drivers to deploy
 
     Example request:
         {
@@ -2031,21 +2111,9 @@ async def deploy_device_drivers(
 
     Example response:
         {
-            "total": 2,
-            "succeeded": 2,
-            "failed": 0,
-            "results": [
-                {
-                    "filename": "DefensePro-10.6.0.0-DD-1.00-17.jar",
-                    "success": true,
-                    "message": "M_01472: Upload of device driver succeeded."
-                },
-                {
-                    "filename": "DefensePro-8.30.0.0-DD-1.00-7.jar",
-                    "success": true,
-                    "message": "Already exists: M_00777: The device driver ... already exists"
-                }
-            ]
+            "job_id": "550e8400-e29b-41d4-a716-446655440000",
+            "status": "pending",
+            "total": 2
         }
     """
     try:
@@ -2057,7 +2125,7 @@ async def deploy_device_drivers(
                 detail="No drivers specified for deployment"
             )
 
-        # Validate all drivers exist before starting deployment
+        # Validate all drivers exist before creating job
         existing_drivers = list_existing_drivers()
         missing_drivers = [f for f in driver_filenames if f not in existing_drivers]
 
@@ -2067,47 +2135,118 @@ async def deploy_device_drivers(
                 detail=f"Driver files not found: {', '.join(missing_drivers)}"
             )
 
-        logger.info(f"Starting deployment of {len(driver_filenames)} drivers to CC {cc_ip}")
+        # Create job record in MongoDB
+        job_id = str(uuid4())
+        job_collection = mongo_db["driver_deploy_jobs"]
+        job_doc = {
+            "job_id": job_id,
+            "cc_ip": cc_ip,
+            "status": "pending",
+            "total": len(driver_filenames),
+            "succeeded": 0,
+            "failed": 0,
+            "results": [],
+            "created_at": datetime.now(timezone.utc),
+            "completed_at": None
+        }
+        job_collection.insert_one(job_doc)
 
-        # Deploy drivers sequentially
-        summary = deploy_multiple_drivers(cc_ip, driver_filenames)
+        logger.info(f"Created deployment job {job_id} for {len(driver_filenames)} drivers to CC {cc_ip}")
 
-        # Update MongoDB deployment status for successful deployments
-        try:
-            collection = mongo_db["device_drivers"]
-            now = datetime.now(timezone.utc)
+        # Launch background deployment task
+        asyncio.create_task(_run_deploy_job(cc_ip, driver_filenames, job_id, mongo_db))
 
-            for result in summary["results"]:
-                if result["success"]:
-                    collection.update_one(
-                        {"filename": result["filename"]},
-                        {
-                            "$set": {
-                                "status": "deployed",
-                                "last_deployed": now
-                            }
-                        },
-                        upsert=True
-                    )
-        except Exception as mongo_exc:
-            logger.warning(f"Failed to update MongoDB deployment status (non-fatal): {mongo_exc}")
-
-        # Log summary
-        logger.info(
-            f"Deployment to CC {cc_ip} complete: "
-            f"{summary['succeeded']}/{summary['total']} succeeded, "
-            f"{summary['failed']}/{summary['total']} failed"
-        )
-
-        return summary
+        # Return job_id immediately (HTTP request completes, no timeout)
+        return {
+            "job_id": job_id,
+            "status": "pending",
+            "total": len(driver_filenames)
+        }
 
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error(f"Failed to deploy device drivers: {exc}", exc_info=True)
+        logger.error(f"Failed to create deployment job: {exc}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Deployment failed: {str(exc)}"
+            detail=f"Failed to create deployment job: {str(exc)}"
+        )
+
+
+@router.get("/cc/{cc_ip}/device-drivers/deploy/{job_id}")
+async def get_deploy_job_status(
+        cc_ip: str,
+        job_id: str,
+        _current_user=Depends(require_cc_access),
+        mongo_db=Depends(get_mongo_db),
+) -> Dict[str, Any]:
+    """Get status of a device driver deployment job.
+
+    Poll this endpoint to check deployment progress.
+
+    Args:
+        cc_ip: CyberController IP address
+        job_id: Deployment job ID (returned from POST /device-drivers/deploy)
+
+    Returns:
+        Dict with:
+        - job_id: Unique job identifier
+        - cc_ip: CyberController IP
+        - status: "pending" | "running" | "completed" | "failed"
+        - total: Total drivers to deploy
+        - succeeded: Number of successful deployments
+        - failed: Number of failed deployments
+        - results: List of per-driver results (empty until deployment starts)
+        - created_at: Job creation timestamp
+        - completed_at: Job completion timestamp (null until done)
+
+    Example response (running):
+        {
+            "job_id": "550e8400-e29b-41d4-a716-446655440000",
+            "cc_ip": "172.17.154.66",
+            "status": "running",
+            "total": 3,
+            "succeeded": 1,
+            "failed": 0,
+            "results": [
+                {
+                    "filename": "DefensePro-8.30.0.0-DD-1.00-7.jar",
+                    "success": true,
+                    "message": "M_01472: Upload of device driver succeeded."
+                }
+            ],
+            "created_at": "2026-03-16T22:52:42.123456+00:00",
+            "completed_at": null
+        }
+    """
+    try:
+        job_collection = mongo_db["driver_deploy_jobs"]
+        job_doc = job_collection.find_one({"job_id": job_id})
+
+        if not job_doc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Deployment job {job_id} not found"
+            )
+
+        # Verify job belongs to this CC IP
+        if job_doc.get("cc_ip") != cc_ip:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Job does not belong to this CyberController"
+            )
+
+        # Remove MongoDB's _id field and return job status
+        job_doc.pop("_id", None)
+        return job_doc
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Failed to get deployment job status: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get job status: {str(exc)}"
         )
 
 

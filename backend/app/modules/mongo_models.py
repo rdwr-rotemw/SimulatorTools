@@ -134,6 +134,19 @@ class DeviceDriverDeploy(BaseModel):
     driver_filenames: list[str]  # List of JAR filenames to deploy
 
 
+class DriverDeployJob(BaseModel):
+    """Device driver deployment job status tracked in MongoDB"""
+    job_id: str
+    cc_ip: str
+    status: str  # "pending" | "running" | "completed" | "failed"
+    total: int
+    succeeded: int = 0
+    failed: int = 0
+    results: List[Dict[str, Any]] = Field(default_factory=list)  # per-driver: {filename, success, message}
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: Optional[datetime] = None
+
+
 __all__ = [
     "SNMPTrapTemplate",
     "IRPMessageTemplate",
@@ -144,4 +157,5 @@ __all__ = [
     "DeviceDriver",
     "DeviceDriverUpload",
     "DeviceDriverDeploy",
+    "DriverDeployJob",
 ]

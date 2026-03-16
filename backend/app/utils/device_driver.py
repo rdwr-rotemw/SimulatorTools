@@ -199,7 +199,7 @@ async def save_uploaded_driver(
 def deploy_driver_to_cc(
     cc_ip: str,
     driver_filename: str,
-    timeout: int = 120
+    timeout: int = 240
 ) -> Tuple[bool, str]:
     """Deploy a device driver to CyberController via SSH.
 
@@ -213,7 +213,7 @@ def deploy_driver_to_cc(
     Args:
         cc_ip: CyberController IP address
         driver_filename: JAR filename (e.g., DefensePro-10.6.0.0-DD-1.00-17.jar)
-        timeout: SSH command timeout in seconds (default: 120 for 2 minutes)
+        timeout: SSH command timeout in seconds (default: 240 for 4 minutes)
 
     Returns:
         Tuple of (success: bool, message: str)
@@ -311,14 +311,20 @@ def deploy_driver_to_cc(
 
 def deploy_multiple_drivers(
     cc_ip: str,
-    driver_filenames: List[str]
+    driver_filenames: List[str],
+    job_collection=None,
+    job_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """Deploy multiple device drivers to CC sequentially.
 
     Executes deployment one-by-one, continues on failure, and returns summary.
+    Optionally updates job progress in MongoDB during execution.
+
     Args:
         cc_ip: CyberController IP address
         driver_filenames: List of JAR filenames to deploy
+        job_collection: MongoDB collection for job tracking (optional)
+        job_id: Job ID for MongoDB updates (optional)
 
     Returns:
         Dict with:
@@ -345,16 +351,33 @@ def deploy_multiple_drivers(
 
         success, message = deploy_driver_to_cc(cc_ip, filename)
 
-        results.append({
+        result_doc = {
             "filename": filename,
             "success": success,
             "message": message
-        })
+        }
+        results.append(result_doc)
 
         if success:
             succeeded += 1
         else:
             failed += 1
+
+        # Update job progress in MongoDB if tracking is enabled
+        if job_collection and job_id:
+            try:
+                job_collection.update_one(
+                    {"job_id": job_id},
+                    {
+                        "$push": {"results": result_doc},
+                        "$set": {
+                            "succeeded": succeeded,
+                            "failed": failed
+                        }
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Failed to update job progress in MongoDB: {e}")
 
     summary = {
         "total": len(driver_filenames),
