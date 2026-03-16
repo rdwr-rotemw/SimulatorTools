@@ -364,7 +364,7 @@ def deploy_multiple_drivers(
             failed += 1
 
         # Update job progress in MongoDB if tracking is enabled
-        if job_collection and job_id:
+        if job_collection is not None and job_id:
             try:
                 job_collection.update_one(
                     {"job_id": job_id},
