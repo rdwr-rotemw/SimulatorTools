@@ -161,12 +161,13 @@ async def send_snmp_trap_endpoint(
 
             # Handle map field - convert to dict if needed
             map_dict = {}
-            if isinstance(trap_data["map"], dict):
-                map_dict = trap_data["map"]
+            map_value = trap_data.get("map")
+            if isinstance(map_value, dict):
+                map_dict = map_value
             else:
                 # Single map string or empty - resolve per simulator
                 for sim_ip in simulator_ips:
-                    map_dict[sim_ip] = trap_data.get("map")
+                    map_dict[sim_ip] = map_value
 
             # Resolve map names - look up from DB if not provided
             for sim_ip in simulator_ips:
@@ -232,11 +233,12 @@ async def send_snmp_trap_endpoint(
         else:
             # Single simulator (backward compatible)
             # Handle map field
-            if isinstance(trap_data["map"], dict):
+            map_value = trap_data.get("map")
+            if isinstance(map_value, dict):
                 # Dict provided but only one simulator - extract map for this simulator
-                map_name = trap_data["map"].get(simulator_ip)
+                map_name = map_value.get(simulator_ip)
             else:
-                map_name = trap_data.get("map")
+                map_name = map_value
 
             # Get map from DB if not provided
             map_name = get_simulator_map(db, simulator_ip, map_name)
@@ -1730,12 +1732,13 @@ async def send_snmp_trap_stream_endpoint(
 
             # Handle map field - convert to dict if needed
             map_dict = {}
-            if isinstance(trap_data["map"], dict):
-                map_dict = trap_data["map"]
+            map_value = trap_data.get("map")
+            if isinstance(map_value, dict):
+                map_dict = map_value
             else:
                 # Single map string or empty - resolve per simulator
                 for sim_ip in simulator_ips:
-                    map_dict[sim_ip] = trap_data.get("map")
+                    map_dict[sim_ip] = map_value
 
             # Resolve map names - look up from DB if not provided
             for sim_ip in simulator_ips:
@@ -1815,11 +1818,12 @@ async def send_snmp_trap_stream_endpoint(
         else:
             # Single simulator (backward compatible)
             # Handle map field
-            if isinstance(trap_data["map"], dict):
+            map_value = trap_data.get("map")
+            if isinstance(map_value, dict):
                 # Dict provided but only one simulator - extract map for this simulator
-                map_name = trap_data["map"].get(simulator_ip)
+                map_name = map_value.get(simulator_ip)
             else:
-                map_name = trap_data.get("map")
+                map_name = map_value
 
             # Get map from DB if not provided
             map_name = get_simulator_map(db, simulator_ip, map_name)
