@@ -20,6 +20,24 @@ export interface DeploymentSummary {
   results: DeploymentResult[];
 }
 
+export interface DeployJobResponse {
+  job_id: string;
+  status: string;
+  total: number;
+}
+
+export interface DeployJobStatus {
+  job_id: string;
+  cc_ip: string;
+  status: string;
+  total: number;
+  succeeded: number;
+  failed: number;
+  results: DeploymentResult[];
+  created_at: string;
+  completed_at: string | null;
+}
+
 export const deviceDriverService = {
   /**
    * List all available device drivers
@@ -46,15 +64,21 @@ export const deviceDriverService = {
   },
 
   /**
-   * Deploy selected device drivers to CyberController
+   * Deploy selected device drivers to CyberController (async, returns immediately with job_id)
    */
-  async deployDrivers(ccIp: string, driverFilenames: string[]): Promise<DeploymentSummary> {
+  async deployDrivers(ccIp: string, driverFilenames: string[]): Promise<DeployJobResponse> {
     const response = await apiClient.post(`/cc/${ccIp}/device-drivers/deploy`, {
       driver_filenames: driverFilenames,
-    }, {
-      timeout: 600000, // 10 minutes - allows multiple drivers at 2min each
     });
 
+    return response.data;
+  },
+
+  /**
+   * Get status of a device driver deployment job
+   */
+  async getDeployStatus(ccIp: string, jobId: string): Promise<DeployJobStatus> {
+    const response = await apiClient.get(`/cc/${ccIp}/device-drivers/deploy/${jobId}`);
     return response.data;
   },
 

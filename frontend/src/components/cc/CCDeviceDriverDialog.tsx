@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Dialog,
   DialogTitle,
@@ -16,7 +16,7 @@ import {
 } from '@mui/material';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import InstallDesktopIcon from '@mui/icons-material/InstallDesktop';
-import { deviceDriverService, DeviceDriver, DeploymentSummary } from '../../api/services/deviceDriver.service';
+import { deviceDriverService, DeviceDriver, DeploymentSummary, DeployJobStatus } from '../../api/services/deviceDriver.service';
 import { CCDevice } from '../../types/cc.types';
 
 interface CCDeviceDriverDialogProps {
@@ -45,16 +45,23 @@ export const CCDeviceDriverDialog: React.FC<CCDeviceDriverDialogProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [isDeploying, setIsDeploying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [deploymentResult, setDeploymentResult] = useState<DeploymentSummary | null>(null);
+  const [deploymentResult, setDeploymentResult] = useState<DeployJobStatus | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Extract unique device type/version combinations from devices
   useEffect(() => {
     if (!open) {
       // Reset state when dialog closes
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
       setSelectedDrivers(new Set());
       setUploadedDrivers([]);
       setError(null);
       setDeploymentResult(null);
+      setJobId(null);
       return;
     }
 
@@ -179,15 +186,32 @@ export const CCDeviceDriverDialog: React.FC<CCDeviceDriverDialogProps> = ({
 
     try {
       const driverFilenames = Array.from(selectedDrivers);
-      const result = await deviceDriverService.deployDrivers(ccIp, driverFilenames);
+      // Start deployment - returns immediately with job_id
+      const job = await deviceDriverService.deployDrivers(ccIp, driverFilenames);
+      setJobId(job.job_id);
 
-      setDeploymentResult(result);
+      // Poll for status every 5 seconds
+      pollIntervalRef.current = setInterval(async () => {
+        try {
+          const status = await deviceDriverService.getDeployStatus(ccIp, job.job_id);
+          setDeploymentResult(status);
 
-      // Don't auto-close - let user close manually with Close button
+          // Stop polling when deployment is complete or failed
+          if (status.status === 'completed' || status.status === 'failed') {
+            if (pollIntervalRef.current) {
+              clearInterval(pollIntervalRef.current);
+              pollIntervalRef.current = null;
+            }
+            setIsDeploying(false);
+          }
+        } catch (pollErr: any) {
+          console.error('Failed to get deployment status:', pollErr);
+          // Continue polling even on error
+        }
+      }, 5000);
     } catch (err: any) {
       const errorMsg = err?.response?.data?.detail || err?.message || 'Deployment failed';
       setError(errorMsg);
-    } finally {
       setIsDeploying(false);
     }
   };
@@ -298,12 +322,15 @@ export const CCDeviceDriverDialog: React.FC<CCDeviceDriverDialogProps> = ({
         )}
 
         {/* Deployment progress */}
-        {isDeploying && (
+        {isDeploying && deploymentResult && (
           <Box sx={{ mb: 2 }}>
             <Typography variant="body2" sx={{ mb: 1 }}>
-              Deploying {selectedDrivers.size} driver{selectedDrivers.size > 1 ? 's' : ''}...
+              Deploying: {deploymentResult.succeeded + deploymentResult.failed}/{deploymentResult.total} drivers done
             </Typography>
-            <LinearProgress />
+            <LinearProgress
+              variant="determinate"
+              value={(deploymentResult.succeeded + deploymentResult.failed) / deploymentResult.total * 100}
+            />
           </Box>
         )}
 
@@ -343,8 +370,8 @@ export const CCDeviceDriverDialog: React.FC<CCDeviceDriverDialogProps> = ({
         {!deploymentResult && selectedDrivers.size > 0 && (
           <Alert severity="info" sx={{ mb: 2 }}>
             <Typography variant="body2">
-              <strong>Note:</strong> Installation may take several minutes (approximately 2 minutes per driver).
-              Please wait for the process to complete.
+              <strong>Note:</strong> Installation may take several minutes (approximately 4 minutes per driver).
+              The deployment will continue in the background even if you close the browser.
             </Typography>
           </Alert>
         )}

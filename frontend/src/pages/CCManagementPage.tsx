@@ -26,7 +26,20 @@ import {ccService} from '../api/services/cc.service';
 
 import {CCDeviceDriverDialog} from '../components/cc/CCDeviceDriverDialog';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
-import {deviceDriverService} from '../api/services/deviceDriver.service';
+import {deviceDriverService, DeployJobStatus} from '../api/services/deviceDriver.service';
+
+/**
+ * Poll for deployment job completion every 5 seconds
+ */
+async function waitForDeployJob(ccIp: string, jobId: string): Promise<DeployJobStatus> {
+  while (true) {
+    const status = await deviceDriverService.getDeployStatus(ccIp, jobId);
+    if (status.status === 'completed' || status.status === 'failed') {
+      return status;
+    }
+    await new Promise(resolve => setTimeout(resolve, 5000));
+  }
+}
 
 const CCManagementPage: React.FC = () => {
     const navigate = useNavigate();
@@ -229,7 +242,8 @@ const CCManagementPage: React.FC = () => {
                                 message: 'Installing device drivers...'
                             });
 
-                            const deployResult = await deviceDriverService.deployDrivers(currentCC, matchedDriverFilenames);
+                            const job = await deviceDriverService.deployDrivers(currentCC, matchedDriverFilenames);
+                            const deployResult = await waitForDeployJob(currentCC, job.job_id);
 
                             setCurrentDevice(deployResult.total);
                             setDeviceProgress({
