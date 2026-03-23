@@ -1248,6 +1248,10 @@ def start_simulator(
     """Start one or more simulator devices.
 
     simulator_ip accepts a single IP or comma-separated IPs: "50.40.10.1,50.40.10.2"
+
+    HTTP Timeout: ~60 seconds per device (1 minute to start + SNMP query).
+    For N devices, expect ~60*N seconds total (parallel wait = slowest device).
+    Client should set timeout >= 60 * number_of_devices.
     """
     simulator_ips = [ip.strip() for ip in simulator_ip.split(",") if ip.strip()]
     workspace = current_user.workspace

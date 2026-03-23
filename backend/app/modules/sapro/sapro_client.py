@@ -887,7 +887,7 @@ class SaproCommunicationHandler:
         self,
         map_path: str,
         device_ip: str,
-        timeout: int = 120,
+        timeout: int = 60,
         poll_interval: int = 5,
     ) -> bool:
         """Poll devlist until device shows status 'R' (running) or timeout.
@@ -895,7 +895,7 @@ class SaproCommunicationHandler:
         Args:
             map_path: Full path to map file
             device_ip: Device IP to poll for
-            timeout: Max seconds to wait (default 120)
+            timeout: Max seconds to wait (default 60 = 1 minute)
             poll_interval: Seconds between polls (default 5)
 
         Returns:
