@@ -12,6 +12,8 @@ then template endpoints.
 import copy
 import json
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Union, Optional
 
@@ -1225,6 +1227,17 @@ async def update_simulator_fields_stream(
     )
 
 
+def _fetch_device_info(device_ip: str, map_path: str, sapro_handler) -> tuple:
+    """Wait for device to be running, then return (type, version) from SNMP. No DB access."""
+    if not sapro_handler.wait_for_device_running(map_path, device_ip):
+        return None, None
+    try:
+        return sapro_handler.snmp_get_device_info(device_ip)
+    except Exception as e:
+        logger.error(f"SNMP query failed for {device_ip}: {e}")
+        return None, None
+
+
 @router.post("/simulators/{simulator_ip}/start", response_model=List[BulkActionResult])
 def start_simulator(
         simulator_ip: str,
@@ -1265,6 +1278,7 @@ def start_simulator(
         ips_to_process.append(ip)
 
     # Phase 2 & 3: Lock all unique maps, then process under lock
+    started_ips: List[str] = []  # IPs that started successfully
     if ips_to_process:
         unique_maps = list({info[0] for info in sim_info.values()})
         lock_mgr = get_map_lock_manager()
@@ -1273,6 +1287,30 @@ def start_simulator(
                 _map_name, map_path = sim_info[ip]
                 success, message = sapro_handler.start_devices_from_map(map_path, [ip])
                 results.append(BulkActionResult(ip_address=ip, success=success, message=message))
+                if success:
+                    started_ips.append(ip)
+
+    # Phase 4: Wait for started devices to be up and refresh DB (parallel per device)
+    if started_ips:
+        with ThreadPoolExecutor(max_workers=len(started_ips)) as executor:
+            future_to_ip = {
+                executor.submit(_fetch_device_info, ip, sim_info[ip][1], sapro_handler): ip
+                for ip in started_ips
+            }
+            for future in as_completed(future_to_ip):
+                ip = future_to_ip[future]
+                device_type, device_version = future.result()
+                sim = db.get(Simulator, ip)
+                if sim:
+                    sim.type = device_type or sim.type
+                    sim.version = device_version or sim.version
+                    sim.status = "running"
+                    try:
+                        db.add(sim)
+                        db.commit()
+                    except SQLAlchemyError as exc:
+                        db.rollback()
+                        logger.error(f"Failed to update DB for {ip}: {exc}")
 
     return results
 

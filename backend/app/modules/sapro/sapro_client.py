@@ -883,6 +883,48 @@ class SaproCommunicationHandler:
             logger.error(f"Failed to stop device(s): {e}", exc_info=True)
             return False, f"Failed to stop device(s): {e}"
 
+    def wait_for_device_running(
+        self,
+        map_path: str,
+        device_ip: str,
+        timeout: int = 120,
+        poll_interval: int = 5,
+    ) -> bool:
+        """Poll devlist until device shows status 'R' (running) or timeout.
+
+        Args:
+            map_path: Full path to map file
+            device_ip: Device IP to poll for
+            timeout: Max seconds to wait (default 120)
+            poll_interval: Seconds between polls (default 5)
+
+        Returns:
+            True if device reached running status, False on timeout or error
+        """
+        ssh_client = get_sapro_ssh_client()
+        devlist_cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c devlist"
+        elapsed = 0
+
+        while elapsed < timeout:
+            time.sleep(poll_interval)
+            elapsed += poll_interval
+            try:
+                success, output = ssh_client.execute_command(devlist_cmd, check_stderr=False)
+                if success and output:
+                    for line in output.splitlines():
+                        if device_ip in line:
+                            parts = line.split()
+                            if len(parts) >= 2 and parts[1] == "R":
+                                logger.info(f"Device {device_ip} is running (status: R)")
+                                return True
+                            logger.debug(f"Device {device_ip} status: {parts[1] if len(parts) >= 2 else 'unknown'}")
+            except Exception as e:
+                logger.error(f"Error polling devlist for {device_ip}: {e}")
+            logger.debug(f"Device {device_ip} not running yet ({elapsed}/{timeout}s)")
+
+        logger.warning(f"Device {device_ip} did not reach running state within {timeout}s")
+        return False
+
     def create_device(
         self, device_ip: str, raw_xml_content: str, map_path: str
     ) -> Tuple[bool, str]:
@@ -1144,76 +1186,16 @@ class SaproCommunicationHandler:
                 if not ok:
                     logger.warning(f"Start device command returned: {msg}")
 
-                # Verify device is running using devlist (with retry loop up to 1 minute)
+                # Verify device is running (up to 1 minute, retry if needed)
                 logger.info(f"Verifying device {device_ip} is running...")
-                max_wait = 60  # 1 minute
-                check_interval = 5  # Check every 5 seconds
-                elapsed = 0
-                device_running = False
-
-                while elapsed < max_wait:
-                    devlist_cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c devlist"
-                    dev_success, dev_output = ssh_client.execute_command(devlist_cmd, check_stderr=False)
-
-                    if dev_success and dev_output:
-                        # Check if device appears with status 'R' (Running)
-                        # Device format: "50.50.130.6//161         R"
-                        for line in dev_output.splitlines():
-                            if device_ip in line:
-                                parts = line.split()
-                                if len(parts) >= 2 and parts[1] == 'R':
-                                    device_running = True
-                                    logger.info(f"Device {device_ip} verified running (status: R)")
-                                    break
-                                else:
-                                    logger.debug(f"Device {device_ip} found but status: {parts[1] if len(parts) >= 2 else 'unknown'}")
-
-                        if device_running:
-                            break
-
-                    logger.debug(f"Device {device_ip} not running yet, waiting... ({elapsed}/{max_wait}s)")
-                    time.sleep(check_interval)
-                    elapsed += check_interval
+                device_running = self.wait_for_device_running(map_path, device_ip, timeout=60)
 
                 if not device_running:
-                    # Check if device is in list but not running - try starting it again
-                    logger.warning(f"Device {device_ip} not running after {max_wait}s, checking if it exists in devlist...")
-                    devlist_cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c devlist"
-                    dev_success, dev_output = ssh_client.execute_command(devlist_cmd, check_stderr=False)
-
-                    device_in_list = False
-                    if dev_success and dev_output:
-                        for line in dev_output.splitlines():
-                            if device_ip in line:
-                                device_in_list = True
-                                parts = line.split()
-                                current_status = parts[1] if len(parts) >= 2 else 'unknown'
-                                logger.info(f"Device {device_ip} found in devlist with status: {current_status}")
-                                break
-
-                    if device_in_list:
-                        logger.info(f"Device {device_ip} exists but not running, attempting to start again...")
-                        ok, msg = self.start_devices_from_map(map_path, [device_ip])
-                        logger.info(f"Retry start result: {msg}")
-
-                        # Wait 30 seconds and check one more time
-                        logger.info(f"Waiting 30s for device {device_ip} to start...")
-                        time.sleep(30)
-
-                        devlist_cmd = f"/opt/sapro/bin/sapcnsl -m {map_path} -c devlist"
-                        dev_success, dev_output = ssh_client.execute_command(devlist_cmd, check_stderr=False)
-
-                        if dev_success and dev_output:
-                            for line in dev_output.splitlines():
-                                if device_ip in line:
-                                    parts = line.split()
-                                    if len(parts) >= 2 and parts[1] == 'R':
-                                        logger.info(f"Device {device_ip} now running after retry")
-                                        device_running = True
-                                        break
-                                    else:
-                                        logger.error(f"Device {device_ip} still not running, status: {parts[1]}")
-
+                    logger.warning(f"Device {device_ip} not running after initial wait, attempting to start again...")
+                    ok, msg = self.start_devices_from_map(map_path, [device_ip])
+                    logger.info(f"Retry start result: {msg}")
+                    time.sleep(30)
+                    device_running = self.wait_for_device_running(map_path, device_ip, timeout=30)
                     if not device_running:
                         return False, f"Device {device_ip} added but not running after retry"
 
