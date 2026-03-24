@@ -310,7 +310,6 @@ def _create_simulator_locked(ip_list, payload, db, current_user, sapro_handler, 
         sim = Simulator(
             ip_address=ip,
             type=(tpl_doc.get("name") or ""),
-            version=(tpl_doc.get("description") or ""),
             map=payload.map,
             status="running",
         )
@@ -342,6 +341,17 @@ def _create_simulator_locked(ip_list, payload, db, current_user, sapro_handler, 
                 logger.exception("Cleanup after DB failure also failed for device %s: %s", ip, cleanup_exc)
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                                     detail=f"Failed to save simulator to DB and cleanup Sapro device: {cleanup_exc}")
+
+        # Fetch real type/version from sapro and update DB
+        device_type, device_version = _fetch_device_info(ip, map_path, sapro_handler)
+        if device_type or device_version:
+            sim.type = device_type or sim.type
+            sim.version = device_version or sim.version
+            try:
+                db.commit()
+                db.refresh(sim)
+            except Exception as e:
+                logger.error(f"Failed to update device info for {ip}: {e}")
 
         return SaproSimulatorResponse.model_validate(sim)
 
@@ -418,7 +428,6 @@ def _create_simulator_locked(ip_list, payload, db, current_user, sapro_handler, 
             sim = Simulator(
                 ip_address=ip,
                 type=(tpl_doc.get("name") or ""),
-                version=(tpl_doc.get("description") or ""),
                 map=payload.map,
                 status="running",
             )
@@ -440,6 +449,30 @@ def _create_simulator_locked(ip_list, payload, db, current_user, sapro_handler, 
                     logger.exception(f"Failed to cleanup Sapro device {ip} after DB failure: {cleanup_exc}")
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                                 detail=f"Failed to save simulators to DB: {str(exc)}; attempted cleanup of Sapro devices")
+
+        # Fetch real type/version from sapro for all successfully created devices
+        sim_by_ip = {sim.ip_address: sim for sim in sim_objects}
+        with ThreadPoolExecutor(max_workers=len(successful_ips)) as executor:
+            future_to_ip = {
+                executor.submit(_fetch_device_info, ip, map_path, sapro_handler): ip
+                for ip in successful_ips
+            }
+            for future in as_completed(future_to_ip):
+                ip = future_to_ip[future]
+                try:
+                    device_type, device_version = future.result()
+                    sim = sim_by_ip[ip]
+                    if device_type or device_version:
+                        sim.type = device_type or sim.type
+                        sim.version = device_version or sim.version
+                except Exception as e:
+                    logger.error(f"Failed to fetch device info for {ip}: {e}")
+
+        # Commit updated device info
+        try:
+            db.commit()
+        except Exception as e:
+            logger.error(f"Failed to update device info in DB: {e}")
 
         return SaproSimulatorBatchResponse(
             total=len(ip_list),
@@ -555,7 +588,6 @@ async def create_simulator_stream(
                         sim = Simulator(
                             ip_address=ip,
                             type=(tpl_doc.get("name") or ""),
-                            version=(tpl_doc.get("description") or ""),
                             map=payload.map,
                             status="running",
                         )
@@ -580,6 +612,30 @@ async def create_simulator_stream(
                                        "message": f"Failed to save simulators to DB: {str(exc)}; attempted cleanup"}
                         yield f"data: {json.dumps(error_event)}\n\n"
                         return
+
+                    # Fetch real type/version from sapro for all successfully created devices
+                    sim_by_ip = {sim.ip_address: sim for sim in sim_objects}
+                    with ThreadPoolExecutor(max_workers=len(successful_ips)) as executor:
+                        future_to_ip = {
+                            executor.submit(_fetch_device_info, ip, map_path, sapro_handler): ip
+                            for ip in successful_ips
+                        }
+                        for future in as_completed(future_to_ip):
+                            ip = future_to_ip[future]
+                            try:
+                                device_type, device_version = future.result()
+                                sim = sim_by_ip[ip]
+                                if device_type or device_version:
+                                    sim.type = device_type or sim.type
+                                    sim.version = device_version or sim.version
+                            except Exception as e:
+                                logger.error(f"Failed to fetch device info for {ip}: {e}")
+
+                    # Commit updated device info
+                    try:
+                        db.commit()
+                    except Exception as e:
+                        logger.error(f"Failed to update device info in DB: {e}")
 
                 # Send completion event
                 complete_event = {
@@ -797,7 +853,6 @@ def update_simulator(
 
         # 5) Update DB with new metadata
         sim.type = tpl_doc.get("name") or sim.type
-        sim.version = tpl_doc.get("description") or sim.version
         sim.map = map_name
         sim.status = "running"  # Assume running after successful update
 
