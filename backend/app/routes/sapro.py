@@ -696,7 +696,8 @@ def list_simulators(
     4. Filter returned simulators by user's workspace
     """
     try:
-        devices = sapro_handler.get_all_devices(current_user.workspace)  # List[SaproDevice]
+        workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
+        devices = sapro_handler.get_all_devices(workspace)  # List[SaproDevice]
     except Exception as exc:
         logger.exception("Failed to query Sapro for devices: %s", exc)
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Failed to query Sapro: {exc}")
@@ -884,7 +885,7 @@ def delete_simulator(
     simulator_ip accepts a single IP or comma-separated IPs: "50.40.10.1,50.40.10.2"
     """
     simulator_ips = [ip.strip() for ip in simulator_ip.split(",") if ip.strip()]
-    workspace = current_user.workspace
+    workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
     results = []
 
     # Phase 1: gather simulator info and map names upfront
@@ -950,7 +951,8 @@ def list_maps(
         - status: "running" (R), "stopped" (empty), or "error" (other)
     """
     try:
-        maps = sapro_handler.get_all_maps(workspace=current_user.workspace)
+        workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
+        maps = sapro_handler.get_all_maps(workspace=workspace)
         return maps
     except Exception as exc:
         logger.exception("Failed to get map list from Sapro: %s", exc)
@@ -980,7 +982,7 @@ def start_map(
     lock_mgr = get_map_lock_manager()
     with lock_mgr.lock(map_name):
         try:
-            workspace = current_user.workspace
+            workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
             map_path = sapro_handler.get_full_map_path(map_name, workspace)
 
             success, message = sapro_handler.start_map_and_wait(map_path)
@@ -1023,7 +1025,8 @@ def stop_map(
             # Get workspace from user - use "default" for super admin
             workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
 
-            success, message = sapro_handler.stop_map_and_wait(map_name, workspace=workspace)
+            map_path = sapro_handler.get_full_map_path(map_name, workspace)
+            success, message = sapro_handler.stop_map_and_wait(map_path)
             if not success:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1100,7 +1103,7 @@ def get_simulator_fields(
     if not map_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Simulator {simulator_ip} has no map assigned")
 
-    workspace = current_user.workspace
+    workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
 
     try:
         map_path = sapro_handler.get_full_map_path(map_name, workspace)
@@ -1214,7 +1217,7 @@ async def update_simulator_fields_stream(
     simulator_ips = [ip.strip() for ip in simulator_ip.split(",") if ip.strip()]
     fields_dict = {field.value: value for field, value in payload.fields.items()}
     total = len(simulator_ips)
-    workspace = "*" if current_user.workspace == "*" else current_user.workspace
+    workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
 
     # Resolve all DB lookups and map paths UPFRONT before the generator runs,
     # so the DB connection is released back to the pool before streaming starts.
@@ -1309,7 +1312,7 @@ def start_simulator(
     Client should set timeout >= 60 * number_of_devices.
     """
     simulator_ips = [ip.strip() for ip in simulator_ip.split(",") if ip.strip()]
-    workspace = current_user.workspace
+    workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
     results = []
 
     # Phase 1: Gather simulator info and map data upfront
@@ -1436,7 +1439,7 @@ def stop_simulator(
     simulator_ip accepts a single IP or comma-separated IPs: "50.40.10.1,50.40.10.2"
     """
     simulator_ips = [ip.strip() for ip in simulator_ip.split(",") if ip.strip()]
-    workspace = current_user.workspace
+    workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
     results = []
 
     # Phase 1: Gather simulator info and map data upfront

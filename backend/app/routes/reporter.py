@@ -603,7 +603,7 @@ async def save_xmf_to_simulator(
             )
 
         # Write XMF to filesystem
-        workspace = current_user.workspace
+        workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
         success, result = service._write_xmf_to_filesystem(
             xmf_content, payload.xmf_filename, workspace, payload.overwrite
         )
@@ -702,7 +702,7 @@ async def set_polling_config(
                 for sim_ip in simulator_ips:
                     map_dict[sim_ip] = payload.map
 
-            workspace = current_user.workspace
+            workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
             results = []
             write_xmf = payload.write_xmf if hasattr(payload, 'write_xmf') and payload.write_xmf is not None else True
             overwrite = payload.overwrite if hasattr(payload, 'overwrite') and payload.overwrite is not None else False
@@ -810,7 +810,7 @@ async def set_polling_config(
                 map_name = payload.map
 
             map_name = get_simulator_map(db, simulator_ip, map_name)
-            workspace = current_user.workspace
+            workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
 
             # Get full map path once at route level
             try:
