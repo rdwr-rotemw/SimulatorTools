@@ -15,6 +15,7 @@ import { SNMPPage } from './pages/SNMPPage';
 import { PollingPage } from './pages/PollingPage';
 import { IRPManagerPage } from './pages/IRPManagerPage';
 import { IRPSenderPage } from './pages/IRPSenderPage';
+import OIDCompilerPage from './pages/OIDCompilerPage';
 import activityTracker from './utils/activityTracker';
 
 
@@ -100,6 +101,15 @@ function App() {
 
           <Route path="/cc/reporting/irp/send" element={<ProtectedRoute requiredRoles={["admin", "cc_admin"]}><IRPSenderPage /></ProtectedRoute>} />
           <Route path="/cc/reporting/irp" element={<ProtectedRoute requiredRoles={["admin", "cc_admin"]}><IRPManagerPage /></ProtectedRoute>} />
+
+          <Route
+            path="/oid-compiler"
+            element={
+              <ProtectedRoute requiredRoles={["admin", "sapro_admin"]}>
+                <OIDCompilerPage />
+              </ProtectedRoute>
+            }
+          />
 
           <Route
             path="/users"
