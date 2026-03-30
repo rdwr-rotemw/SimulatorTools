@@ -279,7 +279,11 @@ class DynamicRowDetector:
                 syntax = "Integer"
                 dcol_access = access if access in ("RC", "RW") else "RW"
             elif access in ("RW", "RC"):
-                required = "Req"
+                # Mark all non-RowStatus RW/RC columns as NotReq.
+                # SAPRO rejects row creation if a Req column isn't provided
+                # in the Set request. Since NMS may not send all columns,
+                # NotReq with a default value is safer.
+                required = "NotReq"
                 dcol_access = access
                 value_info = self._get_rw_value_info(syntax, mib_col)
             else:
