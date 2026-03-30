@@ -96,6 +96,9 @@ class ModelingGenerator:
                 if skeleton:
                     lines.append(skeleton)
 
+        # Summary of tables analyzed
+        lines.append(self._generate_summary(tables_with_hidden))
+
         content = "\n".join(lines) + "\n"
         logger.info(
             f"Generated modeling file: "
@@ -377,11 +380,29 @@ class ModelingGenerator:
     # C7 (Mode) = 1 (ipMask)
     set_column_value $vb_oid "{address_oid}" "{mode_oid}" "Integer" 1"""
 
-    def _generate_skeleton(self, table: SoapTableInfo) -> str:
-        """Generate a commented-out skeleton for tables with hidden columns.
+    def _classify_hidden_column(self, entry_name: str, col) -> str:
+        """Classify a hidden column's type.
 
-        Provides documentation about which columns are hidden and what
-        positions they occupy, so the logic can be filled in later.
+        Returns one of: 'rowstatus', 'default', 'computed', 'unknown'
+        """
+        label = self._get_column_label(entry_name, col.position) or ""
+        syntax = self._get_column_syntax(entry_name, col.position) or ""
+
+        # RowStatus columns (Integer with "Status" in name and enum 1-6)
+        if "Status" in label and syntax == "Integer":
+            return "rowstatus"
+
+        # All other hidden columns in tables WITHOUT known computation logic
+        # are treated as default-value columns. The %dcol in the VAR file
+        # provides the default; no TCL is needed.
+        return "default"
+
+    def _generate_skeleton(self, table: SoapTableInfo) -> str:
+        """Generate documentation for tables with hidden columns.
+
+        Categorizes hidden columns and documents whether TCL is needed.
+        Tables where all hidden columns are RowStatus or defaults get
+        a documentation-only comment block (no skeleton code).
         """
         entry_name = table.entry_name
         entry_oid = self._entry_oids.get(entry_name, "<unknown>")
@@ -391,14 +412,59 @@ class ModelingGenerator:
             return ""
 
         # Skip tables without create capability (read-only mirrors)
-        # They might need modeling later but are lower priority
         if not table.has_create:
             return ""
 
         hidden_cols = [c for c in table.columns if c.is_hidden]
+
+        # Classify each hidden column
+        classifications = {}
+        for c in hidden_cols:
+            classifications[c.position] = self._classify_hidden_column(entry_name, c)
+
+        # If all hidden columns are RowStatus or defaults, no TCL needed
+        needs_tcl = any(
+            cls not in ("rowstatus", "default")
+            for cls in classifications.values()
+        )
+        if needs_tcl:
+            return self._generate_skeleton_with_code(table, classifications)
+
+        # Documentation-only: explain why no TCL is needed
+        hidden_lines = []
+        for c in hidden_cols:
+            label = self._get_column_label(entry_name, c.position) or f"<C{c.position}>"
+            syntax = self._get_column_syntax(entry_name, c.position) or "?"
+            cls = classifications[c.position]
+            tag = "[RowStatus]" if cls == "rowstatus" else "[default from %dcol]"
+            hidden_lines.append(f"#   C{c.position}: {label} ({syntax}) — {tag}")
+
+        hidden_block = "\n".join(hidden_lines)
+
+        return f"""
+# ===================================================================
+# {entry_name} — NO TCL NEEDED
+# Entry OID: {entry_oid}
+# Namespace: {table.soap_namespace or "unknown"}
+# {table.visible_count} visible, {table.hidden_count} hidden columns
+#
+# Hidden columns are all handled by SAPRO's %dcol defaults:
+{hidden_block}
+#
+# RowStatus columns are managed by SAPRO's rowstatus(1) value type.
+# Default-value columns get their initial values from %dcol in the
+# VAR file. CC does not read these hidden columns.
+# ==================================================================="""
+
+    def _generate_skeleton_with_code(
+        self, table: SoapTableInfo, classifications: dict[int, str]
+    ) -> str:
+        """Generate a commented skeleton for tables that may need TCL."""
+        entry_name = table.entry_name
+        entry_oid = self._entry_oids.get(entry_name, "<unknown>")
+        hidden_cols = [c for c in table.columns if c.is_hidden]
         visible_cols = [c for c in table.columns if not c.is_hidden]
 
-        # Build column info lines
         visible_lines = []
         for c in visible_cols:
             label = self._get_column_label(entry_name, c.position) or f"<C{c.position}>"
@@ -410,10 +476,9 @@ class ModelingGenerator:
             label = self._get_column_label(entry_name, c.position) or f"<C{c.position}>"
             syntax = self._get_column_syntax(entry_name, c.position) or "?"
             col_oid = self._get_column_oid(entry_name, c.position) or "?"
-            hidden_lines.append(f"#   C{c.position}: {label} ({syntax}) — OID: {col_oid}")
+            cls = classifications[c.position]
+            hidden_lines.append(f"#   C{c.position}: {label} ({syntax}) — OID: {col_oid} [{cls}]")
 
-        # Find a visible non-key column to use as trigger OID suggestion.
-        # Prefer non-key columns, but fall back to the first visible column.
         trigger_candidates = [c for c in visible_cols if not c.is_key]
         if not trigger_candidates:
             trigger_candidates = visible_cols
@@ -430,7 +495,7 @@ class ModelingGenerator:
 
         return f"""
 # ===================================================================
-# {entry_name} — SKELETON (not yet implemented)
+# {entry_name} — SKELETON (needs Phase 3 investigation)
 # Entry OID: {entry_oid}
 # Namespace: {table.soap_namespace or "unknown"}
 # {table.visible_count} visible, {table.hidden_count} hidden columns
@@ -438,11 +503,11 @@ class ModelingGenerator:
 # Visible columns (set by CC):
 {visible_block}
 #
-# Hidden columns (need firmware logic):
+# Hidden columns:
 {hidden_block}
 #
-# TODO: Capture real device behavior to determine computation logic
-#       for each hidden column, then implement %after_set_action.
+# TODO: Capture real device behavior to determine if any hidden
+#       columns need computation logic beyond %dcol defaults.
 # ===================================================================
 # %after_set_action {trigger_oid}
 #     # Triggered when {trigger_label} is set
@@ -452,3 +517,48 @@ class ModelingGenerator:
 #     # TODO: Implement hidden column logic here
 #     # Example: copy_column_value $varbind "{trigger_oid}" "<target_col_oid>"
 #     # Example: set_column_value $vb_oid "{trigger_oid}" "<target_col_oid>" "Integer" 1"""
+
+    def _generate_summary(self, tables_with_hidden: list[SoapTableInfo]) -> str:
+        """Generate a summary comment block at the end of the file."""
+        implemented = []
+        no_tcl = []
+        skeleton = []
+
+        for t in tables_with_hidden:
+            if t.entry_name in KNOWN_TABLE_HANDLERS:
+                implemented.append(t.entry_name)
+                continue
+            if t.visible_count == 0 or not t.has_create:
+                continue
+
+            hidden_cols = [c for c in t.columns if c.is_hidden]
+            classifications = {
+                c.position: self._classify_hidden_column(t.entry_name, c)
+                for c in hidden_cols
+            }
+            needs_tcl = any(
+                cls not in ("rowstatus", "default")
+                for cls in classifications.values()
+            )
+            if needs_tcl:
+                skeleton.append(t.entry_name)
+            else:
+                no_tcl.append(t.entry_name)
+
+        impl_list = "\n".join(f"#   - {n}" for n in implemented) or "#   (none)"
+        notcl_list = "\n".join(f"#   - {n}" for n in no_tcl) or "#   (none)"
+        skel_list = "\n".join(f"#   - {n}" for n in skeleton) or "#   (none)"
+
+        return f"""
+# ===================================================================
+# MODELING FILE SUMMARY
+#
+# Fully implemented (TCL computation logic):
+{impl_list}
+#
+# No TCL needed (RowStatus + defaults handled by %dcol):
+{notcl_list}
+#
+# Needs investigation (may need TCL after Phase 3 analysis):
+{skel_list}
+# ==================================================================="""
