@@ -43,6 +43,7 @@ pymongo==4.15.3
 PyNaCl==1.6.1
 pdfplumber==0.11.9
 pysmi==1.6.2
+rarfile==4.2
 pysnmp==4.4.12
 pyshark>=0.6
 python-dotenv==1.2.1

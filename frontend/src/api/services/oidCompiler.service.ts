@@ -14,24 +14,27 @@ export const compileMibs = async (
   mibZip: File,
   oidsPdf: File,
   outputName?: string,
-  numRows?: number,
-  cmfOutputDir?: string,
-  varOutputDir?: string,
+  deviceDriverName?: string,
+  deviceDriverFile?: File,
 ): Promise<CompilationResult> => {
   const formData = new FormData();
   formData.append('mib_zip', mibZip);
   formData.append('oids_pdf', oidsPdf);
   if (outputName) formData.append('output_name', outputName);
-  if (numRows) formData.append('num_rows', numRows.toString());
-  if (cmfOutputDir) formData.append('cmf_output_dir', cmfOutputDir);
-  if (varOutputDir) formData.append('var_output_dir', varOutputDir);
+  if (deviceDriverName) formData.append('device_driver_name', deviceDriverName);
+  if (deviceDriverFile) formData.append('device_driver_file', deviceDriverFile);
 
   const response = await apiClient.post<CompilationResult>(
     '/oid-compiler/compile',
     formData,
-    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 }
+    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 600000 }
   );
   return response.data;
+};
+
+export const listDeviceDrivers = async (): Promise<string[]> => {
+  const response = await apiClient.get('/oid-compiler/device-drivers');
+  return response.data.drivers || [];
 };
 
 export const checkHealth = async (): Promise<{ status: string; module: string }> => {

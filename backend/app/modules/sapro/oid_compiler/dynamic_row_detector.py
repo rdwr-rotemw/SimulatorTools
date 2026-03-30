@@ -3,7 +3,6 @@ import re
 from typing import Optional
 
 from backend.app.modules.sapro.oid_compiler.constants import (
-    DEFAULT_RANGES,
     ENTRYSTATUS_TCS,
     ROWSTATUS_TCS,
     SYNTAX_MAP,
@@ -85,43 +84,36 @@ class DynamicRowDetector:
     def _detect_table_type(
         self, table: PdfTableInfo, mib_columns: list[OidEntry]
     ) -> Optional[DynamicRowType]:
-        # Check MIB columns for RowStatus/EntryStatus syntax
-        for col in mib_columns:
-            original_syntax = self._get_original_syntax(col)
-            if original_syntax in ROWSTATUS_TCS:
-                return DynamicRowType.ROWSTATUS
-            if original_syntax in ENTRYSTATUS_TCS:
-                return DynamicRowType.RMONSTATUS
-
         # Check PDF columns for RowStatus/EntryStatus syntax
+        # PDF has the original syntax names (not normalized), so it's authoritative
         for pdf_col in table.columns:
             if pdf_col.syntax in ROWSTATUS_TCS:
                 return DynamicRowType.ROWSTATUS
             if pdf_col.syntax in ENTRYSTATUS_TCS:
                 return DynamicRowType.RMONSTATUS
 
-        # Check if table has any RW columns (potential newinstance)
-        has_rw = any(
-            pdf_col.access.upper() in ("RW", "CREATE")
-            for pdf_col in table.columns
-        )
-        if not has_rw:
-            has_rw = any(
-                col.access in (AccessLevel.RW, AccessLevel.CREATE)
-                for col in mib_columns
-            )
-
-        if has_rw:
+        # No RowStatus/EntryStatus — check if descriptions match newinstance patterns
+        # Only flag as newinstance if we find actual evidence of delete-action behavior
+        if self._has_newinstance_evidence(table, mib_columns):
             return DynamicRowType.NEWINSTANCE
 
         return None
 
-    def _get_original_syntax(self, col: OidEntry) -> str:
-        """Get the original (pre-normalization) syntax by reverse-looking up SYNTAX_MAP."""
-        for original, normalized in SYNTAX_MAP.items():
-            if normalized == col.syntax and original in ROWSTATUS_TCS | ENTRYSTATUS_TCS:
-                return original
-        return col.syntax
+    def _has_newinstance_evidence(
+        self, table: PdfTableInfo, mib_columns: list[OidEntry]
+    ) -> bool:
+        """Check if any column description matches newinstance deletion patterns."""
+        for pdf_col in table.columns:
+            if (self.PATTERN_A.search(pdf_col.description)
+                    or self.PATTERN_B.search(pdf_col.description)
+                    or self.PATTERN_C.search(pdf_col.description)):
+                return True
+        for mib_col in mib_columns:
+            if (self.PATTERN_A.search(mib_col.description)
+                    or self.PATTERN_B.search(mib_col.description)
+                    or self.PATTERN_C.search(mib_col.description)):
+                return True
+        return False
 
     def _build_newinstance_config(
         self, pdf_table: PdfTableInfo, mib_columns: list[OidEntry]
@@ -223,8 +215,39 @@ class DynamicRowDetector:
         configs: list[DynamicColumnConfig] = []
         index_labels = set(table.index_columns)
 
-        # Merge PDF and MIB column info, preferring MIB
         mib_by_label = {c.label: c for c in mib_columns}
+        pdf_labels = {c.label for c in table.columns}
+
+        # Add missing index columns from MIB data (not-accessible indices
+        # don't appear in the PDF but are required in %drow blocks)
+        for mib_col in mib_columns:
+            if mib_col.label not in pdf_labels and mib_col.label in index_labels:
+                configs.append(DynamicColumnConfig(
+                    label=mib_col.label,
+                    required="NotReq",
+                    syntax=mib_col.syntax,
+                    access="NA",
+                    value_info=self._get_index_value_info(mib_col.syntax),
+                ))
+
+        # Also check for index columns that are in MIB but not in PDF or index_labels
+        # (the index resolution from PDF may have missed them)
+        if not index_labels and mib_columns:
+            # Try to find index from MIB entry object
+            for mib_col in mib_columns:
+                if mib_col.index_columns:
+                    for idx_label in mib_col.index_columns:
+                        if idx_label not in pdf_labels and idx_label not in index_labels:
+                            idx_mib = self._mib_by_label.get(idx_label)
+                            if idx_mib:
+                                configs.append(DynamicColumnConfig(
+                                    label=idx_label,
+                                    required="NotReq",
+                                    syntax=idx_mib.syntax,
+                                    access="NA",
+                                    value_info=self._get_index_value_info(idx_mib.syntax),
+                                ))
+                    break
 
         for pdf_col in table.columns:
             label = pdf_col.label
@@ -234,41 +257,41 @@ class DynamicRowDetector:
             syntax = mib_col.syntax if mib_col else SYNTAX_MAP.get(pdf_col.syntax, pdf_col.syntax)
             access = mib_col.access.value if mib_col else pdf_col.access.upper()
             if access == "Create":
-                access = "RW"
+                access = "RC"
 
             # Check if this is the RowStatus/EntryStatus column
-            is_rowstatus = pdf_col.syntax in ROWSTATUS_TCS or (
-                mib_col and self._get_original_syntax(mib_col) in ROWSTATUS_TCS
-            )
-            is_entrystatus = pdf_col.syntax in ENTRYSTATUS_TCS or (
-                mib_col and self._get_original_syntax(mib_col) in ENTRYSTATUS_TCS
-            )
+            # Use PDF syntax (original, not normalized) as the authoritative source
+            is_rowstatus = pdf_col.syntax in ROWSTATUS_TCS
+            is_entrystatus = pdf_col.syntax in ENTRYSTATUS_TCS
 
             if is_index:
                 required = "NotReq"
+                dcol_access = "NA"
                 value_info = self._get_index_value_info(syntax)
             elif is_rowstatus:
                 required = "Req"
                 value_info = "rowstatus(1)"
-                syntax = "RowStatus"
-                access = "RW"
+                syntax = "Integer"
+                dcol_access = access if access in ("RC", "RW") else "RW"
             elif is_entrystatus:
                 required = "Req"
                 value_info = "rmonstatus(1)"
-                syntax = "EntryStatus"
-                access = "RW"
-            elif access in ("RW", "CREATE"):
+                syntax = "Integer"
+                dcol_access = access if access in ("RC", "RW") else "RW"
+            elif access in ("RW", "RC"):
                 required = "Req"
-                value_info = self._get_default_value_info(syntax, "RW", False, row_type)
+                dcol_access = access
+                value_info = self._get_rw_value_info(syntax, mib_col)
             else:
                 required = "NotReq"
-                value_info = self._get_default_value_info(syntax, "RO", False, row_type)
+                dcol_access = "RO"
+                value_info = self._get_ro_value_info(syntax)
 
             configs.append(DynamicColumnConfig(
                 label=label,
                 required=required,
                 syntax=syntax,
-                access=access if access in ("RO", "RW") else "RO",
+                access=dcol_access,
                 value_info=value_info,
             ))
 
@@ -276,37 +299,62 @@ class DynamicRowDetector:
 
     def _get_index_value_info(self, syntax: str) -> str:
         defaults = {
-            "IpAddress": "dfixed(0.0.0.0)",
-            "OctetString": "dfixed(0x00)",
-            "ObjectID": "dfixed(0.0)",
+            "IpAddress": "dfixed(1.2.3.4)",
+            "OctetString": "dfixed(abc)",
+            "ObjectID": "dfixed(1.2.3)",
+            "Integer": "dfixed(1)",
+            "Gauge": "dfixed(0)",
+            "Counter": "dfixed(0)",
+            "TimeTicks": "dfixed(0)",
         }
         return defaults.get(syntax, "dfixed(0)")
 
-    def _get_default_value_info(
-        self, syntax: str, access: str, is_index: bool, row_type: DynamicRowType
-    ) -> str:
-        if access == "RO":
-            ro_map = {
-                "Counter": "randomup(0, 100)",
-                "Counter64": "randomup(0, 100)",
-                "Gauge": "random(1000, 100)",
-                "Integer": "fixed(1)",
-                "OctetString": "fixed(0x00)",
-                "TimeTicks": "clock(0)",
-                "IpAddress": "fixed(0.0.0.0)",
-                "ObjectID": "fixed(0.0)",
-            }
-            return ro_map.get(syntax, "fixed(0)")
+    def _get_rw_value_info(self, syntax: str, mib_col: Optional[OidEntry]) -> str:
+        """Generate value info for RW/RC columns, using r_lastset with ranges when available.
+        Uses DEFVAL from MIB as the default value when present."""
+        has_range = mib_col and mib_col.min_range is not None and mib_col.max_range is not None
+        defval = mib_col.default_value if mib_col else None
 
-        # RW
-        rw_map = {
-            "Counter": "lastset(0)",
-            "Counter64": "lastset(0)",
-            "Gauge": "lastset(0)",
-            "Integer": "lastset(1)",
-            "OctetString": "lastset(0x00)",
-            "TimeTicks": "lastset(0)",
-            "IpAddress": "lastset(0.0.0.0)",
-            "ObjectID": "lastset(0.0)",
+        if syntax == "Integer":
+            if has_range:
+                default = defval or str(mib_col.min_range)
+                return f"r_lastset({mib_col.min_range}, {mib_col.max_range}, {default})"
+            return f"lastset({defval})" if defval else "lastset(1)"
+        if syntax == "OctetString":
+            if has_range:
+                default = defval or "abc"
+                return f"r_lastset({mib_col.min_range}, {mib_col.max_range}, {default})"
+            return f"lastset({defval})" if defval else "lastset(abc)"
+        if syntax == "ObjectID":
+            return f"lastset({defval})" if defval else "lastset(1.2.3)"
+        if syntax == "IpAddress":
+            return f"r_lastset(4, 4, {defval})" if defval else "r_lastset(4, 4, 1.2.3.4)"
+        if syntax == "Gauge":
+            if has_range:
+                default = defval or str(mib_col.min_range)
+                return f"r_lastset({mib_col.min_range}, {mib_col.max_range}, {default})"
+            return f"lastset({defval})" if defval else "lastset(0)"
+        if syntax == "Counter":
+            return "randomup(1000, 100)"
+        if syntax == "Counter64":
+            return "randomup(1000, 100)"
+        if syntax == "TimeTicks":
+            return f"clock({defval})" if defval else "clock(0)"
+        if syntax == "Bits":
+            return "lastset(0x00)"
+        return "lastset(0)"
+
+    def _get_ro_value_info(self, syntax: str) -> str:
+        """Generate value info for RO columns."""
+        defaults = {
+            "Counter": "randomup(1000, 100)",
+            "Counter64": "randomup(1000, 100)",
+            "Gauge": "fixed(1000)",
+            "OctetString": "fixed(abc)",
+            "TimeTicks": "clock(0)",
+            "Integer": "fixed(1)",
+            "IpAddress": "fixed(1.2.3.4)",
+            "ObjectID": "fixed(1.2.3)",
+            "Bits": "fixed(0x00)",
         }
-        return rw_map.get(syntax, "lastset(0)")
+        return defaults.get(syntax, "fixed(0)")

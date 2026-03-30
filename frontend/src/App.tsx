@@ -16,6 +16,7 @@ import { PollingPage } from './pages/PollingPage';
 import { IRPManagerPage } from './pages/IRPManagerPage';
 import { IRPSenderPage } from './pages/IRPSenderPage';
 import OIDCompilerPage from './pages/OIDCompilerPage';
+import { SaproDashboardPage } from './pages/SaproDashboardPage';
 import activityTracker from './utils/activityTracker';
 
 
@@ -45,12 +46,28 @@ function App() {
           {/* Protected dashboard route */}
           <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
 
-          {/* Placeholder protected routes for future pages */}
+          {/* Sapro routes */}
           <Route
             path="/simulators"
             element={
               <ProtectedRoute requiredRoles={["admin", "sapro_admin"]}>
+                <SaproDashboardPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/sapro/simulators"
+            element={
+              <ProtectedRoute requiredRoles={["admin", "sapro_admin"]}>
                 <SimulatorsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/sapro/mib-tools"
+            element={
+              <ProtectedRoute requiredRoles={["admin", "sapro_admin"]}>
+                <OIDCompilerPage />
               </ProtectedRoute>
             }
           />
@@ -101,15 +118,6 @@ function App() {
 
           <Route path="/cc/reporting/irp/send" element={<ProtectedRoute requiredRoles={["admin", "cc_admin"]}><IRPSenderPage /></ProtectedRoute>} />
           <Route path="/cc/reporting/irp" element={<ProtectedRoute requiredRoles={["admin", "cc_admin"]}><IRPManagerPage /></ProtectedRoute>} />
-
-          <Route
-            path="/oid-compiler"
-            element={
-              <ProtectedRoute requiredRoles={["admin", "sapro_admin"]}>
-                <OIDCompilerPage />
-              </ProtectedRoute>
-            }
-          />
 
           <Route
             path="/users"

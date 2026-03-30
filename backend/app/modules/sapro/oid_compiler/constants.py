@@ -39,6 +39,28 @@ SYNTAX_MAP = {
     "TimeInterval": "Integer",
     "AutonomousType": "ObjectID",
     "KeyChange": "OctetString",
+    # pysnmp internal type names (Python class names from compiled MIBs)
+    "ObjectIdentifier": "ObjectID",
+    "ObjectIdentity": "ObjectID",
+    "TimeStamp": "TimeTicks",
+    "Timeout": "Integer",
+    "InterfaceIndex": "Integer",
+    "InterfaceIndexOrZero": "Integer",
+    "LacpKey": "Integer",
+    "LacpState": "Integer",
+    "BridgeId": "OctetString",
+    "SnmpEngineTime": "Integer",
+    "DisplayStatus": "Integer",
+    "DpsSessionType": "Integer",
+    "PortList": "OctetString",
+    "VlanId": "Integer",
+    "DateAndTime": "OctetString",
+    "RowPointer": "ObjectID",
+    "VariablePointer": "ObjectID",
+    "TestAndIncr": "Integer",
+    "IANAifType": "Integer",
+    "ProfileAction": "Integer",
+    "SourceType": "Integer",
 }
 
 # Default ranges when MIB doesn't specify one

@@ -33,6 +33,7 @@ class OidEntry(BaseModel):
     max_range: Optional[int] = None
     has_enum: bool = False
     enum_values: dict[str, int] = {}
+    default_value: Optional[str] = None
     description: str = ""
     mib_module: str = ""
     display_hint: Optional[str] = None

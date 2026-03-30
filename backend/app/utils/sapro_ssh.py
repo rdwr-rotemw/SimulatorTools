@@ -417,6 +417,39 @@ class SaproSSHClient:
         logger.debug(f"Read {len(content)} bytes from {path}")
         return True, content
 
+    def upload_file(self, local_path: str, remote_path: str) -> Tuple[bool, str]:
+        """Upload a file to SAPRO server using SCP.
+
+        Args:
+            local_path: Local file path
+            remote_path: Remote file path on SAPRO
+
+        Returns:
+            Tuple of (success: bool, message: str)
+        """
+        from scp import SCPClient, SCPException
+
+        with self._lock:
+            if not self._ensure_connected():
+                return False, "Failed to establish SAPRO SSH connection"
+
+            try:
+                logger.info(f"Uploading file to SAPRO: {local_path} -> {remote_path}")
+
+                with SCPClient(self._transport) as scp:
+                    scp.put(local_path, remote_path)
+
+                logger.info(f"Successfully uploaded file to SAPRO: {remote_path}")
+                return True, f"File uploaded successfully: {remote_path}"
+
+            except SCPException as e:
+                logger.error(f"SCP error uploading file to SAPRO: {e}")
+                return False, f"SCP error: {e}"
+
+            except Exception as e:
+                logger.error(f"Unexpected error uploading file to SAPRO: {e}", exc_info=True)
+                return False, f"Unexpected error: {e}"
+
     def get_connection_info(self) -> dict:
         """Get current connection information for debugging.
 
