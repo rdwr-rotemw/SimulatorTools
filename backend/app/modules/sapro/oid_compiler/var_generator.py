@@ -77,11 +77,13 @@ class VarGenerator:
         dynamic_rows: list[DynamicRowConfig],
         version: str,
         device_driver: str = None,
+        mirror_current_entries: list[str] = None,
     ):
         self.entries = oid_entries
         self.dynamic_rows = dynamic_rows
         self.version = version
         self.device_driver = device_driver
+        self.mirror_current_entries = mirror_current_entries or []
         # Version variants for scalar overrides
         # version = "10.12.0.1", version_short = "10.12.0"
         parts = version.split(".")
@@ -111,6 +113,19 @@ class VarGenerator:
             lines.extend(drow_lines)
             if i < len(self.dynamic_rows) - 1:
                 lines.append("#")
+
+        # Dynamic row blocks for Current (mirror) tables.
+        # These tables are read-only from SNMP but need %drow so the
+        # TCL modeling file can create rows via SA_setvar when mirroring
+        # Modify table writes to their Current counterparts.
+        if self.mirror_current_entries:
+            lines.append("#")
+            lines.append("# Current table dynamic row templates (for TCL mirroring)")
+            for current_entry in self.mirror_current_entries:
+                mirror_lines = self._write_mirror_drow(current_entry)
+                if mirror_lines:
+                    lines.extend(mirror_lines)
+                    lines.append("#")
 
         # Scalar variables only — sorted by OID (lexicographic order)
         # Table columns are NOT included: tables start empty and get
@@ -168,6 +183,62 @@ class VarGenerator:
                 lines.append(
                     f"#%setaction {'<unknown_column>':<25}{'<unknown_type>':<12} <specify value> deleterow()"
                 )
+
+        return lines
+
+    def _write_mirror_drow(self, current_entry_name: str) -> list[str]:
+        """Generate a %drow newinstance block for a Current (mirror) table.
+
+        Current tables are read-only from SNMP but need dynamic row creation
+        so the TCL modeling file can create rows via SA_setvar when mirroring
+        from the corresponding Modify table.
+        """
+        entry_oid = self._entry_oid_map.get(current_entry_name)
+        if not entry_oid:
+            return []
+
+        # Find all columns belonging to this entry
+        table_name = current_entry_name.replace("Entry", "Table")
+        columns = [
+            e for e in self.entries
+            if e.is_table_column and e.table_name == table_name
+        ]
+        if not columns:
+            # Try matching by entry_name instead of table_name
+            columns = [
+                e for e in self.entries
+                if e.is_table_column and e.entry_name == current_entry_name
+            ]
+        if not columns:
+            return []
+
+        columns.sort(key=lambda c: [int(x) for x in c.oid.split(".")])
+
+        # Find index columns (NA access)
+        index_labels = {c.label for c in columns if c.access == AccessLevel.NA}
+
+        lines = [f"%drow  {entry_oid}   newinstance"]
+
+        for col in columns:
+            is_index = col.label in index_labels
+            syntax = col.syntax
+
+            if is_index:
+                required = "NotReq"
+                access = "NA"
+                # dfixed returns the value from the instance OID component
+                value_info = {"OctetString": "dfixed(abc)", "Integer": "dfixed(1)",
+                              "IpAddress": "dfixed(1.2.3.4)", "ObjectID": "dfixed(1.2.3)"
+                              }.get(syntax, "dfixed(0)")
+            else:
+                required = "NotReq"
+                access = "RO"
+                value_info = self._get_ro_default(syntax, col.label)
+
+            label_padded = col.label + " " * max(1, 40 - len(col.label))
+            lines.append(
+                f"%dcol  {label_padded}{required:<7} {syntax:<12} {access} {value_info}"
+            )
 
         return lines
 

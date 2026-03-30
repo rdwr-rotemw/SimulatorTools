@@ -100,18 +100,33 @@ class MibCompiler:
             cmf_gen = CmfGenerator(oid_entries)
             cmf_content = cmf_gen.generate()
 
-            # Step 6: Generate VAR content
-            logger.info("Generating VAR file...")
-            var_gen = VarGenerator(oid_entries, dynamic_rows, version, self.device_driver)
-            var_content = var_gen.generate()
-
-            # Step 7: Generate modeling file (if soap_metadata.c is available)
-            modeling_remote_path = None
-            modeling_content = None
+            # Step 6: Parse soap metadata (if available) — needed by both VAR and modeling generators
+            soap_tables = []
+            modeling_gen = None
             if self.soap_metadata_path:
-                logger.info("Generating modeling file...")
+                logger.info("Parsing soap metadata...")
                 soap_tables = parse_soap_metadata(self.soap_metadata_path)
                 modeling_gen = ModelingGenerator(oid_entries, soap_tables)
+
+            # Step 7: Generate VAR content
+            # Pass mirror pairs from modeling generator so Current tables get %drow blocks
+            mirror_current_entries = []
+            if modeling_gen:
+                mirror_current_entries = [
+                    current_name for _, current_name, _ in modeling_gen.mirror_pairs
+                ]
+            logger.info("Generating VAR file...")
+            var_gen = VarGenerator(
+                oid_entries, dynamic_rows, version, self.device_driver,
+                mirror_current_entries=mirror_current_entries,
+            )
+            var_content = var_gen.generate()
+
+            # Step 8: Generate modeling file content
+            modeling_remote_path = None
+            modeling_content = None
+            if modeling_gen:
+                logger.info("Generating modeling file...")
                 modeling_content = modeling_gen.generate()
 
             # Step 8: Write files to SAPRO via SSH

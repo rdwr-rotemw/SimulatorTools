@@ -41,6 +41,11 @@ class ModelingGenerator:
         self._build_lookups()
         self._detect_mirror_pairs()
 
+    @property
+    def mirror_pairs(self) -> list[tuple[str, str, str]]:
+        """Return detected Modify -> Current mirror pairs."""
+        return self._mirror_pairs
+
     def _build_lookups(self) -> None:
         """Build mappings from entry names to their column OID entries."""
         # Group columns by table entry name
