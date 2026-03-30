@@ -14,11 +14,13 @@ KNOWN_TABLE_HANDLERS = {
 
 
 class ModelingGenerator:
-    """Generate SAPRO TCL modeling files for tables with hidden columns.
+    """Generate SAPRO TCL modeling files.
 
-    Hidden columns are firmware-computed values that CC doesn't send via SNMP Set.
-    This generator creates %after_set_action blocks that simulate the firmware's
-    auto-computation logic so the simulator responds correctly to CC operations.
+    Handles two types of modeling:
+    1. Hidden column computation — when CC sends partial data and firmware
+       auto-computes hidden columns (e.g., rsBWMNetworkEntry FromIP/ToIP).
+    2. Modify → Current table mirroring — copies rows from "Modify" config
+       tables to their "Current" counterparts so CC sees active configuration.
     """
 
     def __init__(
@@ -33,8 +35,11 @@ class ModelingGenerator:
         self._entry_columns: dict[str, dict[int, OidEntry]] = {}
         # Build lookup: entry_name -> entry OID
         self._entry_oids: dict[str, str] = {}
+        # Modify -> Current table pairs: [(modify_entry, current_entry, rowstatus_col_oid)]
+        self._mirror_pairs: list[tuple[str, str, str]] = []
 
         self._build_lookups()
+        self._detect_mirror_pairs()
 
     def _build_lookups(self) -> None:
         """Build mappings from entry names to their column OID entries."""
@@ -52,6 +57,47 @@ class ModelingGenerator:
             self._entry_columns[entry_name] = {
                 i: col for i, col in enumerate(cols, start=1)
             }
+
+    def _detect_mirror_pairs(self) -> None:
+        """Find Modify -> Current table pairs by naming convention.
+
+        Current tables have 'Current' in their entry name and mirror a
+        corresponding Modify table. The RowStatus column in the Modify
+        table is identified so mirroring can skip it (Current tables
+        don't have RowStatus).
+        """
+        for current_name, current_oid in self._entry_oids.items():
+            if "Current" not in current_name:
+                continue
+            # Derive modify table name: rsBWMCurrentNetworkEntry -> rsBWMNetworkEntry
+            modify_name = current_name.replace("Current", "")
+            # Special case: rsBWMMacGroupCurrentEntry -> rsBWMMacGroupEntry
+            if modify_name not in self._entry_oids and "Current" in current_name:
+                # Try suffix pattern: XxxCurrentYyy -> XxxYyy
+                parts = current_name.split("Current")
+                if len(parts) == 2:
+                    modify_name = parts[0] + parts[1]
+
+            if modify_name not in self._entry_oids:
+                continue
+            if modify_name not in self._entry_columns:
+                continue
+
+            # Find the RowStatus column OID in the Modify table
+            rowstatus_oid = ""
+            for pos, col in self._entry_columns[modify_name].items():
+                if "Status" in col.label and col.syntax == "Integer":
+                    # Check if it looks like RowStatus (enum values 1-6)
+                    if col.has_enum and "active" in col.enum_values:
+                        rowstatus_oid = col.oid
+                        break
+                    # Fallback: any Integer column with "Status" in name
+                    if not rowstatus_oid:
+                        rowstatus_oid = col.oid
+
+            self._mirror_pairs.append((modify_name, current_name, rowstatus_oid))
+
+        logger.info(f"Detected {len(self._mirror_pairs)} Modify->Current table mirror pairs")
 
     def _get_column_oid(self, entry_name: str, position: int) -> Optional[str]:
         """Get the full OID for a column by entry name and position."""
@@ -96,6 +142,12 @@ class ModelingGenerator:
                 if skeleton:
                     lines.append(skeleton)
 
+        # Generate Modify -> Current table mirroring blocks
+        for modify_name, current_name, rowstatus_oid in self._mirror_pairs:
+            block = self._generate_mirror_block(modify_name, current_name, rowstatus_oid)
+            if block:
+                lines.append(block)
+
         # Summary of tables analyzed
         lines.append(self._generate_summary(tables_with_hidden))
 
@@ -103,7 +155,8 @@ class ModelingGenerator:
         logger.info(
             f"Generated modeling file: "
             f"{len(tables_with_hidden)} tables, "
-            f"{sum(1 for t in tables_with_hidden if t.entry_name in KNOWN_TABLE_HANDLERS)} fully implemented"
+            f"{sum(1 for t in tables_with_hidden if t.entry_name in KNOWN_TABLE_HANDLERS)} fully implemented, "
+            f"{len(self._mirror_pairs)} mirror pairs"
         )
         return content
 
@@ -300,6 +353,33 @@ class ModelingGenerator:
         set mask_int [_ip_to_int $subnet_mask]
         set broadcast_int [expr {$net_int | (~$mask_int & 0xFFFFFFFF)}]
         return [_int_to_ip $broadcast_int]
+    }
+
+    # -----------------------------------------------------------
+    # mirror_to_current: Copy a Set varbind from a Modify table
+    # to its corresponding Current table.
+    #
+    # DefensePro has paired tables: "Modify" tables hold candidate
+    # config, "Current" tables hold active config. When CC writes
+    # to a Modify table, this proc mirrors the value to Current
+    # so CC sees it as active configuration.
+    #
+    # The OID translation is simple: replace the Modify entry OID
+    # prefix with the Current entry OID prefix. The column number
+    # and instance suffix stay the same.
+    #
+    # Arguments:
+    #   varbind          - The Set varbind list {oid type value}
+    #   modify_entry_oid - Entry OID of the Modify table
+    #   current_entry_oid - Entry OID of the Current table
+    # -----------------------------------------------------------
+    proc mirror_to_current {varbind modify_entry_oid current_entry_oid} {
+        set vb_oid [lindex $varbind 0]
+        set vb_type [lindex $varbind 1]
+        set vb_value [lindex $varbind 2]
+        set suffix [string range $vb_oid [string length $modify_entry_oid] end]
+        set target_oid "${current_entry_oid}${suffix}"
+        SA_setvar [list [list $target_oid $vb_type $vb_value]]
     }"""
 
     def _generate_bwm_network(self, table: SoapTableInfo) -> str:
@@ -316,28 +396,46 @@ class ModelingGenerator:
           - C6: ToIP = broadcast(Address, Mask)
           - C7: Mode = 1 (ipMask) — default when Address+Mask are provided
           - C8: Status = RowStatus (handled by SAPRO %dcol, no TCL needed)
+
+        Also mirrors the computed values to rsBWMCurrentNetworkEntry.
         """
-        entry_oid = self._entry_oids.get("rsBWMNetworkEntry")
+        modify_entry = "rsBWMNetworkEntry"
+        current_entry = "rsBWMCurrentNetworkEntry"
+        entry_oid = self._entry_oids.get(modify_entry)
+        current_oid = self._entry_oids.get(current_entry)
         if not entry_oid:
             logger.warning("rsBWMNetworkEntry not found in OID entries")
             return ""
 
-        # Get column OIDs
-        address_oid = self._get_column_oid("rsBWMNetworkEntry", 3)
-        mask_oid = self._get_column_oid("rsBWMNetworkEntry", 4)
-        from_ip_oid = self._get_column_oid("rsBWMNetworkEntry", 5)
-        to_ip_oid = self._get_column_oid("rsBWMNetworkEntry", 6)
-        mode_oid = self._get_column_oid("rsBWMNetworkEntry", 7)
+        # Get column OIDs from Modify table
+        address_oid = self._get_column_oid(modify_entry, 3)
+        mask_oid = self._get_column_oid(modify_entry, 4)
+        from_ip_oid = self._get_column_oid(modify_entry, 5)
+        to_ip_oid = self._get_column_oid(modify_entry, 6)
+        mode_oid = self._get_column_oid(modify_entry, 7)
 
         if not all([address_oid, mask_oid, from_ip_oid, to_ip_oid, mode_oid]):
             logger.warning("rsBWMNetworkEntry: could not resolve all column OIDs")
             return ""
 
-        # Verify column labels match expectations
-        address_label = self._get_column_label("rsBWMNetworkEntry", 3)
-        from_ip_label = self._get_column_label("rsBWMNetworkEntry", 5)
-        to_ip_label = self._get_column_label("rsBWMNetworkEntry", 6)
-        mode_label = self._get_column_label("rsBWMNetworkEntry", 7)
+        address_label = self._get_column_label(modify_entry, 3)
+        from_ip_label = self._get_column_label(modify_entry, 5)
+        to_ip_label = self._get_column_label(modify_entry, 6)
+        mode_label = self._get_column_label(modify_entry, 7)
+
+        # Generate mirror lines for computed values (only if Current table exists)
+        mirror_lines = ""
+        if current_oid:
+            mirror_lines = f"""
+    # Mirror computed values to Current table
+    set from_ip_vb [SA_getvar [list [switch_column_oid $vb_oid "{address_oid}" "{from_ip_oid}"]]]
+    mirror_to_current [lindex $from_ip_vb 0] "{entry_oid}" "{current_oid}"
+    if {{$to_ip_hex ne ""}} {{
+        set to_ip_vb [list [switch_column_oid $vb_oid "{address_oid}" "{to_ip_oid}"] "OctetString" $to_ip_hex]
+        mirror_to_current $to_ip_vb "{entry_oid}" "{current_oid}"
+    }}
+    set mode_vb [list [switch_column_oid $vb_oid "{address_oid}" "{mode_oid}"] "Integer" 1]
+    mirror_to_current $mode_vb "{entry_oid}" "{current_oid}" """
 
         return f"""\
 
@@ -347,25 +445,27 @@ class ModelingGenerator:
 #
 # Visible columns (set by CC):
 #   C3: {address_label} (Address)
-#   C4: {self._get_column_label("rsBWMNetworkEntry", 4)} (Mask)
+#   C4: {self._get_column_label(modify_entry, 4)} (Mask)
 #
 # Hidden columns (computed by this script):
 #   C5: {from_ip_label} = copy of Address
 #   C6: {to_ip_label}   = broadcast(Address, Mask)
 #   C7: {mode_label}    = 1 (ipMask mode, default for Address+Mask)
 #   C8: Status           = RowStatus (handled by SAPRO %dcol)
+#
+# Computed values are also mirrored to {current_entry}.
 # ===================================================================
 %after_set_action {address_oid}
     set varbind [SA_getreqvb]
     set vb_oid [lindex $varbind 0]
     set address_hex [lindex $varbind 2]
+    set to_ip_hex ""
 
     # C5 (FromIP) = copy of Address
     copy_column_value $varbind "{address_oid}" "{from_ip_oid}"
 
     # Read the Mask value from C4 to compute ToIP
     set mask_hex [get_column_value $vb_oid "{address_oid}" "{mask_oid}"]
-    # Strip trailing whitespace that SA_getvar may include
     set mask_hex [string trimright $mask_hex]
 
     # C6 (ToIP) = broadcast(Address, Mask)
@@ -378,7 +478,50 @@ class ModelingGenerator:
     }}
 
     # C7 (Mode) = 1 (ipMask)
-    set_column_value $vb_oid "{address_oid}" "{mode_oid}" "Integer" 1"""
+    set_column_value $vb_oid "{address_oid}" "{mode_oid}" "Integer" 1
+{mirror_lines}"""
+
+    def _generate_mirror_block(
+        self, modify_name: str, current_name: str, rowstatus_oid: str
+    ) -> str:
+        """Generate a %after_set_action block that mirrors Modify -> Current table.
+
+        When CC writes to any column in the Modify table, the value is
+        immediately copied to the same column in the Current table.
+        RowStatus columns are skipped (Current tables don't have them).
+        """
+        modify_oid = self._entry_oids.get(modify_name)
+        current_oid = self._entry_oids.get(current_name)
+
+        if not modify_oid or not current_oid:
+            logger.warning(
+                f"Cannot generate mirror for {modify_name} -> {current_name}: "
+                f"missing entry OID"
+            )
+            return ""
+
+        # Build the RowStatus skip condition
+        if rowstatus_oid:
+            skip_check = f"""
+    # Skip RowStatus column — Current tables don't have it
+    if {{[string match "{rowstatus_oid}*" $vb_oid]}} {{
+        return
+    }}
+"""
+        else:
+            skip_check = ""
+
+        return f"""\
+
+# -------------------------------------------------------------------
+# {modify_name} -> {current_name}
+# Mirror every Set on the Modify table to the Current (active) table.
+# -------------------------------------------------------------------
+%after_set_action {modify_oid}
+    set varbind [SA_getreqvb]
+    set vb_oid [lindex $varbind 0]
+{skip_check}\
+    mirror_to_current $varbind "{modify_oid}" "{current_oid}" """
 
     def _classify_hidden_column(self, entry_name: str, col) -> str:
         """Classify a hidden column's type.
@@ -548,6 +691,9 @@ class ModelingGenerator:
         impl_list = "\n".join(f"#   - {n}" for n in implemented) or "#   (none)"
         notcl_list = "\n".join(f"#   - {n}" for n in no_tcl) or "#   (none)"
         skel_list = "\n".join(f"#   - {n}" for n in skeleton) or "#   (none)"
+        mirror_list = "\n".join(
+            f"#   - {m} -> {c}" for m, c, _ in self._mirror_pairs
+        ) or "#   (none)"
 
         return f"""
 # ===================================================================
@@ -555,6 +701,9 @@ class ModelingGenerator:
 #
 # Fully implemented (TCL computation logic):
 {impl_list}
+#
+# Modify -> Current table mirroring:
+{mirror_list}
 #
 # No TCL needed (RowStatus + defaults handled by %dcol):
 {notcl_list}
