@@ -82,11 +82,30 @@ class DynamicRowConfig(BaseModel):
     detection_warning: Optional[str] = None
 
 
+class SoapColumnInfo(BaseModel):
+    """A single column from a soap_metadata.c attrList array."""
+    position: int  # 1-based column position (maps to C1, C2, ... in CMF)
+    soap_name: Optional[str] = None  # SOAP attribute name, None if hidden
+    is_hidden: bool = False
+    is_key: bool = False
+
+
+class SoapTableInfo(BaseModel):
+    """Parsed table metadata from soap_metadata.c."""
+    entry_name: str  # e.g., "rsBWMNetworkEntry"
+    columns: list[SoapColumnInfo]
+    soap_namespace: Optional[str] = None  # e.g., "radware.Classes.Networks"
+    has_create: bool = False  # Whether CC can create rows via SOAP
+    hidden_count: int = 0
+    visible_count: int = 0
+
+
 class CompilationResult(BaseModel):
     """Result returned to the frontend after compilation."""
     success: bool
     cmf_path: Optional[str] = None
     var_path: Optional[str] = None
+    modeling_path: Optional[str] = None
     version: str = ""
     stats: dict = {}
     warnings: list[str] = []

@@ -19,11 +19,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/oid-compiler", tags=["OID Compiler"])
 
 
-def _get_output_dirs(workspace: str) -> tuple[str, str]:
-    """Return (cmf_dir, var_dir) based on workspace."""
+def _get_output_dirs(workspace: str) -> tuple[str, str, str]:
+    """Return (cmf_dir, var_dir, tcl_dir) based on workspace."""
     if workspace == "default":
-        return "/opt/sapro/cmf", "/opt/sapro/var"
-    return f"/opt/sapro/projects/{workspace}/cmf", f"/opt/sapro/projects/{workspace}/var"
+        return "/opt/sapro/cmf", "/opt/sapro/var", "/opt/sapro/tcl"
+    base = f"/opt/sapro/projects/{workspace}"
+    return f"{base}/cmf", f"{base}/var", f"{base}/tcl"
 
 
 @router.post("/compile", response_model=CompilationResult)
@@ -33,16 +34,20 @@ async def compile_mibs(
     output_name: str = Form(None, description="Output filename base (auto-detected if empty)"),
     device_driver_name: str = Form(None, description="Existing device driver filename"),
     device_driver_file: Optional[UploadFile] = File(None, description="New device driver JAR to upload"),
+    soap_metadata_file: Optional[UploadFile] = File(None, description="soap_metadata.c file for modeling file generation"),
     current_user: User = Depends(require_sapro_access),
 ):
     """
-    Compile MIB files and OIDs PDF into SAPRO .cmf and .var files.
+    Compile MIB files and OIDs PDF into SAPRO .cmf, .var, and .tcl files.
 
     Optionally accepts a device driver (existing name or new upload) to set
     the rndVisionDriverActiveName scalar in the .var file.
+
+    Optionally accepts soap_metadata.c to generate a TCL modeling file that
+    simulates firmware behavior for tables with hidden columns.
     """
     workspace = current_user.workspace if (current_user.workspace and current_user.workspace != "*") else "default"
-    cmf_output_dir, var_output_dir = _get_output_dirs(workspace)
+    cmf_output_dir, var_output_dir, modeling_output_dir = _get_output_dirs(workspace)
 
     # Resolve device driver filename
     driver_filename = None
@@ -65,13 +70,22 @@ async def compile_mibs(
         with open(pdf_path, "wb") as f:
             shutil.copyfileobj(oids_pdf.file, f)
 
+        # Save soap_metadata.c if provided
+        soap_metadata_path = None
+        if soap_metadata_file and soap_metadata_file.filename:
+            soap_metadata_path = os.path.join(tmp_dir, soap_metadata_file.filename)
+            with open(soap_metadata_path, "wb") as f:
+                shutil.copyfileobj(soap_metadata_file.file, f)
+
         compiler = MibCompiler(
             mib_zip_path=zip_path,
             oids_pdf_path=pdf_path,
             output_dir=cmf_output_dir,
             var_output_dir=var_output_dir,
+            modeling_output_dir=modeling_output_dir,
             output_name=output_name or None,
             device_driver=driver_filename,
+            soap_metadata_path=soap_metadata_path,
         )
         result = compiler.compile()
         return result
