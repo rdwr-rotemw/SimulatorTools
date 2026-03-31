@@ -38,9 +38,13 @@ class DynamicRowDetector:
         self,
         mib_entries: list[OidEntry],
         pdf_tables: list[PdfTableInfo],
+        cc_columns: dict[str, set[str]] = None,
     ):
         self.mib_entries = mib_entries
         self.pdf_tables = pdf_tables
+        # CC column mapping from device driver JAR: table_name -> set of column labels CC sends.
+        # Columns CC sends are Req, columns it doesn't are NotReq.
+        self._cc_columns = cc_columns or {}
         self._mib_by_label: dict[str, OidEntry] = {e.label: e for e in mib_entries}
         self._mib_by_table: dict[str, list[OidEntry]] = {}
         for e in mib_entries:
@@ -218,6 +222,12 @@ class DynamicRowDetector:
         mib_by_label = {c.label: c for c in mib_columns}
         pdf_labels = {c.label for c in table.columns}
 
+        # CC columns for this table — used to determine Req vs NotReq.
+        # Columns CC sends during row creation must be Req so SAPRO
+        # expects them in the Set PDU. Columns CC doesn't send must be
+        # NotReq so SAPRO uses the default value.
+        cc_cols = self._cc_columns.get(table.table_name, set())
+
         # Add missing index columns from MIB data (not-accessible indices
         # don't appear in the PDF but are required in %drow blocks)
         for mib_col in mib_columns:
@@ -226,7 +236,7 @@ class DynamicRowDetector:
                     label=mib_col.label,
                     required="NotReq",
                     syntax=mib_col.syntax,
-                    access="NA",
+                    access="RO",
                     value_info=self._get_index_value_info(mib_col.syntax),
                 ))
 
@@ -244,7 +254,7 @@ class DynamicRowDetector:
                                     label=idx_label,
                                     required="NotReq",
                                     syntax=idx_mib.syntax,
-                                    access="NA",
+                                    access="RO",
                                     value_info=self._get_index_value_info(idx_mib.syntax),
                                 ))
                     break
@@ -260,30 +270,29 @@ class DynamicRowDetector:
                 access = "RC"
 
             # Check if this is the RowStatus/EntryStatus column
-            # Use PDF syntax (original, not normalized) as the authoritative source
             is_rowstatus = pdf_col.syntax in ROWSTATUS_TCS
             is_entrystatus = pdf_col.syntax in ENTRYSTATUS_TCS
 
+            # Determine Req/NotReq: if CC sends this column, it's Req.
+            # If CC doesn't send it (hidden/computed), it's NotReq.
+            cc_sends = label in cc_cols
+
             if is_index:
                 required = "NotReq"
-                dcol_access = "NA"
+                dcol_access = "RO"
                 value_info = self._get_index_value_info(syntax)
             elif is_rowstatus:
                 required = "Req"
-                value_info = "rowstatus(1)"
                 syntax = "Integer"
                 dcol_access = access if access in ("RC", "RW") else "RW"
+                value_info = self._get_rw_value_info(syntax, mib_col)
             elif is_entrystatus:
                 required = "Req"
-                value_info = "rmonstatus(1)"
                 syntax = "Integer"
                 dcol_access = access if access in ("RC", "RW") else "RW"
+                value_info = self._get_rw_value_info(syntax, mib_col)
             elif access in ("RW", "RC"):
-                # Mark all non-RowStatus RW/RC columns as NotReq.
-                # SAPRO rejects row creation if a Req column isn't provided
-                # in the Set request. Since NMS may not send all columns,
-                # NotReq with a default value is safer.
-                required = "NotReq"
+                required = "Req" if cc_sends else "NotReq"
                 dcol_access = access
                 value_info = self._get_rw_value_info(syntax, mib_col)
             else:

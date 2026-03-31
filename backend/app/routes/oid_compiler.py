@@ -12,7 +12,7 @@ from backend.app.modules.sapro.oid_compiler.models import CompilationResult
 from backend.app.models.user import User
 from backend.app.utils.auth import require_sapro_access
 from backend.app.utils.database import get_db
-from backend.app.utils.device_driver import list_existing_drivers, save_uploaded_driver
+from backend.app.utils.device_driver import DEVICE_DRIVER_STORAGE_PATH, list_existing_drivers, save_uploaded_driver
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,13 @@ async def compile_mibs(
         with open(pdf_path, "wb") as f:
             shutil.copyfileobj(oids_pdf.file, f)
 
+        # Resolve JAR path for CC column parsing
+        jar_path = None
+        if driver_filename:
+            jar_path = os.path.join(DEVICE_DRIVER_STORAGE_PATH, driver_filename)
+            if not os.path.exists(jar_path):
+                jar_path = None
+
         compiler = MibCompiler(
             mib_zip_path=zip_path,
             oids_pdf_path=pdf_path,
@@ -72,6 +79,7 @@ async def compile_mibs(
             var_output_dir=var_output_dir,
             output_name=output_name or None,
             device_driver=driver_filename,
+            device_driver_jar_path=jar_path,
         )
         result = compiler.compile()
         return result

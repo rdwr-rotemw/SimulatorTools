@@ -8,6 +8,7 @@ from typing import Optional
 
 from backend.app.modules.sapro.oid_compiler.cmf_generator import CmfGenerator
 from backend.app.modules.sapro.oid_compiler.dynamic_row_detector import DynamicRowDetector
+from backend.app.modules.sapro.oid_compiler.jar_parser import parse_cc_columns_from_jar
 from backend.app.modules.sapro.oid_compiler.mib_parser import MibParser
 from backend.app.modules.sapro.oid_compiler.constants import SYNTAX_MAP
 from backend.app.modules.sapro.oid_compiler.models import AccessLevel, CompilationResult, OidEntry, PdfTableInfo
@@ -29,6 +30,7 @@ class MibCompiler:
         var_output_dir: str = "/opt/sapro/var",
         output_name: Optional[str] = None,
         device_driver: Optional[str] = None,
+        device_driver_jar_path: Optional[str] = None,
     ):
         self.mib_zip_path = mib_zip_path
         self.oids_pdf_path = oids_pdf_path
@@ -36,6 +38,7 @@ class MibCompiler:
         self.var_output_dir = var_output_dir
         self.output_name = output_name
         self.device_driver = device_driver
+        self.device_driver_jar_path = device_driver_jar_path
         self.warnings: list[str] = []
 
     def compile(self) -> CompilationResult:
@@ -80,9 +83,15 @@ class MibCompiler:
             if not self.output_name:
                 self.output_name = self._generate_output_name(version)
 
-            # Step 5: Detect dynamic rows
+            # Step 5: Parse device driver JAR for CC column mappings (if available)
+            cc_columns: dict[str, set[str]] = {}
+            if self.device_driver_jar_path:
+                logger.info("Parsing device driver JAR for CC column mappings...")
+                cc_columns = parse_cc_columns_from_jar(self.device_driver_jar_path)
+
+            # Step 6: Detect dynamic rows
             logger.info("Detecting dynamic row creation tables...")
-            detector = DynamicRowDetector(oid_entries, pdf_tables)
+            detector = DynamicRowDetector(oid_entries, pdf_tables, cc_columns)
             dynamic_rows = detector.detect_all()
 
             for dr in dynamic_rows:

@@ -44,6 +44,9 @@ SYSTEM_SCALAR_OVERRIDES = {
     "sysName": "r_lastset(0, 255,DefensePro_$$MYIPADDRESS$$)",
     "sysLocation": "r_lastset(0, 255,)",
     "sysServices": "fixed(3)",
+    # CC polls these during "Update Policies" — must indicate idle state
+    "rdwrUpdatePoliciesRequired": "fixed(0)",
+    "rsUpdatePoliciesInProgress": "fixed(0)",
 }
 
 # OID labels where IpAddress values should use $$MYIPADDRESS$$ token
@@ -202,7 +205,7 @@ class VarGenerator:
         for col in columns:
             is_index = col.label in index_labels
             if is_index:
-                required, access = "NotReq", "NA"
+                required, access = "NotReq", "RO"
                 value_info = {"OctetString": "dfixed(abc)", "Integer": "dfixed(1)",
                               "IpAddress": "dfixed(1.2.3.4)", "ObjectID": "dfixed(1.2.3)"
                               }.get(col.syntax, "dfixed(0)")
