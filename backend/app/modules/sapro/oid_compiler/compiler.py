@@ -190,6 +190,25 @@ class MibCompiler:
                 table_name = e.label.replace("Entry", "Table")
                 table_entry_oids[table_name] = e.oid
 
+        # Build label -> OidEntry lookup for updating existing entries
+        mib_by_label: dict[str, OidEntry] = {e.label: e for e in oid_entries}
+
+        # Update access for index columns from PDF data.
+        # pysnmp enforces SNMP rules (indexes = not-accessible) but the
+        # actual MIB text may say read-only. The PDF has the MIB text access.
+        access_map_update = {
+            "RO": AccessLevel.RO, "RW": AccessLevel.RW,
+            "Create": AccessLevel.CREATE, "RC": AccessLevel.CREATE,
+            "NA": AccessLevel.NA,
+        }
+        for table in pdf_tables:
+            index_set = set(table.index_columns)
+            for col in table.columns:
+                if col.label in index_set and col.label in mib_by_label:
+                    pdf_access = access_map_update.get(col.access)
+                    if pdf_access and mib_by_label[col.label].access != pdf_access:
+                        mib_by_label[col.label].access = pdf_access
+
         for table in pdf_tables:
             for col in table.columns:
                 if col.label in mib_labels or col.oid in mib_oids:
@@ -252,9 +271,6 @@ class MibCompiler:
                 cols.sort(key=lambda c: [int(x) for x in c.oid.split(".")])
                 for idx, col in enumerate(cols, 1):
                     col.index_type = f"C{idx}"
-                    # Preserve NA for index columns
-                    if idx <= len(cols[0].index_columns) if cols[0].index_columns else 0:
-                        col.access = AccessLevel.NA
 
         return oid_entries
 
