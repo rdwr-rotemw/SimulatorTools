@@ -262,6 +262,13 @@ class MibParser:
 
         return entries
 
+    def _store_oid(self, name: str, oid_value) -> None:
+        """Store an OID mapping, but don't overwrite already-resolved values."""
+        existing = self._oid_map.get(name)
+        if isinstance(existing, str) and "." in existing:
+            return  # Already resolved (e.g., from WELL_KNOWN_OIDS)
+        self._oid_map[name] = oid_value
+
     def _collect_oid_and_types(self, decl: tuple) -> None:
         """Collect OID assignments and type definitions from an AST declaration."""
         decl_type = decl[0]
@@ -270,7 +277,7 @@ class MibParser:
             name = decl[1]
             oid_part = decl[11]
             if isinstance(oid_part, tuple) and oid_part[0] == "objectIdentifier":
-                self._oid_map[name] = oid_part[1]  # Store unresolved for now
+                self._store_oid(name, oid_part[1])
 
             # Collect enum definitions from syntax
             syntax = decl[2]
@@ -280,19 +287,19 @@ class MibParser:
             name = decl[1]
             oid_part = decl[-1]
             if isinstance(oid_part, tuple) and oid_part[0] == "objectIdentifier":
-                self._oid_map[name] = oid_part[1]
+                self._store_oid(name, oid_part[1])
 
         elif decl_type == "moduleIdentityClause" and len(decl) >= 2:
             name = decl[1]
             oid_part = decl[-1]
             if isinstance(oid_part, tuple) and oid_part[0] == "objectIdentifier":
-                self._oid_map[name] = oid_part[1]
+                self._store_oid(name, oid_part[1])
 
-        elif decl_type == "objectIdentifierDeclaration" and len(decl) >= 3:
+        elif decl_type in ("objectIdentifierDeclaration", "valueDeclaration") and len(decl) >= 3:
             name = decl[1]
             oid_part = decl[2]
             if isinstance(oid_part, tuple) and oid_part[0] == "objectIdentifier":
-                self._oid_map[name] = oid_part[1]
+                self._store_oid(name, oid_part[1])
 
         elif decl_type == "typeDeclaration" and len(decl) >= 3:
             name = decl[1]
@@ -303,31 +310,31 @@ class MibParser:
             name = decl[1]
             oid_part = decl[-1]
             if isinstance(oid_part, tuple) and oid_part[0] == "objectIdentifier":
-                self._oid_map[name] = oid_part[1]
+                self._store_oid(name, oid_part[1])
 
         elif decl_type == "moduleComplianceClause" and len(decl) >= 2:
             name = decl[1]
             oid_part = decl[-1]
             if isinstance(oid_part, tuple) and oid_part[0] == "objectIdentifier":
-                self._oid_map[name] = oid_part[1]
+                self._store_oid(name, oid_part[1])
 
         elif decl_type == "objectGroupClause" and len(decl) >= 2:
             name = decl[1]
             oid_part = decl[-1]
             if isinstance(oid_part, tuple) and oid_part[0] == "objectIdentifier":
-                self._oid_map[name] = oid_part[1]
+                self._store_oid(name, oid_part[1])
 
         elif decl_type == "notificationGroupClause" and len(decl) >= 2:
             name = decl[1]
             oid_part = decl[-1]
             if isinstance(oid_part, tuple) and oid_part[0] == "objectIdentifier":
-                self._oid_map[name] = oid_part[1]
+                self._store_oid(name, oid_part[1])
 
         elif decl_type == "agentCapabilitiesClause" and len(decl) >= 2:
             name = decl[1]
             oid_part = decl[-1]
             if isinstance(oid_part, tuple) and oid_part[0] == "objectIdentifier":
-                self._oid_map[name] = oid_part[1]
+                self._store_oid(name, oid_part[1])
 
     def _collect_enum_from_syntax(self, column_name: str, syntax) -> None:
         """Extract enum values from a syntax definition."""
