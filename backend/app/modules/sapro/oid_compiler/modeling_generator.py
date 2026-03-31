@@ -233,40 +233,40 @@ class ModelingGenerator:
     }
 
     # -----------------------------------------------------------
-    # copy_column_value: Copy a varbind's value to another column
-    # in the same row. Used when a hidden column is a direct copy
-    # of a visible column.
+    # copy_column_value: Copy the current Set varbind's value to
+    # another column in the same row. Swaps the OID prefix and
+    # passes just the new OID to SA_setvar — SAPRO copies the
+    # type and value from the current Set request automatically.
+    # This matches the pattern from the working test_snmp.tcl.
     #
     # Arguments:
-    #   varbind        - The Set varbind list {oid type value}
+    #   varbind        - The Set varbind from SA_getreqvb
     #   source_col_oid - Column OID prefix of the source
     #   target_col_oid - Column OID prefix of the target
     # -----------------------------------------------------------
     proc copy_column_value {varbind source_col_oid target_col_oid} {
         set src_oid [lindex $varbind 0]
-        set src_type [lindex $varbind 1]
-        set src_value [lindex $varbind 2]
-        set target_oid [switch_column_oid $src_oid $source_col_oid $target_col_oid]
-        SA_setvar [list [list $target_oid $src_type $src_value]]
+        set instance [string range $src_oid [string length $source_col_oid] end]
+        set target_oid "${target_col_oid}${instance}"
+        SA_setvar [list $target_oid]
     }
 
     # -----------------------------------------------------------
     # get_column_value: Read the current value of a column in the
-    # same row as a given varbind.
+    # same row. Returns the raw value (third space-separated
+    # element from SA_getvar result).
     #
     # Arguments:
     #   vb_oid         - Full OID from the triggering varbind
     #   source_col_oid - Column OID prefix of the triggering column
     #   target_col_oid - Column OID prefix of the column to read
     #
-    # Returns: The value of the target column (third element of
-    #          the SA_getvar result triplet)
+    # Returns: The raw value string
     # -----------------------------------------------------------
     proc get_column_value {vb_oid source_col_oid target_col_oid} {
         set target_oid [switch_column_oid $vb_oid $source_col_oid $target_col_oid]
-        set result [SA_getvar [list $target_oid]]
-        set triplet [lindex $result 0]
-        return [lindex $triplet 2]
+        set result [split [SA_getvar [list $target_oid]] " "]
+        return [lindex $result 2]
     }
 
     # -----------------------------------------------------------
@@ -380,11 +380,9 @@ class ModelingGenerator:
     # -----------------------------------------------------------
     proc mirror_to_current {varbind modify_entry_oid current_entry_oid} {
         set vb_oid [lindex $varbind 0]
-        set vb_type [lindex $varbind 1]
-        set vb_value [lindex $varbind 2]
         set suffix [string range $vb_oid [string length $modify_entry_oid] end]
         set target_oid "${current_entry_oid}${suffix}"
-        SA_setvar [list [list $target_oid $vb_type $vb_value]]
+        SA_setvar [list $target_oid]
     }"""
 
     def _generate_bwm_network(self, table: SoapTableInfo) -> str:

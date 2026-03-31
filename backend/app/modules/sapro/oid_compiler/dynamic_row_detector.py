@@ -323,36 +323,35 @@ class DynamicRowDetector:
         return defaults.get(syntax, "dfixed(0)")
 
     def _get_rw_value_info(self, syntax: str, mib_col: Optional[OidEntry]) -> str:
-        """Generate value info for RW/RC columns, using r_lastset with ranges when available.
-        Uses DEFVAL from MIB as the default value when present."""
+        """Generate value info for RW/RC columns in %dcol blocks.
+
+        Uses r_lastset with range only (no default value) to match the
+        format that works with SAPRO dynamic row creation.
+        """
         has_range = mib_col and mib_col.min_range is not None and mib_col.max_range is not None
-        defval = mib_col.default_value if mib_col else None
 
         if syntax == "Integer":
             if has_range:
-                default = defval or str(mib_col.min_range)
-                return f"r_lastset({mib_col.min_range}, {mib_col.max_range}, {default})"
-            return f"lastset({defval})" if defval else "lastset(1)"
+                return f"r_lastset({mib_col.min_range}, {mib_col.max_range})"
+            return "lastset(1)"
         if syntax == "OctetString":
             if has_range:
-                default = defval or "abc"
-                return f"r_lastset({mib_col.min_range}, {mib_col.max_range}, {default})"
-            return f"lastset({defval})" if defval else "lastset(abc)"
+                return f"r_lastset({mib_col.min_range}, {mib_col.max_range})"
+            return "lastset(abc)"
         if syntax == "ObjectID":
-            return f"lastset({defval})" if defval else "lastset(1.2.3)"
+            return "lastset(1.2.3)"
         if syntax == "IpAddress":
-            return f"r_lastset(4, 4, {defval})" if defval else "r_lastset(4, 4, 1.2.3.4)"
+            return "r_lastset(4, 4)"
         if syntax == "Gauge":
             if has_range:
-                default = defval or str(mib_col.min_range)
-                return f"r_lastset({mib_col.min_range}, {mib_col.max_range}, {default})"
-            return f"lastset({defval})" if defval else "lastset(0)"
+                return f"r_lastset({mib_col.min_range}, {mib_col.max_range})"
+            return "lastset(0)"
         if syntax == "Counter":
             return "randomup(1000, 100)"
         if syntax == "Counter64":
             return "randomup(1000, 100)"
         if syntax == "TimeTicks":
-            return f"clock({defval})" if defval else "clock(0)"
+            return "clock(0)"
         if syntax == "Bits":
             return "lastset(0x00)"
         return "lastset(0)"
