@@ -77,13 +77,11 @@ class VarGenerator:
         dynamic_rows: list[DynamicRowConfig],
         version: str,
         device_driver: str = None,
-        mirror_current_entries: list[str] = None,
     ):
         self.entries = oid_entries
         self.dynamic_rows = dynamic_rows
         self.version = version
         self.device_driver = device_driver
-        self.mirror_current_entries = mirror_current_entries or []
         # Version variants for scalar overrides
         # version = "10.12.0.1", version_short = "10.12.0"
         parts = version.split(".")
@@ -100,6 +98,28 @@ class VarGenerator:
             if e.is_table_entry:
                 self._entry_oid_map[e.label] = e.oid
 
+        # Detect Current (mirror) tables by naming convention.
+        # These are read-only tables that the TCL modeling file populates
+        # by mirroring from Modify tables. They need %drow newinstance
+        # blocks so SA_setvar can create rows in them.
+        self._mirror_current_entries: list[str] = []
+        drow_entry_names = {dr.entry_name for dr in dynamic_rows}
+        for entry_name in self._entry_oid_map:
+            if "Current" not in entry_name:
+                continue
+            # Only add if the Current table doesn't already have a %drow
+            if entry_name in drow_entry_names:
+                continue
+            # Check that a matching Modify table exists
+            modify_name = entry_name.replace("Current", "")
+            if modify_name not in self._entry_oid_map:
+                # Try suffix pattern: XxxCurrentYyy -> XxxYyy
+                parts = entry_name.split("Current")
+                if len(parts) == 2:
+                    modify_name = parts[0] + parts[1]
+            if modify_name in drow_entry_names:
+                self._mirror_current_entries.append(entry_name)
+
     def generate(self) -> str:
         """Generate VAR content and return as string."""
         lines: list[str] = []
@@ -114,14 +134,11 @@ class VarGenerator:
             if i < len(self.dynamic_rows) - 1:
                 lines.append("#")
 
-        # Dynamic row blocks for Current (mirror) tables.
-        # These tables are read-only from SNMP but need %drow so the
-        # TCL modeling file can create rows via SA_setvar when mirroring
-        # Modify table writes to their Current counterparts.
-        if self.mirror_current_entries:
+        # Dynamic row blocks for Current (mirror) tables
+        if self._mirror_current_entries:
             lines.append("#")
             lines.append("# Current table dynamic row templates (for TCL mirroring)")
-            for current_entry in self.mirror_current_entries:
+            for current_entry in self._mirror_current_entries:
                 mirror_lines = self._write_mirror_drow(current_entry)
                 if mirror_lines:
                     lines.extend(mirror_lines)
@@ -159,6 +176,45 @@ class VarGenerator:
         padding = " " * max(1, 30 - len(entry.label) - 2)
         return f"{entry.label}.0{padding}, {entry.syntax:<12}, {access} , {value_info}"
 
+    def _write_mirror_drow(self, current_entry_name: str) -> list[str]:
+        """Generate a %drow newinstance block for a Current (mirror) table."""
+        entry_oid = self._entry_oid_map.get(current_entry_name)
+        if not entry_oid:
+            return []
+
+        table_name = current_entry_name.replace("Entry", "Table")
+        columns = [
+            e for e in self.entries
+            if e.is_table_column and e.table_name == table_name
+        ]
+        if not columns:
+            columns = [
+                e for e in self.entries
+                if e.is_table_column and e.entry_name == current_entry_name
+            ]
+        if not columns:
+            return []
+
+        columns.sort(key=lambda c: [int(x) for x in c.oid.split(".")])
+        index_labels = {c.label for c in columns if c.access == AccessLevel.NA}
+
+        lines = [f"%drow  {entry_oid}   newinstance"]
+        for col in columns:
+            is_index = col.label in index_labels
+            if is_index:
+                required, access = "NotReq", "NA"
+                value_info = {"OctetString": "dfixed(abc)", "Integer": "dfixed(1)",
+                              "IpAddress": "dfixed(1.2.3.4)", "ObjectID": "dfixed(1.2.3)"
+                              }.get(col.syntax, "dfixed(0)")
+            else:
+                required, access = "NotReq", "RO"
+                value_info = self._get_ro_default(col.syntax, col.label)
+
+            label_padded = col.label + " " * max(1, 40 - len(col.label))
+            lines.append(f"%dcol  {label_padded}{required:<7} {col.syntax:<12} {access} {value_info}")
+
+        return lines
+
     def _write_dynamic_rows(self, config: DynamicRowConfig) -> list[str]:
         lines: list[str] = []
         prefix = "#" if not config.is_fully_detected else ""
@@ -183,62 +239,6 @@ class VarGenerator:
                 lines.append(
                     f"#%setaction {'<unknown_column>':<25}{'<unknown_type>':<12} <specify value> deleterow()"
                 )
-
-        return lines
-
-    def _write_mirror_drow(self, current_entry_name: str) -> list[str]:
-        """Generate a %drow newinstance block for a Current (mirror) table.
-
-        Current tables are read-only from SNMP but need dynamic row creation
-        so the TCL modeling file can create rows via SA_setvar when mirroring
-        from the corresponding Modify table.
-        """
-        entry_oid = self._entry_oid_map.get(current_entry_name)
-        if not entry_oid:
-            return []
-
-        # Find all columns belonging to this entry
-        table_name = current_entry_name.replace("Entry", "Table")
-        columns = [
-            e for e in self.entries
-            if e.is_table_column and e.table_name == table_name
-        ]
-        if not columns:
-            # Try matching by entry_name instead of table_name
-            columns = [
-                e for e in self.entries
-                if e.is_table_column and e.entry_name == current_entry_name
-            ]
-        if not columns:
-            return []
-
-        columns.sort(key=lambda c: [int(x) for x in c.oid.split(".")])
-
-        # Find index columns (NA access)
-        index_labels = {c.label for c in columns if c.access == AccessLevel.NA}
-
-        lines = [f"%drow  {entry_oid}   newinstance"]
-
-        for col in columns:
-            is_index = col.label in index_labels
-            syntax = col.syntax
-
-            if is_index:
-                required = "NotReq"
-                access = "NA"
-                # dfixed returns the value from the instance OID component
-                value_info = {"OctetString": "dfixed(abc)", "Integer": "dfixed(1)",
-                              "IpAddress": "dfixed(1.2.3.4)", "ObjectID": "dfixed(1.2.3)"
-                              }.get(syntax, "dfixed(0)")
-            else:
-                required = "NotReq"
-                access = "RO"
-                value_info = self._get_ro_default(syntax, col.label)
-
-            label_padded = col.label + " " * max(1, 40 - len(col.label))
-            lines.append(
-                f"%dcol  {label_padded}{required:<7} {syntax:<12} {access} {value_info}"
-            )
 
         return lines
 

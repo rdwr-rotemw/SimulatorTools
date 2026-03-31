@@ -11,9 +11,7 @@ from backend.app.modules.sapro.oid_compiler.dynamic_row_detector import DynamicR
 from backend.app.modules.sapro.oid_compiler.mib_parser import MibParser
 from backend.app.modules.sapro.oid_compiler.constants import SYNTAX_MAP
 from backend.app.modules.sapro.oid_compiler.models import AccessLevel, CompilationResult, OidEntry, PdfTableInfo
-from backend.app.modules.sapro.oid_compiler.modeling_generator import ModelingGenerator
 from backend.app.modules.sapro.oid_compiler.pdf_parser import PdfParser
-from backend.app.modules.sapro.oid_compiler.soap_metadata_parser import parse_soap_metadata
 from backend.app.modules.sapro.oid_compiler.var_generator import VarGenerator
 from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 
@@ -29,19 +27,15 @@ class MibCompiler:
         oids_pdf_path: str,
         output_dir: str = "/opt/sapro/cmf",
         var_output_dir: str = "/opt/sapro/var",
-        modeling_output_dir: str = "/opt/sapro/tcl",
         output_name: Optional[str] = None,
         device_driver: Optional[str] = None,
-        soap_metadata_path: Optional[str] = None,
     ):
         self.mib_zip_path = mib_zip_path
         self.oids_pdf_path = oids_pdf_path
         self.output_dir = output_dir
         self.var_output_dir = var_output_dir
-        self.modeling_output_dir = modeling_output_dir
         self.output_name = output_name
         self.device_driver = device_driver
-        self.soap_metadata_path = soap_metadata_path
         self.warnings: list[str] = []
 
     def compile(self) -> CompilationResult:
@@ -100,36 +94,12 @@ class MibCompiler:
             cmf_gen = CmfGenerator(oid_entries)
             cmf_content = cmf_gen.generate()
 
-            # Step 6: Parse soap metadata (if available) — needed by both VAR and modeling generators
-            soap_tables = []
-            modeling_gen = None
-            if self.soap_metadata_path:
-                logger.info("Parsing soap metadata...")
-                soap_tables = parse_soap_metadata(self.soap_metadata_path)
-                modeling_gen = ModelingGenerator(oid_entries, soap_tables)
-
-            # Step 7: Generate VAR content
-            # Pass mirror pairs from modeling generator so Current tables get %drow blocks
-            mirror_current_entries = []
-            if modeling_gen:
-                mirror_current_entries = [
-                    current_name for _, current_name, _ in modeling_gen.mirror_pairs
-                ]
+            # Step 6: Generate VAR content
             logger.info("Generating VAR file...")
-            var_gen = VarGenerator(
-                oid_entries, dynamic_rows, version, self.device_driver,
-                mirror_current_entries=mirror_current_entries,
-            )
+            var_gen = VarGenerator(oid_entries, dynamic_rows, version, self.device_driver)
             var_content = var_gen.generate()
 
-            # Step 8: Generate modeling file content
-            modeling_remote_path = None
-            modeling_content = None
-            if modeling_gen:
-                logger.info("Generating modeling file...")
-                modeling_content = modeling_gen.generate()
-
-            # Step 8: Write files to SAPRO via SSH
+            # Step 7: Write files to SAPRO via SSH
             cmf_remote_path = f"{self.output_dir}/{self.output_name}.cmf"
             var_remote_path = f"{self.var_output_dir}/{self.output_name}.var"
 
@@ -137,12 +107,7 @@ class MibCompiler:
             self._write_remote_file(cmf_remote_path, cmf_content, work_dir)
             self._write_remote_file(var_remote_path, var_content, work_dir)
 
-            if modeling_content:
-                modeling_remote_path = f"{self.modeling_output_dir}/{self.output_name}.tcl"
-                logger.info(f"Writing modeling file to SAPRO: {modeling_remote_path}")
-                self._write_remote_file(modeling_remote_path, modeling_content, work_dir)
-
-            # Step 9: Collect stats
+            # Step 8: Collect stats
             stats = {
                 "total_oids": len(oid_entries),
                 "scalar_oids": sum(1 for e in oid_entries if e.index_type == "S" and not e.is_table_entry),
@@ -154,8 +119,6 @@ class MibCompiler:
                 "rmonstatus_tables": sum(1 for d in dynamic_rows if d.row_type.value == "rmonstatus"),
                 "newinstance_tables": sum(1 for d in dynamic_rows if d.row_type.value == "newinstance"),
                 "commented_out_tables": sum(1 for d in dynamic_rows if not d.is_fully_detected),
-                "modeling_tables_total": len(soap_tables) if self.soap_metadata_path else 0,
-                "modeling_tables_with_hidden": sum(1 for t in soap_tables if t.hidden_count > 0) if self.soap_metadata_path else 0,
             }
 
             logger.info(f"Compilation complete: {stats}")
@@ -164,7 +127,6 @@ class MibCompiler:
                 success=True,
                 cmf_path=cmf_remote_path,
                 var_path=var_remote_path,
-                modeling_path=modeling_remote_path,
                 version=version,
                 stats=stats,
                 warnings=self.warnings,

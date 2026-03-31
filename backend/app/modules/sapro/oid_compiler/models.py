@@ -105,7 +105,6 @@ class CompilationResult(BaseModel):
     success: bool
     cmf_path: Optional[str] = None
     var_path: Optional[str] = None
-    modeling_path: Optional[str] = None
     version: str = ""
     stats: dict = {}
     warnings: list[str] = []
