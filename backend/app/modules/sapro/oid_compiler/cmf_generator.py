@@ -1,6 +1,6 @@
 import logging
 
-from backend.app.modules.sapro.oid_compiler.constants import SYNTAX_MAP
+from backend.app.modules.sapro.oid_compiler.constants import FIXED_SIZE_TYPES, SYNTAX_MAP
 from backend.app.modules.sapro.oid_compiler.models import AccessLevel, OidEntry
 
 logger = logging.getLogger(__name__)
@@ -45,6 +45,11 @@ class CmfGenerator:
         ei_lines = self._generate_ei_lines(sorted_entries)
         if ei_lines:
             lines.extend(ei_lines)
+
+        # %ed lines — default values for columns with DEFVAL
+        ed_lines = self._generate_ed_lines(sorted_entries)
+        if ed_lines:
+            lines.extend(ed_lines)
 
         # %ev lines — enum value definitions
         ev_lines: list[str] = []
@@ -114,20 +119,29 @@ class CmfGenerator:
             if not table_cols:
                 continue
 
-            # Index columns are those with access=NA in this table
-            index_labels = [
-                col.label for col in table_cols
-                if col.access == AccessLevel.NA
-            ]
+            # Get index columns and implied flags from the entry
+            index_labels = []
+            implied_indexes = set()
+            for col in table_cols:
+                if col.index_columns:
+                    index_labels = list(col.index_columns)
+                    implied_indexes = col.implied_indexes
+                    break
+            # Also check the entry itself
+            if not index_labels:
+                if entry.index_columns:
+                    index_labels = list(entry.index_columns)
+                    implied_indexes = entry.implied_indexes
 
             if not index_labels:
                 continue
 
-            # Format index names with * prefix for string types
+            # Format index names with * prefix ONLY for IMPLIED string indexes.
+            # IMPLIED means the string length is NOT encoded in the OID instance.
+            # Non-IMPLIED string indexes have a length prefix — no * needed.
             formatted_indices = []
             for idx_label in index_labels:
-                idx_entry = label_map.get(idx_label)
-                if idx_entry and idx_entry.syntax in STRING_INDEX_SYNTAXES:
+                if idx_label in implied_indexes:
                     formatted_indices.append(f"*{idx_label}")
                 else:
                     formatted_indices.append(idx_label)
@@ -148,7 +162,19 @@ class CmfGenerator:
             return ""
         if normalized_syntax == "IpAddress":
             return "(4,4)"
+        # Use fixed size from textual convention if the MIB range looks wrong
+        if entry.original_syntax in FIXED_SIZE_TYPES:
+            fixed_min, fixed_max = FIXED_SIZE_TYPES[entry.original_syntax]
+            # Only override if MIB range is suspiciously broad
+            if entry.min_range is not None and entry.max_range is not None:
+                if entry.max_range > fixed_max * 2:
+                    return f"({fixed_min},{fixed_max})"
+            else:
+                return f"({fixed_min},{fixed_max})"
         if entry.min_range is not None and entry.max_range is not None:
+            # Skip meaningless full Integer range
+            if normalized_syntax == "Integer" and entry.min_range == -2147483648 and entry.max_range == 2147483647:
+                return ""
             return f"({entry.min_range},{entry.max_range})"
         return ""
 
@@ -162,6 +188,39 @@ class CmfGenerator:
         if entry.display_hint and "1x:" in str(entry.display_hint):
             return "p"
         return "d"
+
+    def _generate_ed_lines(self, sorted_entries: list[OidEntry]) -> list[str]:
+        """Generate %ed lines for columns with DEFVAL in the MIB.
+
+        Format: %ed                  <column_label> <default_value>
+        For enum columns, the enum name is used (e.g., 'ipMask' not '1').
+        For string defaults, quotes are added.
+        """
+        lines: list[str] = []
+        for entry in sorted_entries:
+            if not entry.default_value or entry.is_table_entry:
+                continue
+            if not entry.is_table_column:
+                continue
+
+            val = entry.default_value
+            # For enum columns, try to resolve numeric default to enum name
+            if entry.has_enum and entry.enum_values:
+                try:
+                    num_val = int(val)
+                    for name, enum_val in entry.enum_values.items():
+                        if enum_val == num_val:
+                            val = name
+                            break
+                except (ValueError, TypeError):
+                    pass
+
+            # Quote string values that contain spaces or look like names
+            if entry.syntax == "OctetString" and not val.startswith("'") and not val.isdigit():
+                val = f'"{val}"'
+
+            lines.append(f"%ed                  {entry.label} {val}")
+        return lines
 
     def _format_enum_lines(self, entry: OidEntry) -> list[str]:
         lines = []

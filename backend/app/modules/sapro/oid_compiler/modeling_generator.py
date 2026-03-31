@@ -147,11 +147,10 @@ class ModelingGenerator:
                 if skeleton:
                     lines.append(skeleton)
 
-        # Generate Modify -> Current table mirroring blocks
-        for modify_name, current_name, rowstatus_oid in self._mirror_pairs:
-            block = self._generate_mirror_block(modify_name, current_name, rowstatus_oid)
-            if block:
-                lines.append(block)
+        # TODO: Modify -> Current table mirroring disabled until we find
+        # a trigger strategy that doesn't conflict with computation blocks.
+        # The entry-level OID prefix match causes both computation and
+        # mirror blocks to fire on the same Set event.
 
         # Summary of tables analyzed
         lines.append(self._generate_summary(tables_with_hidden))
@@ -203,9 +202,9 @@ class ModelingGenerator:
     # ---------------------------------------------------------------
 
     set myIP [SA_getmyip]
-    # Uncomment the lines below to enable TCL debug logging:
-    # SA_settcldebugflag 1
-    # SA_settcldebugfile tcl_${myIP}.dbg
+    SA_settcldebugflag 1
+    SA_settcldebugfile tcl_${myIP}.dbg
+    SA_puts "\\n=== sim_v2.tcl init_action started for $myIP ==="
 
     # -----------------------------------------------------------
     # switch_column_oid: Replace the column OID prefix in a full
@@ -229,7 +228,9 @@ class ModelingGenerator:
     # -----------------------------------------------------------
     proc switch_column_oid {vb_oid source_col_oid target_col_oid} {
         set instance [string range $vb_oid [string length $source_col_oid] end]
-        return "${target_col_oid}${instance}"
+        set new_oid "${target_col_oid}${instance}"
+        SA_puts "\\n  switch_column_oid: $source_col_oid -> $target_col_oid instance=$instance result=$new_oid"
+        return $new_oid
     }
 
     # -----------------------------------------------------------
@@ -245,10 +246,15 @@ class ModelingGenerator:
     #   target_col_oid - Column OID prefix of the target
     # -----------------------------------------------------------
     proc copy_column_value {varbind source_col_oid target_col_oid} {
-        set src_oid [lindex $varbind 0]
-        set src_type [lindex $varbind 1]
-        set src_value [lindex $varbind 2]
+        SA_puts "\\n  copy_column_value: raw varbind=$varbind"
+        set curvb [lindex $varbind 0]
+        SA_puts "\\n  copy_column_value: curvb=$curvb"
+        set src_oid [lindex $curvb 0]
+        set src_type [lindex $curvb 1]
+        set src_value [lindex $curvb 2]
+        SA_puts "\\n  copy_column_value: src_oid=$src_oid src_type=$src_type src_value=$src_value"
         set target_oid [switch_column_oid $src_oid $source_col_oid $target_col_oid]
+        SA_puts "\\n  copy_column_value: SA_setvar target_oid=$target_oid type=$src_type value=$src_value"
         SA_setvar [list [list $target_oid $src_type $src_value]]
     }
 
@@ -266,9 +272,14 @@ class ModelingGenerator:
     # -----------------------------------------------------------
     proc get_column_value {vb_oid source_col_oid target_col_oid} {
         set target_oid [switch_column_oid $vb_oid $source_col_oid $target_col_oid]
+        SA_puts "\\n  get_column_value: SA_getvar target_oid=$target_oid"
         set result [SA_getvar [list $target_oid]]
-        set triplet [lindex $result 0]
-        return [lindex $triplet 2]
+        SA_puts "\\n  get_column_value: raw result=$result"
+        set curvb [lindex $result 0]
+        SA_puts "\\n  get_column_value: curvb=$curvb"
+        set val [lindex $curvb 2]
+        SA_puts "\\n  get_column_value: returning value=$val"
+        return $val
     }
 
     # -----------------------------------------------------------
@@ -284,6 +295,7 @@ class ModelingGenerator:
     # -----------------------------------------------------------
     proc set_column_value {vb_oid source_col_oid target_col_oid type value} {
         set target_oid [switch_column_oid $vb_oid $source_col_oid $target_col_oid]
+        SA_puts "\\n  set_column_value: SA_setvar oid=$target_oid type=$type value=$value"
         SA_setvar [list [list $target_oid $type $value]]
     }
 
@@ -363,6 +375,33 @@ class ModelingGenerator:
     }
 
     # -----------------------------------------------------------
+    # decode_string_instance: Parse a string-indexed table instance
+    # suffix to extract the name string and subindex.
+    #
+    # Instance format: .<length>.<ascii_bytes...>.<subindex>
+    # Example: .5.116.101.115.116.50.0 = "test2", subindex 0
+    #
+    # Arguments:
+    #   instance  - The instance suffix (e.g., ".5.116.101.115.116.50.0")
+    #
+    # Returns: list of {name subindex}
+    # -----------------------------------------------------------
+    proc decode_string_instance {instance} {
+        # Remove leading dot
+        set parts [split [string range $instance 1 end] "."]
+        SA_puts "\\n  decode_string_instance: parts=$parts"
+        set name_len [lindex $parts 0]
+        set name_str ""
+        for {set i 1} {$i <= $name_len} {incr i} {
+            set ascii_val [lindex $parts $i]
+            append name_str [format "%c" $ascii_val]
+        }
+        set subindex [lindex $parts [expr {$name_len + 1}]]
+        SA_puts "\\n  decode_string_instance: name=$name_str subindex=$subindex"
+        return [list $name_str $subindex]
+    }
+
+    # -----------------------------------------------------------
     # mirror_to_current: Copy a Set varbind from a Modify table
     # to its corresponding Current table.
     #
@@ -381,11 +420,14 @@ class ModelingGenerator:
     #   current_entry_oid - Entry OID of the Current table
     # -----------------------------------------------------------
     proc mirror_to_current {varbind modify_entry_oid current_entry_oid} {
-        set vb_oid [lindex $varbind 0]
-        set vb_type [lindex $varbind 1]
-        set vb_value [lindex $varbind 2]
+        SA_puts "\\n  mirror_to_current: raw varbind=$varbind"
+        set curvb [lindex $varbind 0]
+        set vb_oid [lindex $curvb 0]
+        set vb_type [lindex $curvb 1]
+        set vb_value [lindex $curvb 2]
         set suffix [string range $vb_oid [string length $modify_entry_oid] end]
         set target_oid "${current_entry_oid}${suffix}"
+        SA_puts "\\n  mirror_to_current: src=$vb_oid -> target=$target_oid type=$vb_type value=$vb_value"
         SA_setvar [list [list $target_oid $vb_type $vb_value]]
     }"""
 
@@ -430,19 +472,30 @@ class ModelingGenerator:
         to_ip_label = self._get_column_label(modify_entry, 6)
         mode_label = self._get_column_label(modify_entry, 7)
 
-        # Generate mirror lines for computed values (only if Current table exists)
+        # Build mirror lines for ALL columns to Current table
         mirror_lines = ""
         if current_oid:
+            # Mirror each column: read from Modify, write to Current
+            # For columns CC just set (Address, Mask, Mode), SA_getvar reads them.
+            # For computed columns (FromIP, ToIP), we already have the values.
             mirror_lines = f"""
-    # Mirror computed values to Current table
-    set from_ip_vb [SA_getvar [list [switch_column_oid $vb_oid "{address_oid}" "{from_ip_oid}"]]]
-    mirror_to_current [lindex $from_ip_vb 0] "{entry_oid}" "{current_oid}"
-    if {{$to_ip_hex ne ""}} {{
-        set to_ip_vb [list [switch_column_oid $vb_oid "{address_oid}" "{to_ip_oid}"] "OctetString" $to_ip_hex]
-        mirror_to_current $to_ip_vb "{entry_oid}" "{current_oid}"
-    }}
-    set mode_vb [list [switch_column_oid $vb_oid "{address_oid}" "{mode_oid}"] "Integer" 1]
-    mirror_to_current $mode_vb "{entry_oid}" "{current_oid}" """
+    # Mirror data columns (C3-C7) to Current table ({current_entry})
+    # Skip index columns C1 (Name) and C2 (SubIndex) — SAPRO handles
+    # those from the OID instance when the row is created.
+    set instance [string range $vb_oid [string length "{address_oid}"] end]
+    SA_puts "\\n  mirror instance suffix: $instance"
+    foreach col_suffix {{.3 .4 .5 .6 .7}} {{
+        set full_modify_oid "{entry_oid}${{col_suffix}}${{instance}}"
+        SA_puts "\\n  mirror: reading $full_modify_oid"
+        set getresult [SA_getvar [list $full_modify_oid]]
+        SA_puts "\\n  mirror: SA_getvar raw result=$getresult"
+        set curvb [lindex $getresult 0]
+        set col_type [lindex $curvb 1]
+        set col_value [lindex $curvb 2]
+        set full_current_oid "{current_oid}${{col_suffix}}${{instance}}"
+        SA_puts "\\n  mirror: writing $full_current_oid type=$col_type value=$col_value"
+        SA_setvar [list [list $full_current_oid $col_type $col_value]]
+    }}"""
 
         return f"""\
 
@@ -460,33 +513,54 @@ class ModelingGenerator:
 #   C7: {mode_label}    = 1 (ipMask mode, default for Address+Mask)
 #   C8: Status           = RowStatus (handled by SAPRO %dcol)
 #
-# Computed values are also mirrored to {current_entry}.
+# All columns are also mirrored to {current_entry}.
 # ===================================================================
 %after_set_action {address_oid}
+    SA_puts "\\n=== after_set_action FIRED for {address_oid} ==="
     set varbind [SA_getreqvb]
-    set vb_oid [lindex $varbind 0]
-    set address_hex [lindex $varbind 2]
+    SA_puts "\\n  raw SA_getreqvb result: $varbind"
+    set curvb [lindex $varbind 0]
+    SA_puts "\\n  curvb (lindex 0): $curvb"
+    set vb_oid [lindex $curvb 0]
+    set vb_type [lindex $curvb 1]
+    set address_hex [lindex $curvb 2]
+    SA_puts "\\n  vb_oid=$vb_oid vb_type=$vb_type address_hex=$address_hex"
     set to_ip_hex ""
 
     # C5 (FromIP) = copy of Address
+    SA_puts "\\n--- Step 1: Copy Address to FromIP ---"
     copy_column_value $varbind "{address_oid}" "{from_ip_oid}"
 
     # Read the Mask value from C4 to compute ToIP
+    SA_puts "\\n--- Step 2: Read Mask from C4 ---"
     set mask_hex [get_column_value $vb_oid "{address_oid}" "{mask_oid}"]
+    SA_puts "\\n  mask_hex before trimright: '$mask_hex'"
     set mask_hex [string trimright $mask_hex]
+    SA_puts "\\n  mask_hex after trimright: '$mask_hex'"
 
     # C6 (ToIP) = broadcast(Address, Mask)
-    if {{$mask_hex ne "" && $mask_hex ne "0x00000000000000000000ffff00000000"}} {{
+    SA_puts "\\n--- Step 3: Compute ToIP (broadcast) ---"
+    if {{$mask_hex ne "" && $mask_hex ne "0.0.0.0"}} {{
         set from_ip [hex_to_ipv4 $address_hex]
-        set mask_ip [hex_to_ipv4 $mask_hex]
-        set broadcast [compute_broadcast $from_ip $mask_ip]
+        SA_puts "\\n  from_ip (dotted): $from_ip"
+        SA_puts "\\n  mask (already dotted): $mask_hex"
+        set broadcast [compute_broadcast $from_ip $mask_hex]
+        SA_puts "\\n  broadcast: $broadcast"
         set to_ip_hex [ipv4_to_hex $broadcast]
+        SA_puts "\\n  to_ip_hex: $to_ip_hex"
         set_column_value $vb_oid "{address_oid}" "{to_ip_oid}" "OctetString" $to_ip_hex
+    }} else {{
+        SA_puts "\\n  SKIPPED: mask is empty or 0.0.0.0"
     }}
 
     # C7 (Mode) = 1 (ipMask)
+    SA_puts "\\n--- Step 4: Set Mode to 1 ---"
     set_column_value $vb_oid "{address_oid}" "{mode_oid}" "Integer" 1
-{mirror_lines}"""
+
+    SA_puts "\\n--- Step 5: Mirror to Current table ---"
+{mirror_lines}
+    SA_puts "\\n=== after_set_action COMPLETE ==="
+"""
 
     def _generate_mirror_block(
         self, modify_name: str, current_name: str, rowstatus_oid: str

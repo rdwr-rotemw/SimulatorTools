@@ -199,16 +199,28 @@ class VarGenerator:
             return []
 
         columns.sort(key=lambda c: [int(x) for x in c.oid.split(".")])
-        index_labels = {c.label for c in columns if c.access == AccessLevel.NA}
+        # Get index columns from the column's index_columns list
+        index_labels = []
+        for col in columns:
+            if col.index_columns:
+                index_labels = list(col.index_columns)
+                break
+        # Fallback: if no index_columns, use NA access columns
+        if not index_labels:
+            index_labels = [c.label for c in columns if c.access == AccessLevel.NA]
+        index_positions = {label: pos for pos, label in enumerate(index_labels, 1)}
 
         lines = [f"%drow  {entry_oid}   newinstance"]
         for col in columns:
-            is_index = col.label in index_labels
+            is_index = col.label in index_positions
             if is_index:
                 required, access = "NotReq", "RO"
-                value_info = {"OctetString": "dfixed(abc)", "Integer": "dfixed(1)",
-                              "IpAddress": "dfixed(1.2.3.4)", "ObjectID": "dfixed(1.2.3)"
-                              }.get(col.syntax, "dfixed(0)")
+                idx_pos = index_positions[col.label]
+                if col.syntax == "OctetString":
+                    max_len = col.max_range if col.max_range else 255
+                    value_info = f"dfixed({idx_pos},{max_len})"
+                else:
+                    value_info = "dfixed(1)"
             else:
                 required, access = "NotReq", "RO"
                 value_info = self._get_ro_default(col.syntax, col.label)

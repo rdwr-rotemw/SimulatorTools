@@ -218,32 +218,32 @@ class DynamicRowDetector:
     ) -> list[DynamicColumnConfig]:
         configs: list[DynamicColumnConfig] = []
         index_labels = set(table.index_columns)
+        # Build ordered index position map: label -> 1-based position
+        index_positions: dict[str, int] = {
+            label: pos for pos, label in enumerate(table.index_columns, 1)
+        }
 
         mib_by_label = {c.label: c for c in mib_columns}
         pdf_labels = {c.label for c in table.columns}
 
         # CC columns for this table — used to determine Req vs NotReq.
-        # Columns CC sends during row creation must be Req so SAPRO
-        # expects them in the Set PDU. Columns CC doesn't send must be
-        # NotReq so SAPRO uses the default value.
         cc_cols = self._cc_columns.get(table.table_name, set())
 
         # Add missing index columns from MIB data (not-accessible indices
         # don't appear in the PDF but are required in %drow blocks)
         for mib_col in mib_columns:
             if mib_col.label not in pdf_labels and mib_col.label in index_labels:
+                idx_pos = index_positions.get(mib_col.label, 1)
                 configs.append(DynamicColumnConfig(
                     label=mib_col.label,
                     required="NotReq",
                     syntax=mib_col.syntax,
                     access="RO",
-                    value_info=self._get_index_value_info(mib_col.syntax),
+                    value_info=self._get_index_dfixed(mib_col.syntax, idx_pos, mib_col),
                 ))
 
         # Also check for index columns that are in MIB but not in PDF or index_labels
-        # (the index resolution from PDF may have missed them)
         if not index_labels and mib_columns:
-            # Try to find index from MIB entry object
             for mib_col in mib_columns:
                 if mib_col.index_columns:
                     for idx_label in mib_col.index_columns:
@@ -255,7 +255,7 @@ class DynamicRowDetector:
                                     required="NotReq",
                                     syntax=idx_mib.syntax,
                                     access="RO",
-                                    value_info=self._get_index_value_info(idx_mib.syntax),
+                                    value_info=self._get_index_dfixed(idx_mib.syntax, 1, idx_mib),
                                 ))
                     break
 
@@ -280,7 +280,8 @@ class DynamicRowDetector:
             if is_index:
                 required = "NotReq"
                 dcol_access = "RO"
-                value_info = self._get_index_value_info(syntax)
+                idx_pos = index_positions.get(label, 1)
+                value_info = self._get_index_dfixed(syntax, idx_pos, mib_col)
             elif is_rowstatus:
                 required = "Req"
                 syntax = "Integer"
@@ -310,17 +311,22 @@ class DynamicRowDetector:
 
         return configs
 
-    def _get_index_value_info(self, syntax: str) -> str:
-        defaults = {
-            "IpAddress": "dfixed(1.2.3.4)",
-            "OctetString": "dfixed(abc)",
-            "ObjectID": "dfixed(1.2.3)",
-            "Integer": "dfixed(1)",
-            "Gauge": "dfixed(0)",
-            "Counter": "dfixed(0)",
-            "TimeTicks": "dfixed(0)",
-        }
-        return defaults.get(syntax, "dfixed(0)")
+    def _get_index_dfixed(self, syntax: str, position: int, mib_col: Optional[OidEntry]) -> str:
+        """Generate dfixed value info for index columns.
+
+        For string indexes (OctetString): dfixed(<position>, <max_length>)
+            SAPRO extracts the string from the OID instance at the given
+            position, with max_length bytes.
+        For integer indexes: dfixed(<position>)
+            SAPRO extracts the integer sub-identifier at the given position.
+        For IpAddress indexes: dfixed(<position>)
+        """
+        if syntax == "OctetString":
+            max_len = mib_col.max_range if mib_col and mib_col.max_range else 255
+            return f"dfixed({position},{max_len})"
+        # For non-string indexes, dfixed takes a default value (not position).
+        # SAPRO extracts the actual value from the instance OID automatically.
+        return "dfixed(1)"
 
     def _get_rw_value_info(self, syntax: str, mib_col: Optional[OidEntry]) -> str:
         """Generate value info for RW/RC columns in %dcol blocks.

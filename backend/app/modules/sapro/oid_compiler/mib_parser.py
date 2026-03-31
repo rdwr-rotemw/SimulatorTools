@@ -300,6 +300,7 @@ class MibParser:
                 max_range = max(enum_vals)
             default_value = self._get_default_value(node_obj)
             index_columns = self._get_index_columns(node_obj)
+            implied_indexes = self._get_implied_indexes(node_obj)
             description = self._get_description(node_obj)
             display_hint = self._get_display_hint(node_obj)
 
@@ -312,9 +313,11 @@ class MibParser:
                 oid=oid_str,
                 label=label,
                 syntax=normalized_syntax,
+                original_syntax=syntax,
                 access=access,
                 is_table_entry=is_table_entry,
                 index_columns=index_columns,
+                implied_indexes=implied_indexes,
                 min_range=min_range,
                 max_range=max_range,
                 has_enum=bool(enum_values),
@@ -432,14 +435,47 @@ class MibParser:
         return None
 
     def _get_index_columns(self, node_obj) -> list[str]:
+        """Extract index column names from a MIB table entry node.
+
+        pysnmp's getIndexNames() returns tuples of (impliedFlag, modName, symName).
+        We extract symName (the column label).
+        """
         try:
             if hasattr(node_obj, "getIndexNames"):
                 index_names = node_obj.getIndexNames()
                 if index_names:
-                    return [str(idx[0]) if isinstance(idx, tuple) else str(idx) for idx in index_names]
+                    result = []
+                    for idx in index_names:
+                        if isinstance(idx, tuple) and len(idx) >= 3:
+                            result.append(str(idx[2]))  # symName
+                        elif isinstance(idx, tuple):
+                            result.append(str(idx[-1]))  # last element as fallback
+                        else:
+                            result.append(str(idx))
+                    return result
         except Exception:
             pass
         return []
+
+    def _get_implied_indexes(self, node_obj) -> set[str]:
+        """Extract the set of index column names that have the IMPLIED flag.
+
+        In SNMP, IMPLIED means the string index length is not encoded in the
+        OID instance — the index runs to the end of the OID. Non-IMPLIED string
+        indexes have a length prefix in the OID.
+        """
+        implied = set()
+        try:
+            if hasattr(node_obj, "getIndexNames"):
+                index_names = node_obj.getIndexNames()
+                if index_names:
+                    for idx in index_names:
+                        if isinstance(idx, tuple) and len(idx) >= 3:
+                            if idx[0]:  # impliedFlag is truthy
+                                implied.add(str(idx[2]))
+        except Exception:
+            pass
+        return implied
 
     def _get_description(self, node_obj) -> str:
         try:
@@ -502,10 +538,6 @@ class MibParser:
 
             for idx, col in enumerate(columns, 1):
                 col.index_type = f"C{idx}"
-                # Index columns should be NA (not-accessible).
-                # pysnmp often returns 'readonly' for not-accessible index columns.
-                if idx <= num_index_cols:
-                    col.access = AccessLevel.NA
 
         return entries
 

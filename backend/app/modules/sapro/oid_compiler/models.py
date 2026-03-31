@@ -23,12 +23,14 @@ class OidEntry(BaseModel):
     oid: str
     label: str
     syntax: str
+    original_syntax: str = ""
     access: AccessLevel
     is_table_entry: bool = False
     is_table_column: bool = False
     table_name: Optional[str] = None
     entry_name: Optional[str] = None
     index_columns: list[str] = []
+    implied_indexes: set[str] = set()
     min_range: Optional[int] = None
     max_range: Optional[int] = None
     has_enum: bool = False

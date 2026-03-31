@@ -63,6 +63,20 @@ SYNTAX_MAP = {
     "SourceType": "Integer",
 }
 
+# Fixed-size textual conventions — these have inherent byte sizes
+# that pysnmp may not resolve correctly from the MIB.
+# Maps original (pre-normalization) syntax name -> (min_size, max_size)
+FIXED_SIZE_TYPES = {
+    "Ipv6Address": (16, 16),
+    "Ipv6AddressPrefix": (0, 20),
+    "MacAddress": (6, 6),
+    "BridgeId": (8, 8),
+    "DateAndTime": (8, 11),
+    "SnmpEngineID": (5, 32),
+    "TAddress": (1, 255),
+    "KeyChange": (0, 256),
+}
+
 # Default ranges when MIB doesn't specify one
 DEFAULT_RANGES = {
     "Integer": (-2147483648, 2147483647),
