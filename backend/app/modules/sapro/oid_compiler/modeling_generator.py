@@ -246,9 +246,10 @@ class ModelingGenerator:
     # -----------------------------------------------------------
     proc copy_column_value {varbind source_col_oid target_col_oid} {
         set src_oid [lindex $varbind 0]
-        set instance [string range $src_oid [string length $source_col_oid] end]
-        set target_oid "${target_col_oid}${instance}"
-        SA_setvar [list $target_oid]
+        set src_type [lindex $varbind 1]
+        set src_value [lindex $varbind 2]
+        set target_oid [switch_column_oid $src_oid $source_col_oid $target_col_oid]
+        SA_setvar [list [list $target_oid $src_type $src_value]]
     }
 
     # -----------------------------------------------------------
@@ -265,8 +266,9 @@ class ModelingGenerator:
     # -----------------------------------------------------------
     proc get_column_value {vb_oid source_col_oid target_col_oid} {
         set target_oid [switch_column_oid $vb_oid $source_col_oid $target_col_oid]
-        set result [split [SA_getvar [list $target_oid]] " "]
-        return [lindex $result 2]
+        set result [SA_getvar [list $target_oid]]
+        set triplet [lindex $result 0]
+        return [lindex $triplet 2]
     }
 
     # -----------------------------------------------------------
@@ -380,9 +382,11 @@ class ModelingGenerator:
     # -----------------------------------------------------------
     proc mirror_to_current {varbind modify_entry_oid current_entry_oid} {
         set vb_oid [lindex $varbind 0]
+        set vb_type [lindex $varbind 1]
+        set vb_value [lindex $varbind 2]
         set suffix [string range $vb_oid [string length $modify_entry_oid] end]
         set target_oid "${current_entry_oid}${suffix}"
-        SA_setvar [list $target_oid]
+        SA_setvar [list [list $target_oid $vb_type $vb_value]]
     }"""
 
     def _generate_bwm_network(self, table: SoapTableInfo) -> str:
