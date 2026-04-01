@@ -1,5 +1,7 @@
+import json
 import logging
 from datetime import datetime
+from pathlib import Path
 
 from backend.app.modules.sapro.oid_compiler.constants import SYNTAX_MAP
 from backend.app.modules.sapro.oid_compiler.models import (
@@ -10,6 +12,38 @@ from backend.app.modules.sapro.oid_compiler.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULTS_DIR = Path(__file__).parent / "defaults"
+
+
+def _load_defaults(filename: str) -> dict:
+    with open(DEFAULTS_DIR / filename) as f:
+        return json.load(f)
+
+
+# Load all default JSON files
+_configuration = _load_defaults("configuration.json")
+_licenses = _load_defaults("licenses.json")
+_version_templates = _load_defaults("version_templates.json")
+_geo_feed = _load_defaults("geo_feed_countries.json")
+
+# Entry OIDs for tables populated via TCL init_action (not SNMP).
+# These tables use lastset() instead of fixed() in %dcol so SA_setvar
+# can write values at startup.
+INIT_POPULATED_ENTRY_OIDS: set[str] = {_geo_feed["table_entry_oid"]}
+
+# Merge scalar overrides from configuration + licenses into one dict
+SYSTEM_SCALAR_OVERRIDES: dict[str, str] = {
+    **_configuration["scalar_overrides"],
+    **_licenses["scalar_overrides"],
+}
+
+# Sets for special IP/MAC label handling
+MYIP_LABELS: set[str] = set(_configuration["myip_labels"])
+MAC_LABELS: set[str] = set(_configuration["mac_labels"])
+
+# Version-dependent scalar templates (contain {version} / {version_short} placeholders)
+VERSION_SCALAR_OVERRIDES: dict[str, str] = _version_templates["scalar_overrides"]
 
 # File header matching the real SAPRO teaching agent output format
 VAR_HEADER = """####################################################
@@ -33,54 +67,6 @@ VAR_HEADER = """####################################################
 #     fastclock(starting_value, multiplier)
 #     valueintlist(a, b, c, d, e, ...)
 ####################################################"""
-
-# Hardcoded defaults for well-known system MIB scalars.
-# Uses $$MYIPADDRESS$$ SAPRO token so each simulated device gets its own IP in sysName.
-SYSTEM_SCALAR_OVERRIDES = {
-    "sysDescr": "fixed(DefensePro)",
-    "sysObjectID": "fixed(1.3.6.1.4.1.89.1.1.62.16)",
-    "sysUpTime": "clock(377152854)",
-    "sysContact": "r_lastset(0, 255,)",
-    "sysName": "r_lastset(0, 255,DefensePro_$$MYIPADDRESS$$)",
-    "sysLocation": "r_lastset(0, 255,)",
-    "sysServices": "fixed(3)",
-    # CC polls these during "Update Policies" — must indicate idle state
-    "rdwrUpdatePoliciesRequired": "fixed(0)",
-    "rsUpdatePoliciesInProgress": "fixed(0)",
-    # License scalars — CC checks these to determine device capabilities.
-    # Without valid-looking licenses, CC hides license-gated features.
-    "rsWSDLicenseID": "fixed(0cb-2b3-841)",
-    "rsWSDLicense": "fixed(DefensePro-AppProtection-23dec2024-23jan2030-I4Bc3ETU)",
-    "rsWSDThroughputLicenseID": "fixed(0cb-2b3-841)",
-    "rsWSDThroughputLicense": "fixed(DefensePro-XVA-20G-6tmTrXLx)",
-    "rsWSDVcpuLicenseID": "fixed(0cb-2b3-841)",
-    "rsWSDVcpuLicense": "fixed(5vCPU-h2FTkjk7)",
-    "rsWSDVcpuLicenseMethod": "fixed(MAC)",
-    "rsWSDVcpuLicenseIP": "fixed(None)",
-    # ASN feed status — 0 (inactive) means idle/ready; 1 (active) means busy
-    "rsAsnFeedOperStatus": "fixed(0)",
-}
-
-# OID labels where IpAddress values should use $$MYIPADDRESS$$ token
-MYIP_LABELS = {"ipAdEntAddr", "rsIpAdEntAddr"}
-
-# OID labels where MAC address values should use $$MYMAINMACADDR$$ token
-MAC_LABELS = {
-    "ifPhysAddress", "dot1dBaseBridgeAddress", "dot3adAggMACAddress",
-    "dot3adAggActorSystemID", "dot3adAggPartnerSystemID",
-    "dot3adAggPortActorSystemID", "dot3adAggPortPartnerAdminSystemID",
-    "dot3adAggPortPartnerOperSystemID", "ipNetToMediaPhysAddress",
-    "ip6NetToMediaPhysAddress",
-}
-
-# Version-dependent scalar overrides — populated at runtime with detected version
-# These use {version} placeholder replaced in __init__
-VERSION_SCALAR_OVERRIDES = {
-    "rndBrgVersion": "r_lastset(0, 255,{version})",
-    "rndApsoluteOSVersion": "fixed(01.00-00.00:{version})",
-    "rsWSDUserVersion": "r_lastset(1, 6,{version_short})",
-    "rsIDSVersion": "fixed({version})",
-}
 
 
 class VarGenerator:
@@ -272,10 +258,17 @@ class VarGenerator:
                 filtered.append(c)
         sorted_columns = sorted(filtered, key=lambda c: col_order[c.label])
 
+        # For tables populated via TCL init_action, fixed() must become
+        # lastset() so SA_setvar can write values at startup.
+        is_init_populated = entry_oid in INIT_POPULATED_ENTRY_OIDS
+
         for dcol in sorted_columns:
+            value_info = dcol.value_info
+            if is_init_populated and value_info.startswith("fixed("):
+                value_info = "lastset(" + value_info[6:]
             label_padded = dcol.label + " " * max(1, 40 - len(dcol.label))
             lines.append(
-                f"{prefix}%dcol  {label_padded}{dcol.required:<7} {dcol.syntax:<12} {dcol.access} {dcol.value_info}"
+                f"{prefix}%dcol  {label_padded}{dcol.required:<7} {dcol.syntax:<12} {dcol.access} {value_info}"
             )
 
         if config.row_type == DynamicRowType.NEWINSTANCE:

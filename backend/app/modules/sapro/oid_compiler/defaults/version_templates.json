@@ -1,0 +1,8 @@
+{
+    "scalar_overrides": {
+        "rndBrgVersion": "r_lastset(0, 255,{version})",
+        "rndApsoluteOSVersion": "fixed(01.00-00.00:{version})",
+        "rsWSDUserVersion": "r_lastset(1, 6,{version_short})",
+        "rsIDSVersion": "fixed({version})"
+    }
+}

@@ -429,7 +429,71 @@ class ModelingGenerator:
         set target_oid "${current_entry_oid}${suffix}"
         SA_puts "\\n  mirror_to_current: src=$vb_oid -> target=$target_oid type=$vb_type value=$vb_value"
         SA_setvar [list [list $target_oid $vb_type $vb_value]]
-    }"""
+    }
+
+    # -----------------------------------------------------------
+    # encode_octetstring_index: Convert a string to SNMP OctetString
+    # index format: length.byte1.byte2...
+    # E.g., "AD" -> "2.65.68"
+    # -----------------------------------------------------------
+    proc encode_octetstring_index {text} {
+        set len [string length $text]
+        set result $len
+        for {set i 0} {$i < $len} {incr i} {
+            scan [string index $text $i] %c ascii
+            append result ".$ascii"
+        }
+        return $result
+    }
+
+    # -----------------------------------------------------------
+    # load_geo_feed_countries: Read geo feed country data from a
+    # JSON file and populate rsGeoFeedCountriesTable via SA_setvar.
+    # On real devices, firmware populates this table. On simulated
+    # devices, this proc does it at startup.
+    #
+    # JSON format: {"countries": [{"id":"XX","name":"YYY","region":"ZZZ"}, ...]}
+    # File path: /opt/sapro/shared/geo_feed_countries.json
+    # -----------------------------------------------------------
+    proc load_geo_feed_countries {} {
+        set json_path "/opt/sapro/shared/geo_feed_countries.json"
+        if {![file exists $json_path]} {
+            SA_puts "\\n  load_geo_feed_countries: $json_path not found, skipping"
+            return
+        }
+
+        SA_puts "\\n  load_geo_feed_countries: loading from $json_path"
+        set fp [open $json_path r]
+        set json_data [read $fp]
+        close $fp
+
+        set base_oid "1.3.6.1.4.1.89.35.1.65.182.3.1"
+        # Column suffixes: .1=CountryId, .2=CountryName, .3=CountryRegion, .4=RowStatus
+
+        # Extract country entries using regex
+        set pattern {"id":\s*"([^"]+)",\s*"name":\s*"([^"]+)",\s*"region":\s*"([^"]+)"}
+        set matches [regexp -all -inline $pattern $json_data]
+
+        set count 0
+        for {set i 0} {$i < [llength $matches]} {incr i 4} {
+            set id [lindex $matches [expr {$i + 1}]]
+            set name [lindex $matches [expr {$i + 2}]]
+            set region [lindex $matches [expr {$i + 3}]]
+            set instance [encode_octetstring_index $id]
+
+            # Create row: set Name, Region, then RowStatus=createAndGo(4)
+            SA_setvar [list \\
+                [list "${base_oid}.2.${instance}" OctetString $name] \\
+                [list "${base_oid}.3.${instance}" OctetString $region] \\
+                [list "${base_oid}.4.${instance}" Integer 4] \\
+            ]
+            incr count
+        }
+        SA_puts "\\n  load_geo_feed_countries: populated $count countries"
+    }
+
+    # Load geo feed countries at startup
+    load_geo_feed_countries"""
 
     def _generate_bwm_network(self, table: SoapTableInfo) -> str:
         """Generate modeling for rsBWMNetworkEntry.
