@@ -9,7 +9,18 @@
         "sysServices": "fixed(3)",
         "rdwrUpdatePoliciesRequired": "fixed(0)",
         "rsUpdatePoliciesInProgress": "fixed(0)",
-        "rsAsnFeedOperStatus": "fixed(0)"
+        "rsAsnFeedOperStatus": "fixed(0)",
+        "rsWSDNTPTimeZone": "r_lastset(1, 6,00:00)",
+        "rsWSDNTPPort": "lastset(123)",
+        "rsWSDNTPInterval": "lastset(86400)",
+        "rsWSDNTPStatus": "r_lastset(1, 2,2)",
+        "rsWSDNTPServerUrl": "r_lastset(0, 64,)",
+        "rsWSDNTPServerTime": "fixed(0x2030)",
+        "rsWSDNTPOffset": "fixed(0x2030)",
+        "rdwrDayLightSavingBegins": "r_lastset(0, 255,01/01:2)",
+        "rdwrDayLightSavingEnds": "r_lastset(0, 255,31/12:2)",
+        "rdwrDayLightSavingTimeDesignations": "fixed(1)",
+        "rdwrDayLightSavingAdminStatus": "r_lastset(1, 2,2)"
     },
     "myip_labels": ["ipAdEntAddr", "rsIpAdEntAddr"],
     "mac_labels": [

@@ -318,8 +318,63 @@
         SA_puts "\n  load_geo_feed_countries: populated $count countries"
     }
 
+    # -----------------------------------------------------------
+    # populate_software_version: Create one row in rsFSapplList
+    # so CC shows the Software Version Management screen.
+    # Reads the version from rndBrgVersion.0 (already in VAR).
+    # Image name format: DefensePro_VA_{version}_b110
+    # -----------------------------------------------------------
+    proc populate_software_version {} {
+        # Read version from existing scalar
+        set result [SA_getvar {rndBrgVersion.0}]
+        set curvb [lindex $result 0]
+        set version [lindex $curvb 2]
+        SA_puts "\n  populate_software_version: version=$version"
+
+        set image_name "DefensePro_VA_${version}_b110"
+
+        # Build OctetString instance: length.ascii_bytes
+        set instance [encode_octetstring_index $image_name]
+        SA_puts "\n  populate_software_version: image=$image_name instance=$instance"
+
+        set base "1.3.6.1.4.1.89.35.1.99.1.1"
+
+        # C1:  rsFSapplName (index, auto from dfixed)
+        # C2:  rsFSapplIndex = 1
+        # C3:  rsFSapplValid = 1 (true)
+        # C4:  rsFSapplActive = 1 (true)
+        # C5:  rsFSapplVersion = version
+        # C6:  rsFSapplStartup = 2 (false)
+        # C7:  rsFSapplStatus = createAndGo (4)
+        # C8:  rsFSapplVersionOS = version
+        # C9:  rsFSapplVersionDP = version
+        # C10: rsFSapplVersionDME = N/A
+        # C11: rsFSapplVersionDD = version
+
+        # Step 1: Create row via RowStatus createAndGo (C2-C7 only, matches %dcol count)
+        SA_setvar [list \
+            [list "${base}.2.${instance}" Integer 1] \
+            [list "${base}.3.${instance}" Integer 1] \
+            [list "${base}.4.${instance}" Integer 1] \
+            [list "${base}.5.${instance}" OctetString $version] \
+            [list "${base}.6.${instance}" Integer 2] \
+            [list "${base}.7.${instance}" Integer 4] \
+        ]
+        # Step 2: Set C8-C11 (now in %dcol) after row exists
+        SA_setvar [list \
+            [list "${base}.8.${instance}" OctetString $version] \
+            [list "${base}.9.${instance}" OctetString $version] \
+            [list "${base}.10.${instance}" OctetString "N/A"] \
+            [list "${base}.11.${instance}" OctetString $version] \
+        ]
+        SA_puts "\n  populate_software_version: created row for $image_name"
+    }
+
     # Load geo feed countries at startup
     load_geo_feed_countries
+
+    # Populate software version table
+    populate_software_version
 
 # ===================================================================
 # rsBWMVLANTagGroupEntry — NO TCL NEEDED
@@ -548,6 +603,21 @@
 # Default-value columns get their initial values from %dcol in the
 # VAR file. CC does not read these hidden columns.
 # ===================================================================
+
+# ===================================================================
+# Dynamic date/time — returns real current date/time on every GET
+# ===================================================================
+%getvalue_action rsWSDSysManagedDate.0
+    SA_setcurvalue [clock format [clock seconds] -format "%d/%m/%Y"]
+
+%getvalue_action rsWSDSysManagedTime.0
+    SA_setcurvalue [clock format [clock seconds] -format "%H:%M:%S"]
+
+%getvalue_action rndManagedDate.0
+    SA_setcurvalue [clock format [clock seconds] -format "%d%m%Y"]
+
+%getvalue_action rndManagedTime.0
+    SA_setcurvalue [clock format [clock seconds] -format "%H%M%S"]
 
 # ===================================================================
 # MODELING FILE SUMMARY

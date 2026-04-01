@@ -6,6 +6,7 @@ from pathlib import Path
 from backend.app.modules.sapro.oid_compiler.constants import SYNTAX_MAP
 from backend.app.modules.sapro.oid_compiler.models import (
     AccessLevel,
+    DynamicColumnConfig,
     DynamicRowConfig,
     DynamicRowType,
     OidEntry,
@@ -27,10 +28,15 @@ _licenses = _load_defaults("licenses.json")
 _version_templates = _load_defaults("version_templates.json")
 _geo_feed = _load_defaults("geo_feed_countries.json")
 
-# Entry OIDs for tables populated via TCL init_action (not SNMP).
+# Entry OIDs and names for tables populated via TCL init_action (not SNMP).
 # These tables use lastset() instead of fixed() in %dcol so SA_setvar
-# can write values at startup.
-INIT_POPULATED_ENTRY_OIDS: set[str] = {_geo_feed["table_entry_oid"]}
+# can write values at startup. Includes both OIDs and entry/table names
+# because some %drow blocks use names instead of OIDs.
+INIT_POPULATED_ENTRIES: set[str] = {
+    _geo_feed["table_entry_oid"],
+    "rsFSapplEntry",
+    "rsFSapplList",
+}
 
 # Merge scalar overrides from configuration + licenses into one dict
 SYSTEM_SCALAR_OVERRIDES: dict[str, str] = {
@@ -260,7 +266,39 @@ class VarGenerator:
 
         # For tables populated via TCL init_action, fixed() must become
         # lastset() so SA_setvar can write values at startup.
-        is_init_populated = entry_oid in INIT_POPULATED_ENTRY_OIDS
+        is_init_populated = entry_oid in INIT_POPULATED_ENTRIES or config.entry_name in INIT_POPULATED_ENTRIES
+
+        # For init-populated tables, add any CMF columns missing from %dcol.
+        # SAPRO only tracks columns listed in %dcol — SA_setvar can't write
+        # to columns not in %dcol even after row creation.
+        if is_init_populated:
+            existing_labels = {c.label.lower() for c in sorted_columns}
+            # Find CMF columns for this table's entry
+            entry_name = config.entry_name
+            # Try to resolve table name variants
+            table_columns = [
+                e for e in self.entries
+                if e.is_table_column
+                and e.label.lower() not in existing_labels
+                and (e.entry_name == entry_name
+                     or e.table_name == entry_name
+                     or e.entry_name == entry_name.replace("List", "Entry")
+                     or e.table_name == entry_name.replace("Entry", "Table"))
+            ]
+            table_columns.sort(key=lambda e: [int(x) for x in e.oid.split(".")])
+            for col in table_columns:
+                value_info = self._get_ro_default(col.syntax, col.label)
+                value_info = "lastset(" + value_info[6:] if value_info.startswith("fixed(") else value_info
+                dcol = DynamicColumnConfig(
+                    label=col.label,
+                    required="NotReq",
+                    syntax=col.syntax,
+                    access="RO" if col.access.value in ("RO", "NA") else "RW",
+                    value_info=value_info,
+                )
+                sorted_columns.append(dcol)
+            # Re-sort to maintain CMF column order
+            sorted_columns = sorted(sorted_columns, key=lambda c: col_order.get(c.label, [999]))
 
         for dcol in sorted_columns:
             value_info = dcol.value_info
