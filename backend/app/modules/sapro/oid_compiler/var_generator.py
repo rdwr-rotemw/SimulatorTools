@@ -47,6 +47,18 @@ SYSTEM_SCALAR_OVERRIDES = {
     # CC polls these during "Update Policies" — must indicate idle state
     "rdwrUpdatePoliciesRequired": "fixed(0)",
     "rsUpdatePoliciesInProgress": "fixed(0)",
+    # License scalars — CC checks these to determine device capabilities.
+    # Without valid-looking licenses, CC hides license-gated features.
+    "rsWSDLicenseID": "fixed(0cb-2b3-841)",
+    "rsWSDLicense": "fixed(DefensePro-AppProtection-23dec2024-23jan2030-I4Bc3ETU)",
+    "rsWSDThroughputLicenseID": "fixed(0cb-2b3-841)",
+    "rsWSDThroughputLicense": "fixed(DefensePro-XVA-20G-6tmTrXLx)",
+    "rsWSDVcpuLicenseID": "fixed(0cb-2b3-841)",
+    "rsWSDVcpuLicense": "fixed(5vCPU-h2FTkjk7)",
+    "rsWSDVcpuLicenseMethod": "fixed(MAC)",
+    "rsWSDVcpuLicenseIP": "fixed(None)",
+    # ASN feed status — 0 (inactive) means idle/ready; 1 (active) means busy
+    "rsAsnFeedOperStatus": "fixed(0)",
 }
 
 # OID labels where IpAddress values should use $$MYIPADDRESS$$ token

@@ -56,6 +56,9 @@ class DynamicRowDetector:
 
         for pdf_table in self.pdf_tables:
             mib_columns = self._mib_by_table.get(pdf_table.table_name, [])
+            # Some MIB entries use table name without "Table" suffix
+            if not mib_columns and pdf_table.table_name.endswith("Table"):
+                mib_columns = self._mib_by_table.get(pdf_table.table_name[:-5], [])
             config = self._detect_table(pdf_table, mib_columns)
             if config:
                 configs.append(config)
@@ -70,7 +73,7 @@ class DynamicRowDetector:
     def _detect_table(
         self, pdf_table: PdfTableInfo, mib_columns: list[OidEntry]
     ) -> Optional[DynamicRowConfig]:
-        row_type = self._detect_table_type(pdf_table, mib_columns)
+        row_type, rowstatus_label = self._detect_table_type(pdf_table, mib_columns)
         if row_type is None:
             return None
 
@@ -78,7 +81,7 @@ class DynamicRowDetector:
             return self._build_newinstance_config(pdf_table, mib_columns)
 
         # rowstatus or rmonstatus
-        dcol_configs = self._build_dcol_configs(pdf_table, mib_columns, row_type)
+        dcol_configs = self._build_dcol_configs(pdf_table, mib_columns, row_type, rowstatus_label)
         return DynamicRowConfig(
             entry_name=pdf_table.entry_name,
             row_type=row_type,
@@ -87,21 +90,22 @@ class DynamicRowDetector:
 
     def _detect_table_type(
         self, table: PdfTableInfo, mib_columns: list[OidEntry]
-    ) -> Optional[DynamicRowType]:
-        # Check PDF columns for RowStatus/EntryStatus syntax
-        # PDF has the original syntax names (not normalized), so it's authoritative
+    ) -> tuple[Optional[DynamicRowType], Optional[str]]:
+        # Check PDF columns for RowStatus/EntryStatus syntax.
+        # Use the first column whose label contains "Status" (not "PacketStatus" etc.)
+        # to avoid false positives from columns that share RowStatus enum range.
         for pdf_col in table.columns:
             if pdf_col.syntax in ROWSTATUS_TCS:
-                return DynamicRowType.ROWSTATUS
+                return DynamicRowType.ROWSTATUS, pdf_col.label
             if pdf_col.syntax in ENTRYSTATUS_TCS:
-                return DynamicRowType.RMONSTATUS
+                return DynamicRowType.RMONSTATUS, pdf_col.label
 
         # No RowStatus/EntryStatus — check if descriptions match newinstance patterns
         # Only flag as newinstance if we find actual evidence of delete-action behavior
         if self._has_newinstance_evidence(table, mib_columns):
-            return DynamicRowType.NEWINSTANCE
+            return DynamicRowType.NEWINSTANCE, None
 
-        return None
+        return None, None
 
     def _has_newinstance_evidence(
         self, table: PdfTableInfo, mib_columns: list[OidEntry]
@@ -127,7 +131,7 @@ class DynamicRowDetector:
         )
 
         dcol_configs = self._build_dcol_configs(
-            pdf_table, mib_columns, DynamicRowType.NEWINSTANCE
+            pdf_table, mib_columns, DynamicRowType.NEWINSTANCE, None
         )
 
         return DynamicRowConfig(
@@ -215,6 +219,7 @@ class DynamicRowDetector:
         table: PdfTableInfo,
         mib_columns: list[OidEntry],
         row_type: DynamicRowType,
+        rowstatus_label: Optional[str] = None,
     ) -> list[DynamicColumnConfig]:
         configs: list[DynamicColumnConfig] = []
         index_labels = set(table.index_columns)
@@ -269,9 +274,11 @@ class DynamicRowDetector:
             if access == "Create":
                 access = "RC"
 
-            # Check if this is the RowStatus/EntryStatus column
-            is_rowstatus = pdf_col.syntax in ROWSTATUS_TCS
-            is_entrystatus = pdf_col.syntax in ENTRYSTATUS_TCS
+            # Check if this is the RowStatus/EntryStatus column.
+            # Only one RowStatus column per table — the one detected by _detect_table_type.
+            # PDF/MIB sometimes misidentify other columns with range (1,6) as RowStatus.
+            is_rowstatus = pdf_col.syntax in ROWSTATUS_TCS and label == rowstatus_label
+            is_entrystatus = pdf_col.syntax in ENTRYSTATUS_TCS and label == rowstatus_label
 
             # Determine Req/NotReq: if CC sends this column, it's Req.
             # If CC doesn't send it (hidden/computed), it's NotReq.

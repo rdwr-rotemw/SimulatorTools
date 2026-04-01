@@ -26,6 +26,8 @@ def parse_cc_columns_from_jar(jar_path: str) -> dict[str, set[str]]:
     # Track which columns have defaultValue or mandatory=true across all screens
     # column_id -> True if any screen has defaultValue or mandatory=true
     always_sent: dict[str, bool] = {}
+    # Track columns with licenseDependency — CC hides them if device lacks license
+    license_gated: set[str] = set()
 
     with zipfile.ZipFile(jar_path, "r") as jar:
         for fname in jar.namelist():
@@ -64,6 +66,12 @@ def parse_cc_columns_from_jar(jar_path: str) -> dict[str, set[str]]:
                         # Track defaultValue and mandatory for Layer 2
                         if "defaultValue" in mp.attrib or mp.get("mandatory") == "true":
                             always_sent[eid] = True
+                    # License-gated columns are hidden when device lacks
+                    # the license — CC won't send them, so they can't be Req
+                    for dep in elem.iter("dependency"):
+                        for _ in dep.iter("licenseDependency"):
+                            license_gated.add(eid)
+                            break
 
                     if not is_local and not is_readonly and eid:
                         cols.add(eid)
@@ -89,8 +97,9 @@ def parse_cc_columns_from_jar(jar_path: str) -> dict[str, set[str]]:
                 edit_cols = edit_screens[0]
 
         # Layer 2: from edit-dialog columns, keep only those CC always sends
-        # (has defaultValue or mandatory=true in any screen)
-        req_cols = {col for col in edit_cols if always_sent.get(col, False)}
+        # (has defaultValue or mandatory=true, and not license-gated)
+        req_cols = {col for col in edit_cols
+                    if always_sent.get(col, False) and col not in license_gated}
         if req_cols:
             cc_columns[table_id] = req_cols
 
