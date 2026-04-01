@@ -6,20 +6,26 @@ logger = logging.getLogger(__name__)
 
 
 def parse_cc_columns_from_jar(jar_path: str) -> dict[str, set[str]]:
-    """Parse a device driver JAR to extract columns CC writes per table.
+    """Parse a device driver JAR to extract columns CC always sends per table.
 
-    Analyzes CC screen XMLs to determine which SNMP columns CC sends
-    during row creation. Uses intersection across all Modify screens
-    for a table — only columns present in every screen are considered
-    writable. This filters out legacy screen columns that are superseded
-    by newer inner-table screens.
+    Two-layer filtering:
+    1. Screen intersection — find columns present in edit-dialog screens
+       (>2 columns), excluding view/Active screens. This filters out
+       computed columns that only appear in display screens.
+    2. Within edit-dialog columns, keep only those with defaultValue
+       or mandatory=true in managmentProperties. CC always sends these.
+       Columns without defaultValue and not mandatory are only sent
+       when the user explicitly fills them — treated as NotReq.
 
     Returns:
-        Dict mapping table name to set of writable column labels.
+        Dict mapping table name to set of always-sent column labels.
     """
-    # Collect per-table, per-screen column sets
+    # Layer 1: collect per-table, per-screen column sets
     # table_id -> list of column sets (one per screen)
     table_screen_cols: dict[str, list[set[str]]] = {}
+    # Track which columns have defaultValue or mandatory=true across all screens
+    # column_id -> True if any screen has defaultValue or mandatory=true
+    always_sent: dict[str, bool] = {}
 
     with zipfile.ZipFile(jar_path, "r") as jar:
         for fname in jar.namelist():
@@ -55,6 +61,9 @@ def parse_cc_columns_from_jar(jar_path: str) -> dict[str, set[str]]:
                             is_local = True
                         if mp.get("readOnly") == "true":
                             is_readonly = True
+                        # Track defaultValue and mandatory for Layer 2
+                        if "defaultValue" in mp.attrib or mp.get("mandatory") == "true":
+                            always_sent[eid] = True
 
                     if not is_local and not is_readonly and eid:
                         cols.add(eid)
@@ -62,27 +71,28 @@ def parse_cc_columns_from_jar(jar_path: str) -> dict[str, set[str]]:
                 if cols:
                     table_screen_cols.setdefault(table_id, []).append(cols)
 
-    # For each table, intersect the edit-dialog screen column sets.
-    # List-view screens (with very few columns) are excluded from
-    # intersection — they only show Name/Index, not edit columns.
-    # The edit dialogs (inner tables) have the actual writable columns.
+    # Layer 1: intersect edit-dialog screen column sets
     cc_columns: dict[str, set[str]] = {}
     for table_id, screen_col_sets in table_screen_cols.items():
         # Filter to edit-dialog screens (more than 2 non-local columns)
         edit_screens = [s for s in screen_col_sets if len(s) > 2]
         if not edit_screens:
-            # All screens are list views — use the largest one
             edit_screens = screen_col_sets
 
         if len(edit_screens) == 1:
-            cc_columns[table_id] = edit_screens[0]
+            edit_cols = edit_screens[0]
         else:
-            # Intersect edit screens — columns in ALL edit dialogs
-            result = edit_screens[0]
+            edit_cols = edit_screens[0]
             for s in edit_screens[1:]:
-                result = result & s
-            if result:
-                cc_columns[table_id] = result
+                edit_cols = edit_cols & s
+            if not edit_cols:
+                edit_cols = edit_screens[0]
+
+        # Layer 2: from edit-dialog columns, keep only those CC always sends
+        # (has defaultValue or mandatory=true in any screen)
+        req_cols = {col for col in edit_cols if always_sent.get(col, False)}
+        if req_cols:
+            cc_columns[table_id] = req_cols
 
     logger.info(f"Parsed {len(cc_columns)} CC table column mappings from JAR")
     return cc_columns

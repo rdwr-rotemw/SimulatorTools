@@ -156,6 +156,12 @@ class MibParser:
         logger.info(f"Extracted {len(self._mib_modules)} MIB modules from archive")
 
         entries = self._parse_all_mibs()
+        # Deduplicate entries by OID (same OID can appear in multiple MIB files)
+        seen_oids: dict[str, OidEntry] = {}
+        for e in entries:
+            if e.oid not in seen_oids:
+                seen_oids[e.oid] = e
+        entries = list(seen_oids.values())
         entries = self._determine_table_relationships(entries)
         entries.sort(key=lambda e: [int(x) for x in e.oid.split(".")])
 
@@ -259,6 +265,28 @@ class MibParser:
             entry = self._build_entry_from_ast(decl)
             if entry:
                 entries.append(entry)
+
+        # Pass 3: build structural OidEntry objects for %en lines
+        # These are non-leaf nodes: objectIdentity, moduleIdentity,
+        # objectIdentifier declarations, and well-known OIDs
+        for decl in all_declarations:
+            entry = self._build_structural_entry(decl)
+            if entry:
+                entries.append(entry)
+
+        # Pass 4: add well-known OID nodes that weren't in any declaration
+        # but are needed as %en lines (org, dod, internet, mgmt, etc.)
+        existing_labels = {e.label for e in entries}
+        for name, oid_str in WELL_KNOWN_OIDS.items():
+            if name not in existing_labels and "." in oid_str:
+                entries.append(OidEntry(
+                    oid=oid_str,
+                    label=name,
+                    syntax="ObjectID",
+                    original_syntax="ObjectID",
+                    access=AccessLevel.NA,
+                    is_structural_node=True,
+                ))
 
         return entries
 
@@ -453,8 +481,14 @@ class MibParser:
         is_table = False
         if isinstance(syntax_raw, tuple):
             if syntax_raw[0] == "conceptualTable":
-                is_table = True
-                return None  # Skip table nodes — we only care about entries and columns
+                return OidEntry(
+                    oid=oid_str,
+                    label=name,
+                    syntax="SEQUENCE",
+                    original_syntax="SEQUENCE",
+                    access=AccessLevel.NA,
+                    is_table_node=True,
+                )
             if syntax_raw[0] == "row" and not is_table_entry:
                 # Row type reference without INDEX — might be AUGMENTS
                 # Check for augmentation
@@ -510,6 +544,50 @@ class MibParser:
             description=description,
             display_hint=display_hint,
             enum_flag=enum_flag,
+        )
+
+    def _build_structural_entry(self, decl: tuple) -> Optional[OidEntry]:
+        """Build an OidEntry for structural (non-leaf) nodes that need %en lines.
+
+        Handles: objectIdentityClause, moduleIdentityClause,
+        objectIdentifierDeclaration, valueDeclaration.
+        """
+        decl_type = decl[0]
+
+        # Skip objectTypeClause — handled by _build_entry_from_ast
+        if decl_type == "objectTypeClause":
+            return None
+
+        structural_types = {
+            "objectIdentityClause",
+            "moduleIdentityClause",
+            "objectIdentifierDeclaration",
+            "valueDeclaration",
+            "notificationTypeClause",
+            "moduleComplianceClause",
+            "objectGroupClause",
+            "notificationGroupClause",
+            "agentCapabilitiesClause",
+        }
+
+        if decl_type not in structural_types:
+            return None
+
+        if len(decl) < 2:
+            return None
+
+        name = decl[1]
+        oid_str = self._oid_map.get(name)
+        if not oid_str or not isinstance(oid_str, str) or "." not in oid_str:
+            return None
+
+        return OidEntry(
+            oid=oid_str,
+            label=name,
+            syntax="ObjectID",
+            original_syntax="ObjectID",
+            access=AccessLevel.NA,
+            is_structural_node=True,
         )
 
     def _parse_syntax(self, syntax_raw, column_name: str):

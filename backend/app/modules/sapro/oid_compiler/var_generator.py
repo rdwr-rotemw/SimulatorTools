@@ -152,7 +152,10 @@ class VarGenerator:
         # populated at runtime via dynamic rows or SNMP sets.
         scalars = [
             e for e in self.entries
-            if e.index_type == "S" and not e.is_table_entry
+            if e.index_type == "S"
+            and not e.is_table_entry
+            and not e.is_table_node
+            and not e.is_structural_node
         ]
         scalars.sort(key=lambda e: [int(x) for x in e.oid.split(".")])
 
@@ -238,7 +241,26 @@ class VarGenerator:
         entry_oid = self._entry_oid_map.get(config.entry_name, config.entry_name)
         lines.append(f"{prefix}%drow  {entry_oid}   {config.row_type.value}")
 
-        for dcol in config.columns:
+        # Sort %dcol entries by CMF column order (OID position).
+        # SAPRO maps %dcol entries to columns by position, not by label.
+        # Also filter out columns not in the CMF — phantom entries break SAPRO.
+        col_order = {e.label: [int(x) for x in e.oid.split(".")] for e in self.entries if e.is_table_column}
+        col_order_lower = {k.lower(): v for k, v in col_order.items()}
+        # Map dcol label -> CMF canonical label (handles case mismatches from PDF)
+        label_canonical = {e.label.lower(): e.label for e in self.entries if e.is_table_column}
+        filtered = []
+        seen_lower = set()
+        for c in config.columns:
+            lower = c.label.lower()
+            if lower in col_order_lower and lower not in seen_lower:
+                seen_lower.add(lower)
+                # Use CMF canonical label to ensure exact match
+                if c.label not in col_order and lower in label_canonical:
+                    c.label = label_canonical[lower]
+                filtered.append(c)
+        sorted_columns = sorted(filtered, key=lambda c: col_order[c.label])
+
+        for dcol in sorted_columns:
             label_padded = dcol.label + " " * max(1, 40 - len(dcol.label))
             lines.append(
                 f"{prefix}%dcol  {label_padded}{dcol.required:<7} {dcol.syntax:<12} {dcol.access} {dcol.value_info}"

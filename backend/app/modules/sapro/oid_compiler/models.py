@@ -26,6 +26,8 @@ class OidEntry(BaseModel):
     original_syntax: str = ""
     access: AccessLevel
     is_table_entry: bool = False
+    is_table_node: bool = False
+    is_structural_node: bool = False
     is_table_column: bool = False
     table_name: Optional[str] = None
     entry_name: Optional[str] = None

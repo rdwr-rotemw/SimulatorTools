@@ -29,7 +29,7 @@ class CmfGenerator:
 
         # Column lines (C1, C2, ... and S for scalars)
         for entry in sorted_entries:
-            if entry.is_table_entry:
+            if entry.is_table_entry or entry.is_table_node or entry.is_structural_node:
                 continue
             line = self._format_entry_line(entry)
             if line:
@@ -81,10 +81,15 @@ class CmfGenerator:
             return f"{oid_label} {syntax:<12} {access:<3} {index_type:<3}"
 
     def _generate_en_lines(self, sorted_entries: list[OidEntry]) -> list[str]:
-        """Generate %en lines for table entries and structural nodes."""
+        """Generate %en lines for table entries, table nodes, and structural nodes."""
+        seen: set[str] = set()
         lines: list[str] = []
         for entry in sorted_entries:
-            if entry.is_table_entry:
+            if entry.is_table_entry or entry.is_table_node or entry.is_structural_node:
+                key = entry.oid
+                if key in seen:
+                    continue
+                seen.add(key)
                 lines.append(f"%en          {entry.oid:<40} {entry.label}")
         return lines
 

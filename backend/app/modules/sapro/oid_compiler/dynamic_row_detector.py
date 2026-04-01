@@ -286,7 +286,7 @@ class DynamicRowDetector:
                 required = "Req"
                 syntax = "Integer"
                 dcol_access = access if access in ("RC", "RW") else "RW"
-                value_info = self._get_rw_value_info(syntax, mib_col)
+                value_info = "rowstatus(1)"
             elif is_entrystatus:
                 required = "Req"
                 syntax = "Integer"
@@ -303,6 +303,39 @@ class DynamicRowDetector:
 
             configs.append(DynamicColumnConfig(
                 label=label,
+                required=required,
+                syntax=syntax,
+                access=dcol_access,
+                value_info=value_info,
+            ))
+
+        # Add MIB-only columns not in the PDF (newer firmware columns).
+        # These need %dcol entries or SAPRO won't create them during row creation.
+        config_labels = {c.label for c in configs}
+        config_labels_lower = {c.label.lower() for c in configs}
+        for mib_col in mib_columns:
+            if mib_col.label in config_labels or mib_col.label in index_labels:
+                continue
+            # Skip case-duplicate labels (e.g., RsIDS... vs rsIDS...)
+            if mib_col.label.lower() in config_labels_lower:
+                continue
+            cc_sends = mib_col.label in cc_cols
+            syntax = mib_col.syntax
+            access = mib_col.access.value
+            if access == "Create":
+                access = "RC"
+
+            if access in ("RW", "RC"):
+                required = "Req" if cc_sends else "NotReq"
+                dcol_access = access
+                value_info = self._get_rw_value_info(syntax, mib_col)
+            else:
+                required = "NotReq"
+                dcol_access = "RO"
+                value_info = self._get_ro_value_info(syntax)
+
+            configs.append(DynamicColumnConfig(
+                label=mib_col.label,
                 required=required,
                 syntax=syntax,
                 access=dcol_access,
