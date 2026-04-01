@@ -222,10 +222,17 @@ class DynamicRowDetector:
         rowstatus_label: Optional[str] = None,
     ) -> list[DynamicColumnConfig]:
         configs: list[DynamicColumnConfig] = []
-        index_labels = set(table.index_columns)
+        # Prefer MIB index columns over PDF (PDF parsing can be malformed)
+        mib_index_columns: list[str] = []
+        for mib_col in mib_columns:
+            if mib_col.index_columns:
+                mib_index_columns = mib_col.index_columns
+                break
+        effective_index_columns = mib_index_columns if mib_index_columns else table.index_columns
+        index_labels = set(effective_index_columns)
         # Build ordered index position map: label -> 1-based position
         index_positions: dict[str, int] = {
-            label: pos for pos, label in enumerate(table.index_columns, 1)
+            label: pos for pos, label in enumerate(effective_index_columns, 1)
         }
 
         mib_by_label = {c.label: c for c in mib_columns}
@@ -251,7 +258,7 @@ class DynamicRowDetector:
         if not index_labels and mib_columns:
             for mib_col in mib_columns:
                 if mib_col.index_columns:
-                    for idx_label in mib_col.index_columns:
+                    for idx_pos, idx_label in enumerate(mib_col.index_columns, 1):
                         if idx_label not in pdf_labels and idx_label not in index_labels:
                             idx_mib = self._mib_by_label.get(idx_label)
                             if idx_mib:
@@ -260,8 +267,13 @@ class DynamicRowDetector:
                                     required="NotReq",
                                     syntax=idx_mib.syntax,
                                     access="RO",
-                                    value_info=self._get_index_dfixed(idx_mib.syntax, 1, idx_mib),
+                                    value_info=self._get_index_dfixed(idx_mib.syntax, idx_pos, idx_mib),
                                 ))
+                    # Also update index_labels and positions for later use
+                    index_labels = set(mib_col.index_columns)
+                    index_positions.update({
+                        label: pos for pos, label in enumerate(mib_col.index_columns, 1)
+                    })
                     break
 
         for pdf_col in table.columns:
