@@ -53,13 +53,25 @@ class DynamicRowDetector:
 
     def detect_all(self) -> list[DynamicRowConfig]:
         configs: list[DynamicRowConfig] = []
+        detected_tables: set[str] = set()
 
+        # Pass 1: PDF-based detection (has Req/NotReq info from CC columns)
         for pdf_table in self.pdf_tables:
             mib_columns = self._mib_by_table.get(pdf_table.table_name, [])
             # Some MIB entries use table name without "Table" suffix
             if not mib_columns and pdf_table.table_name.endswith("Table"):
                 mib_columns = self._mib_by_table.get(pdf_table.table_name[:-5], [])
             config = self._detect_table(pdf_table, mib_columns)
+            if config:
+                configs.append(config)
+                detected_tables.add(pdf_table.table_name)
+
+        # Pass 2: MIB-only detection for tables not in PDF
+        # MIB is the source of truth — detect RowStatus tables from MIB columns alone
+        for table_name, mib_columns in self._mib_by_table.items():
+            if table_name in detected_tables:
+                continue
+            config = self._detect_table_from_mib(table_name, mib_columns)
             if config:
                 configs.append(config)
 
@@ -69,6 +81,109 @@ class DynamicRowDetector:
             f"{sum(1 for c in configs if not c.is_fully_detected)} commented out)"
         )
         return configs
+
+    def _detect_table_from_mib(
+        self, table_name: str, mib_columns: list[OidEntry]
+    ) -> Optional[DynamicRowConfig]:
+        """Detect dynamic row type from MIB data alone (no PDF info)."""
+        rowstatus_label = None
+        row_type = None
+
+        for col in mib_columns:
+            if col.original_syntax in ROWSTATUS_TCS:
+                row_type = DynamicRowType.ROWSTATUS
+                rowstatus_label = col.label
+                break
+            if col.original_syntax in ENTRYSTATUS_TCS:
+                row_type = DynamicRowType.RMONSTATUS
+                rowstatus_label = col.label
+                break
+
+        if row_type is None:
+            return None
+
+        # Find entry name from MIB
+        entry_name = None
+        index_columns: list[str] = []
+        for col in mib_columns:
+            if col.index_columns:
+                index_columns = col.index_columns
+            # Entry name is table_name with "Table" -> "Entry"
+            if not entry_name:
+                if col.table_name == table_name:
+                    # Derive entry name: snmpNotifyTable -> snmpNotifyEntry
+                    entry_name = table_name.replace("Table", "Entry")
+
+        if not entry_name:
+            return None
+
+        # Build %dcol from MIB columns
+        index_labels = set(index_columns)
+        index_positions = {label: pos for pos, label in enumerate(index_columns, 1)}
+        cc_cols = self._cc_columns.get(table_name, set())
+
+        dcol_configs: list[DynamicColumnConfig] = []
+
+        # Add not-accessible index columns
+        for idx_label in index_columns:
+            idx_mib = self._mib_by_label.get(idx_label)
+            if idx_mib and idx_mib.label not in {c.label for c in mib_columns}:
+                idx_pos = index_positions.get(idx_label, 1)
+                dcol_configs.append(DynamicColumnConfig(
+                    label=idx_label,
+                    required="NotReq",
+                    syntax=idx_mib.syntax,
+                    access="RO",
+                    value_info=self._get_index_dfixed(idx_mib.syntax, idx_pos, idx_mib),
+                ))
+
+        for col in mib_columns:
+            is_index = col.label in index_labels
+            access = col.access.value if col.access else "RO"
+            if access == "Create":
+                access = "RC"
+            is_rowstatus = col.original_syntax in ROWSTATUS_TCS and col.label == rowstatus_label
+            cc_sends = col.label in cc_cols
+
+            if is_index:
+                idx_pos = index_positions.get(col.label, 1)
+                dcol_configs.append(DynamicColumnConfig(
+                    label=col.label,
+                    required="NotReq",
+                    syntax=col.syntax,
+                    access="RO",
+                    value_info=self._get_index_dfixed(col.syntax, idx_pos, col),
+                ))
+            elif is_rowstatus:
+                dcol_configs.append(DynamicColumnConfig(
+                    label=col.label,
+                    required="Req",
+                    syntax="Integer",
+                    access=access if access in ("RC", "RW") else "RW",
+                    value_info="rowstatus(1)",
+                ))
+            elif access in ("RW", "RC"):
+                dcol_configs.append(DynamicColumnConfig(
+                    label=col.label,
+                    required="Req" if cc_sends else "NotReq",
+                    syntax=col.syntax,
+                    access=access,
+                    value_info=self._get_rw_value_info(col.syntax, col),
+                ))
+            else:
+                dcol_configs.append(DynamicColumnConfig(
+                    label=col.label,
+                    required="NotReq",
+                    syntax=col.syntax,
+                    access="RO",
+                    value_info=self._get_ro_value_info(col.syntax),
+                ))
+
+        return DynamicRowConfig(
+            entry_name=entry_name,
+            row_type=row_type,
+            columns=dcol_configs,
+        )
 
     def _detect_table(
         self, pdf_table: PdfTableInfo, mib_columns: list[OidEntry]
