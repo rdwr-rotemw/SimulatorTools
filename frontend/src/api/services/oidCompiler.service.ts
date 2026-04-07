@@ -10,12 +10,20 @@ export interface CompilationResult {
   errors: string[];
 }
 
+export interface CustomSettings {
+  deviceName: string;
+  platform: string;
+  dataPorts: number;
+  mgmtPorts: number;
+}
+
 export const compileMibs = async (
   mibZip: File,
   oidsPdf: File,
   outputName?: string,
   deviceDriverName?: string,
   deviceDriverFile?: File,
+  customSettings?: CustomSettings,
 ): Promise<CompilationResult> => {
   const formData = new FormData();
   formData.append('mib_zip', mibZip);
@@ -23,6 +31,12 @@ export const compileMibs = async (
   if (outputName) formData.append('output_name', outputName);
   if (deviceDriverName) formData.append('device_driver_name', deviceDriverName);
   if (deviceDriverFile) formData.append('device_driver_file', deviceDriverFile);
+  if (customSettings) {
+    formData.append('device_name', customSettings.deviceName);
+    formData.append('platform', customSettings.platform);
+    formData.append('data_ports', String(customSettings.dataPorts));
+    formData.append('mgmt_ports', String(customSettings.mgmtPorts));
+  }
 
   const response = await apiClient.post<CompilationResult>(
     '/oid-compiler/compile',
