@@ -55,8 +55,8 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         headers = {key: self.headers[key] for key in self.headers}
 
         logger.debug(
-            ">>> %s %s\n    Headers: %s\n    Body length: %d",
-            method, self.path, dict(headers), len(body),
+            ">>> %s %s\n    Headers: %s\n    Body (%d bytes): %s",
+            method, self.path, dict(headers), len(body), body,
         )
 
         status, response_headers, response_body = self.dispatcher.dispatch(
