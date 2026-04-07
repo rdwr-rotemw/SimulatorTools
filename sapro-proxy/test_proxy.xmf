@@ -1,0 +1,15 @@
+# ===================================================================
+# SAPRO Proxy Test XMF
+# Forwards ALL HTTPS requests to sapro-proxy service on port 8888.
+# SA_xml_request_forwarder is the only binary-safe path in SAPRO.
+#
+# Place in /opt/sapro/xml/ and reference from device map <Soap> section:
+#   SoapModFile = "/opt/sapro/xml/test_proxy.xmf"
+# ===================================================================
+
+%xml_init_action
+    SA_xml_debugflag 1
+    set myIP [SA_getmyip]
+    SA_xml_debugfile "proxy_$myIP.dbg"
+    SA_xml_debugputs "=== Proxy XMF init for $myIP — forwarding to 127.0.0.1:8888 ==="
+    SA_xml_request_forwarder 127.0.0.1 8888 300

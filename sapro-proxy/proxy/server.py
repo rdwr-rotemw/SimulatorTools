@@ -77,7 +77,7 @@ def build_dispatcher(config, driver_dir):
 def parse_args():
     parser = argparse.ArgumentParser(description="SAPRO HTTP Proxy")
     parser.add_argument("--port", type=int, default=8888, help="Port to listen on (default: 8888)")
-    parser.add_argument("--driver-dir", required=True, help="Directory containing JAR files and driver_map.json")
+    parser.add_argument("--driver-dir", required=True, help="Directory containing device driver JAR files")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args()
 
