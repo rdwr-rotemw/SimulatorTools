@@ -650,17 +650,37 @@ class MibParser:
                 if isinstance(part, tuple):
                     if part[0] == "octetStringSubType":
                         # SIZE constraint: [(min, max), ...]
+                        # Multiple ranges possible — take overall min and max
+                        # Single-value tuples like (0,) represent a single allowed size
                         if part[1] and isinstance(part[1], list):
+                            all_mins, all_maxs = [], []
                             for constraint in part[1]:
-                                if isinstance(constraint, tuple) and len(constraint) == 2:
-                                    min_range = int(constraint[0])
-                                    max_range = int(constraint[1])
+                                if isinstance(constraint, tuple):
+                                    if len(constraint) == 2:
+                                        all_mins.append(int(constraint[0]))
+                                        all_maxs.append(int(constraint[1]))
+                                    elif len(constraint) == 1:
+                                        all_mins.append(int(constraint[0]))
+                                        all_maxs.append(int(constraint[0]))
+                            if all_mins:
+                                min_range = min(all_mins)
+                                max_range = max(all_maxs)
                     elif part[0] == "integerSubType":
+                        # Multiple ranges possible (e.g., 0..254 | 256..max) — take overall min and max
+                        # Single-value tuples like (-1,) represent a single allowed value
                         if part[1] and isinstance(part[1], list):
+                            all_mins, all_maxs = [], []
                             for constraint in part[1]:
-                                if isinstance(constraint, tuple) and len(constraint) == 2:
-                                    min_range = int(constraint[0])
-                                    max_range = int(constraint[1])
+                                if isinstance(constraint, tuple):
+                                    if len(constraint) == 2:
+                                        all_mins.append(int(constraint[0]))
+                                        all_maxs.append(int(constraint[1]))
+                                    elif len(constraint) == 1:
+                                        all_mins.append(int(constraint[0]))
+                                        all_maxs.append(int(constraint[0]))
+                            if all_mins:
+                                min_range = min(all_mins)
+                                max_range = max(all_maxs)
                     elif part[0] == "enumSpec":
                         items = part[1] if len(part) > 1 else []
                         if isinstance(items, list):
