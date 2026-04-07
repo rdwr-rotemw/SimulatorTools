@@ -88,7 +88,11 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
 
 class RegisterRequestHandler(BaseHTTPRequestHandler):
-    """Handles device registration on the plain HTTP port."""
+    """Handles device registration on the plain HTTP port.
+
+    The XMF TCL closes the socket immediately after sending (fire-and-forget),
+    so BrokenPipeError on the response write is expected and silenced.
+    """
 
     dispatcher = None
 
@@ -110,14 +114,17 @@ class RegisterRequestHandler(BaseHTTPRequestHandler):
             method, self.path, headers, body
         )
 
-        self.send_response(status)
-        self.send_header("Connection", "close")
-        for key, value in response_headers.items():
-            self.send_header(key, value)
-        self.end_headers()
+        try:
+            self.send_response(status)
+            self.send_header("Connection", "close")
+            for key, value in response_headers.items():
+                self.send_header(key, value)
+            self.end_headers()
 
-        if response_body:
-            self.wfile.write(response_body)
+            if response_body:
+                self.wfile.write(response_body)
+        except BrokenPipeError:
+            pass
 
     def log_message(self, format, *args):
         logger.debug("[register][%s] %s", self.client_address[0], format % args)

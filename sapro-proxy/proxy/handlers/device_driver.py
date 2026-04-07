@@ -13,7 +13,7 @@ SNMP_COMMUNITY = "public"
 SNMP_TIMEOUT_SECONDS = 5
 
 # Valid JAR filename pattern: DeviceType-Version-DD-DDVersion.jar
-JAR_FILENAME_PATTERN = re.compile(r'^[\w\-]+\.jar$')
+JAR_FILENAME_PATTERN = re.compile(r'^[\w\.\-]+\.jar$')
 
 
 def snmpget_driver_filename(device_ip):
