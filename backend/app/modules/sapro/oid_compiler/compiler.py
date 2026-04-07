@@ -161,12 +161,12 @@ class MibCompiler:
             if version_match:
                 return version_match.group(1).replace("_", ".")
 
-        self.warnings.append("Could not auto-detect DefensePro version.")
-        return "unknown"
+        raise RuntimeError(
+            "Could not auto-detect DefensePro version from archive filename. "
+            "Expected format: DefensePro_v10-4-0-0_MIBs.rar"
+        )
 
     def _generate_output_name(self, version: str) -> str:
-        if version == "unknown":
-            return "DP_unknown"
         # "10.12.0.1" -> "DP_10_12_01" (major_minor_patch with leading zero)
         parts = version.split(".")
         if len(parts) >= 4:
