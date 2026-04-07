@@ -151,7 +151,7 @@ class MibCompiler:
 
     def _auto_detect_version(self, mib_parser: MibParser) -> str:
         zip_name = Path(self.mib_zip_path).stem
-        version_match = re.search(r"(\d+[._]\d+(?:[._]\d+)*)", zip_name)
+        version_match = re.search(r"(\d+[._\-]\d+(?:[._\-]\d+)*)", zip_name)
         if version_match:
             return version_match.group(1).replace("_", ".").replace("-", ".")
 
