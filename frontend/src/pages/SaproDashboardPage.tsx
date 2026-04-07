@@ -58,7 +58,7 @@ export const SaproDashboardPage: React.FC = () => {
             <Box sx={cardSx} onClick={() => navigate('/sapro/mib-tools')}>
               <BuildIcon sx={iconSx} />
               <Typography sx={{ fontSize: '20px', fontWeight: 600, marginBottom: '10px' }}>MIB Tools</Typography>
-              <Typography sx={{ fontSize: '14px', color: '#666', textAlign: 'center' }}>Compile Devices MIB files and OIDs PDF into SAPRO-compatible .cmf and .var files</Typography>
+              <Typography sx={{ fontSize: '14px', color: '#666', textAlign: 'center' }}>Compile Devices MIB files into SAPRO-compatible .cmf and .var files</Typography>
             </Box>
           </Box>
         </Paper>
