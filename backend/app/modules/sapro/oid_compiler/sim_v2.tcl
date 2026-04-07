@@ -519,14 +519,15 @@
     # may fail for some scalars.
     set rawmac [SA_getmymac]
     SA_puts "\n  raw MAC from SA_getmymac: $rawmac"
-    if {$rawmac ne "none" && [string length $rawmac] >= 12} {
-        # rawmac is like "005056a51d0c" — format with colons
-        set formatted "[string range $rawmac 0 1]:[string range $rawmac 2 3]:[string range $rawmac 4 5]:[string range $rawmac 6 7]:[string range $rawmac 8 9]:[string range $rawmac 10 11]"
-        SA_setvar [list [list "1.3.6.1.4.1.89.35.1.69.5.0" OctetString $formatted]]
-        SA_puts "\n  Set rsWSDSysBaseMACAddress.0 = $formatted (via OID)"
-    } else {
-        SA_puts "\n  WARNING: SA_getmymac returned '$rawmac' — baseMac NOT set"
+    if {$rawmac eq "none" || [string length $rawmac] < 12} {
+        # No MAC assigned — use SAPRO's default (same as $$MYMAINMACADDR$$ substitution)
+        set rawmac "010203040506"
+        SA_puts "\n  Using default MAC: $rawmac"
     }
+    # rawmac is like "005056a51d0c" — format with colons
+    set formatted "[string range $rawmac 0 1]:[string range $rawmac 2 3]:[string range $rawmac 4 5]:[string range $rawmac 6 7]:[string range $rawmac 8 9]:[string range $rawmac 10 11]"
+    SA_setvar [list [list "1.3.6.1.4.1.89.35.1.69.5.0" OctetString $formatted]]
+    SA_puts "\n  Set rsWSDSysBaseMACAddress.0 = $formatted (via OID)"
 
 # ===================================================================
 # rsBWMVLANTagGroupEntry — NO TCL NEEDED
