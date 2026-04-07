@@ -33,6 +33,7 @@ class OidEntry(BaseModel):
     entry_name: Optional[str] = None
     index_columns: list[str] = []
     implied_indexes: set[str] = set()
+    augments_entry: str = ""
     min_range: Optional[int] = None
     max_range: Optional[int] = None
     has_enum: bool = False

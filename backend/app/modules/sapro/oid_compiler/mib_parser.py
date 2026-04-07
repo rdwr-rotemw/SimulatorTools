@@ -20,6 +20,10 @@ TRAP_DEF_RE = re.compile(r"\w+\s+TRAP-TYPE\s+.*?::=\s*\d+", re.DOTALL)
 # Well-known base OIDs for resolving relative references
 WELL_KNOWN_OIDS = {
     "iso": "1",
+    "member-body": "1.2",
+    "us": "1.2.840",
+    "dot3": "1.2.840.10006",
+    "snmpmibs": "1.2.840.10006.300",
     "org": "1.3",
     "dod": "1.3.6",
     "internet": "1.3.6.1",
@@ -37,6 +41,12 @@ WELL_KNOWN_OIDS = {
     "snmpV2": "1.3.6.1.6",
     "snmpModules": "1.3.6.1.6.3",
     "snmpMIB": "1.3.6.1.6.3.1",
+    "snmpNotificationMIB": "1.3.6.1.6.3.13",
+    "snmpNotifyObjects": "1.3.6.1.6.3.13.1",
+    "snmpNotifyConformance": "1.3.6.1.6.3.13.3",
+    "snmpNotifyCompliances": "1.3.6.1.6.3.13.3.1",
+    "snmpNotifyGroups": "1.3.6.1.6.3.13.3.2",
+    "nullSpecific": "0.0",
     "zeroDotZero": "0.0",
 }
 
@@ -182,9 +192,24 @@ class MibParser:
             members = self._list_rar()
 
         for original_name, content in members:
-            match = MODULE_NAME_RE.search(content)
-            if match:
-                mod_name = match.group(1)
+            # Split files with multiple MODULE DEFINITIONS ::= BEGIN
+            matches = list(MODULE_NAME_RE.finditer(content))
+            if len(matches) > 1:
+                # Multi-module file — split into individual modules
+                for i, match in enumerate(matches):
+                    mod_name = match.group(1)
+                    if mod_name == "RFC-1215":
+                        continue
+                    start = match.start()
+                    end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
+                    mod_content = content[start:end]
+                    mod_content = TRAP_IMPORT_RE.sub("\n", mod_content)
+                    mod_content = TRAP_DEF_RE.sub("", mod_content)
+                    target = self.mib_dir / f"{mod_name}.mib"
+                    target.write_text(mod_content, encoding="utf-8")
+                    self._mib_modules.append((original_name, mod_name))
+            elif matches:
+                mod_name = matches[0].group(1)
                 if mod_name == "RFC-1215":
                     continue
                 content = TRAP_IMPORT_RE.sub("\n", content)
@@ -466,6 +491,7 @@ class MibParser:
         is_table_entry = False
         index_columns: list[str] = []
         implied_indexes: set[str] = set()
+        augments_entry = ""
 
         if index_raw and isinstance(index_raw, tuple) and index_raw[0] == "INDEX":
             is_table_entry = True
@@ -491,10 +517,20 @@ class MibParser:
                 )
             if syntax_raw[0] == "row" and not is_table_entry:
                 # Row type reference without INDEX — might be AUGMENTS
-                # Check for augmentation
+                # Check for augmentation — extract base entry name.
+                # pysmi returns AUGMENTS as a plain string (the entry name),
+                # e.g., decl[8] = "snmpTargetAddrEntry"
                 augments_raw = decl[8]
-                if augments_raw and isinstance(augments_raw, tuple):
+                if augments_raw:
                     is_table_entry = True
+                    if isinstance(augments_raw, str):
+                        augments_entry = augments_raw
+                    elif isinstance(augments_raw, tuple):
+                        if len(augments_raw) >= 2:
+                            aug_target = augments_raw[1]
+                            augments_entry = str(aug_target[0]) if isinstance(aug_target, tuple) else str(aug_target)
+                        else:
+                            augments_entry = str(augments_raw[0])
 
         # Parse DEFVAL
         default_value = None
@@ -536,6 +572,7 @@ class MibParser:
             is_table_entry=is_table_entry,
             index_columns=index_columns,
             implied_indexes=implied_indexes,
+            augments_entry=augments_entry,
             min_range=min_range,
             max_range=max_range,
             has_enum=has_enum,
@@ -604,7 +641,7 @@ class MibParser:
         display_hint = None
 
         # Extract type name and constraints
-        if syntax_raw[0] == "SimpleSyntax":
+        if syntax_raw[0] in ("SimpleSyntax", "ApplicationSyntax"):
             type_name = str(syntax_raw[1]) if len(syntax_raw) >= 2 else "OctetString"
             original_syntax = type_name
 
@@ -672,6 +709,20 @@ class MibParser:
         for e in entries:
             if e.is_table_entry:
                 entry_objects[e.label] = e
+
+        # Inherit index_columns from base entry for AUGMENTS entries.
+        # AUGMENTS entries share the same index as the entry they augment
+        # but have no INDEX clause of their own.
+        for e in entry_objects.values():
+            if e.augments_entry and not e.index_columns:
+                base = entry_objects.get(e.augments_entry)
+                if base:
+                    e.index_columns = list(base.index_columns)
+                    e.implied_indexes = set(base.implied_indexes)
+                    logger.debug(
+                        "AUGMENTS: %s inherits index %s from %s",
+                        e.label, e.index_columns, e.augments_entry,
+                    )
 
         table_entries_by_oid: dict[str, OidEntry] = {}
         for e in entry_objects.values():

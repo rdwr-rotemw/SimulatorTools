@@ -33,6 +33,10 @@ async def compile_mibs(
     output_name: str = Form(None, description="Output filename base (auto-detected if empty)"),
     device_driver_name: str = Form(None, description="Existing device driver filename"),
     device_driver_file: Optional[UploadFile] = File(None, description="New device driver JAR to upload"),
+    device_name: str = Form("DefensePro_$$MYIPADDRESS$$", description="Device name (sysName)"),
+    platform: str = Form("Virtual DefensePro X", description="Device platform type"),
+    data_ports: int = Form(2, description="Number of data/network ports"),
+    mgmt_ports: int = Form(1, description="Number of management ports"),
     current_user: User = Depends(require_sapro_access),
 ):
     """
@@ -72,6 +76,13 @@ async def compile_mibs(
             if not os.path.exists(jar_path):
                 jar_path = None
 
+        custom_settings = {
+            "device_name": device_name,
+            "platform": platform,
+            "data_ports": data_ports,
+            "mgmt_ports": mgmt_ports,
+        }
+
         compiler = MibCompiler(
             mib_zip_path=zip_path,
             oids_pdf_path=pdf_path,
@@ -80,6 +91,7 @@ async def compile_mibs(
             output_name=output_name or None,
             device_driver=driver_filename,
             device_driver_jar_path=jar_path,
+            custom_settings=custom_settings,
         )
         result = compiler.compile()
         return result

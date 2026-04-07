@@ -27,6 +27,8 @@ _configuration = _load_defaults("configuration.json")
 _licenses = _load_defaults("licenses.json")
 _version_templates = _load_defaults("version_templates.json")
 _geo_feed = _load_defaults("geo_feed_countries.json")
+_ports = _load_defaults("ports.json")
+_scalar_diff = _load_defaults("scalar_diff.json")
 
 # Entry OIDs and names for tables populated via TCL init_action (not SNMP).
 # These tables use lastset() instead of fixed() in %dcol so SA_setvar
@@ -36,10 +38,27 @@ INIT_POPULATED_ENTRIES: set[str] = {
     _geo_feed["table_entry_oid"],
     "rsFSapplEntry",
     "rsFSapplList",
+    # SNMP infrastructure tables — pre-populated via TCL init_action
+    "snmpTargetAddrEntry",
+    "snmpTargetAddrExtEntry",
+    "snmpTargetParamsEntry",
+    "snmpNotifyEntry",
+    "snmpNotifyFilterProfileEntry",
+    "snmpNotifyFilterEntry",
+    "snmpCommunityEntry",
 }
 
-# Merge scalar overrides from configuration + licenses into one dict
+# Tables that must be pre-populated as static instances, NOT managed
+# by %drow blocks. These tables are detected as rowstatus by the
+# dynamic row detector, but on real devices they have static rows
+# (port pairs, etc.). Exclude from dynamic row generation.
+STATIC_INSTANCE_TABLES: set[str] = {
+    "rsWSDStaticEntry",
+}
+
+# Merge scalar overrides from configuration + licenses + reference diff into one dict
 SYSTEM_SCALAR_OVERRIDES: dict[str, str] = {
+    **_scalar_diff,
     **_configuration["scalar_overrides"],
     **_licenses["scalar_overrides"],
 }
@@ -84,11 +103,39 @@ class VarGenerator:
         dynamic_rows: list[DynamicRowConfig],
         version: str,
         device_driver: str = None,
+        custom_settings: dict = None,
     ):
         self.entries = oid_entries
         self.dynamic_rows = dynamic_rows
         self.version = version
         self.device_driver = device_driver
+        # Custom settings from UI (device_name, platform, data_ports, mgmt_ports)
+        cs = custom_settings or {}
+        self.device_name = cs.get("device_name", "DefensePro_$$MYIPADDRESS$$")
+        self.platform = cs.get("platform", "Virtual DefensePro X")
+        self.data_ports = cs.get("data_ports", 2)
+        self.mgmt_ports = cs.get("mgmt_ports", 1)
+        self.total_ports = self.data_ports + self.mgmt_ports
+        # Build scalar overrides from custom settings
+        ports_config_str = f"{self.data_ports} GE + {self.mgmt_ports} Management"
+        # Set of all OID labels in the CMF — used to filter port instances
+        self._cmf_labels: set[str] = {e.label for e in oid_entries}
+        self._custom_scalar_overrides: dict[str, str] = {
+            "sysName": f"r_lastset(0, 255,{self.device_name})",
+            "sysDescr": f"fixed({self.platform})",
+            "rdwrDeviceType": f"fixed({self.platform})",
+            "rdwrDevicePortsConfig": f"fixed({ports_config_str})",
+            "rdwrDeviceNumberOfPorts": f"fixed({self._get_device_number_of_ports()})",
+            "rsPlatformIdentifier": f"fixed({self._get_platform_identifier()})",
+            "rsFormFactor": f"fixed({self._get_form_factor()})",
+            "rdwrDPVersion": f"fixed({self._get_full_hardware_type()})",
+            "rsWSDSysBaseMACAddress": "r_lastset(17, 17,01:02:03:04:05:06)",
+            "rdwrDPNetDrvVersion": "fixed(12.68.00)",
+            "rsWSDFlashSize": "fixed(1304489984)",
+            "rsWSDDRAMSize": "fixed(21)",
+            "rdwrDPBuildID": "fixed(110)",
+            "ifNumber": f"fixed({self.total_ports})",
+        }
         # Version variants for scalar overrides
         # version = "10.12.0.1", version_short = "10.12.0"
         parts = version.split(".")
@@ -134,8 +181,10 @@ class VarGenerator:
         # File header
         lines.append(VAR_HEADER.format(date=datetime.now().strftime("%a %b %d %H:%M:%S %Y")))
 
-        # Dynamic row creation blocks
+        # Dynamic row creation blocks (skip tables that need static instances)
         for i, config in enumerate(self.dynamic_rows):
+            if config.entry_name in STATIC_INSTANCE_TABLES:
+                continue
             drow_lines = self._write_dynamic_rows(config)
             lines.extend(drow_lines)
             if i < len(self.dynamic_rows) - 1:
@@ -151,28 +200,70 @@ class VarGenerator:
                     lines.extend(mirror_lines)
                     lines.append("#")
 
-        # Scalar variables only — sorted by OID (lexicographic order)
+        # Scalar variables and static port instances — merged and sorted
+        # by OID (lexicographic order), matching SAPRO's expected format.
         # Table columns are NOT included: tables start empty and get
         # populated at runtime via dynamic rows or SNMP sets.
+        # Labels handled as port instances — exclude from scalar output
+        _port_instance_labels: set[str] = set(_ports.get("ifx_counters", []))
+
         scalars = [
             e for e in self.entries
             if e.index_type == "S"
             and not e.is_table_entry
             and not e.is_table_node
             and not e.is_structural_node
+            and e.label not in _port_instance_labels
         ]
         scalars.sort(key=lambda e: [int(x) for x in e.oid.split(".")])
 
-        for entry in scalars:
-            lines.append(self._write_scalar(entry))
+        scalar_lines = [self._write_scalar(entry) for entry in scalars]
+
+        # Generate port instances and merge with scalars in OID order.
+        # Port instances are keyed by their parent column OID + instance
+        # so they sort correctly between scalars.
+        port_lines = self._write_port_instances()
+        if port_lines:
+            # Build (oid_sort_key, line) tuples for merging
+            all_var_lines: list[tuple[list[int], str]] = []
+
+            # Scalars: label.0 -> use entry OID + [0]
+            for entry, line in zip(scalars, scalar_lines):
+                sort_key = [int(x) for x in entry.oid.split(".")] + [0]
+                all_var_lines.append((sort_key, line))
+
+            # Port instances: label.N -> look up label's OID, append instance
+            label_to_oid: dict[str, str] = {e.label: e.oid for e in self.entries}
+            for line in port_lines:
+                # Parse "label.instance  , ..." to get label and instance
+                label_inst = line.split(",")[0].strip()
+                dot_pos = label_inst.rfind(".")
+                label = label_inst[:dot_pos]
+                instance = label_inst[dot_pos + 1:]
+                oid = label_to_oid.get(label, "")
+                if oid:
+                    sort_key = [int(x) for x in oid.split(".")] + [int(instance)]
+                    all_var_lines.append((sort_key, line))
+                else:
+                    all_var_lines.append(([999999], line))
+
+            all_var_lines.sort(key=lambda x: x[0])
+            for _, line in all_var_lines:
+                lines.append(line)
+        else:
+            for line in scalar_lines:
+                lines.append(line)
 
         content = "\n".join(lines) + "\n"
         logger.info("Generated VAR content")
         return content
 
     def _write_scalar(self, entry: OidEntry) -> str:
+        # Custom settings overrides (from Customize Settings UI)
+        if entry.label in self._custom_scalar_overrides:
+            value_info = self._custom_scalar_overrides[entry.label]
         # Device driver scalar
-        if entry.label == "rndVisionDriverActiveName" and self.device_driver:
+        elif entry.label == "rndVisionDriverActiveName" and self.device_driver:
             value_info = f"fixed({self.device_driver})"
         # Version-dependent scalars
         elif entry.label in self._version_overrides:
@@ -304,6 +395,15 @@ class VarGenerator:
             value_info = dcol.value_info
             if is_init_populated and value_info.startswith("fixed("):
                 value_info = "lastset(" + value_info[6:]
+            elif is_init_populated and value_info.startswith("r_lastset("):
+                # Strip range for init-populated tables — TCL controls values,
+                # MIB ranges may be wrong (e.g., SnmpSecurityModel: 256-max).
+                inner = value_info[10:-1]
+                parts = inner.split(",", 2)
+                if len(parts) >= 3:
+                    value_info = f"lastset({parts[2].strip()})"
+                else:
+                    value_info = "lastset()"
             label_padded = dcol.label + " " * max(1, 40 - len(dcol.label))
             lines.append(
                 f"{prefix}%dcol  {label_padded}{dcol.required:<7} {dcol.syntax:<12} {dcol.access} {value_info}"
@@ -320,6 +420,290 @@ class VarGenerator:
                     f"#%setaction {'<unknown_column>':<25}{'<unknown_type>':<12} <specify value> deleterow()"
                 )
 
+        return lines
+
+    # Known rdwrDeviceNumberOfPorts values from real devices
+    _DEVICE_PORT_VALUES: dict[str, int] = {
+        "Virtual DefensePro X": 171114498,
+        "KVM": 171114498,
+    }
+
+    # rsPlatformIdentifier enum values from device driver JAR
+    _PLATFORM_IDS: dict[str, int] = {
+        "Virtual DefensePro X": 41,  # dp-xva
+        "KVM": 41,                   # dp-xva
+        "DefensePro X800": 34,
+        "DefensePro X400": 33,
+        "DefensePro X380": 45,
+        "DefensePro X220": 44,
+        "DefensePro X200": 40,
+        "DefensePro X110": 43,
+        "DefensePro X100": 39,
+        "DefensePro X90": 50,
+        "DefensePro X90-HP": 51,
+        "DefensePro X80": 38,
+        "DefensePro X50": 48,
+        "DefensePro X50-HP": 49,
+        "DefensePro X40": 37,
+        "DefensePro X20": 36,
+        "DefensePro X10": 35,
+        "DefensePro 400": 26,
+        "DefensePro 220": 31,
+        "DefensePro 200": 25,
+        "DefensePro 110": 30,
+        "DefensePro 60": 28,
+        "DefensePro 20": 27,
+        "DefensePro 6": 29,
+    }
+
+    def _get_device_number_of_ports(self) -> int:
+        """Get rdwrDeviceNumberOfPorts value for the configured platform."""
+        known = self._DEVICE_PORT_VALUES.get(self.platform)
+        if known:
+            return known
+        return self.total_ports
+
+    def _get_platform_identifier(self) -> int:
+        """Get rsPlatformIdentifier enum value for the configured platform."""
+        return self._PLATFORM_IDS.get(self.platform, 41)
+
+    # rsFormFactor enum values: asr9k=1, ssp=2, kvm=3, simulator=4,
+    # p8420=5, hq=6, none=7, vmware=8, aws=9, azure=10
+    _FORM_FACTORS: dict[str, int] = {
+        "Virtual DefensePro X": 8,  # vmware
+        "KVM": 3,                   # kvm
+        "DefensePro X800": 7,       # none (physical)
+        "DefensePro X400": 7,
+        "DefensePro X380": 7,
+        "DefensePro X220": 7,
+        "DefensePro X200": 7,
+        "DefensePro X110": 7,
+        "DefensePro X100": 7,
+        "DefensePro X90": 7,
+        "DefensePro X90-HP": 7,
+        "DefensePro X80": 7,
+        "DefensePro X50": 7,
+        "DefensePro X50-HP": 7,
+        "DefensePro X40": 7,
+        "DefensePro X20": 7,
+        "DefensePro X10": 7,
+        "DefensePro 400": 7,
+        "DefensePro 220": 7,
+        "DefensePro 200": 7,
+        "DefensePro 110": 7,
+        "DefensePro 60": 7,
+        "DefensePro 20": 7,
+        "DefensePro 6": 7,
+    }
+
+    def _get_form_factor(self) -> int:
+        """Get rsFormFactor enum value for the configured platform."""
+        return self._FORM_FACTORS.get(self.platform, 7)
+
+    # rdwrDPVersion values — CC uses this as fullHardwareType
+    _FULL_HARDWARE_TYPES: dict[str, str] = {
+        "Virtual DefensePro X": "DefensePro XVA-",
+        "KVM": "DefensePro XVA-",
+        "DefensePro X800": "DefensePro X800",
+        "DefensePro X400": "DefensePro X400",
+        "DefensePro X380": "DefensePro X380",
+        "DefensePro X220": "DefensePro X220",
+        "DefensePro X200": "DefensePro X200",
+        "DefensePro X110": "DefensePro X110",
+        "DefensePro X100": "DefensePro X100",
+        "DefensePro X90": "DefensePro X90",
+        "DefensePro X90-HP": "DefensePro X90-HP",
+        "DefensePro X80": "DefensePro X80",
+        "DefensePro X50": "DefensePro X50",
+        "DefensePro X50-HP": "DefensePro X50-HP",
+        "DefensePro X40": "DefensePro X40",
+        "DefensePro X20": "DefensePro X20",
+        "DefensePro X10": "DefensePro X10",
+        "DefensePro 400": "DefensePro 400",
+        "DefensePro 220": "DefensePro 220",
+        "DefensePro 200": "DefensePro 200",
+        "DefensePro 110": "DefensePro 110",
+        "DefensePro 60": "DefensePro 60",
+        "DefensePro 20": "DefensePro 20",
+        "DefensePro 6": "DefensePro 6",
+    }
+
+    def _get_full_hardware_type(self) -> str:
+        """Get rdwrDPVersion value (CC uses as fullHardwareType)."""
+        return self._FULL_HARDWARE_TYPES.get(self.platform, self.platform)
+
+    def _write_port_instances(self) -> list[str]:
+        """Generate static port instances for ifTable, port pairs, mgmt, BWM, and stats."""
+        lines: list[str] = []
+        dp = self.data_ports
+        mp = self.mgmt_ports
+        total = self.total_ports
+        if_cfg = _ports["ifTable"]
+        data_cfg = if_cfg["data_port"]
+        mgmt_cfg = if_cfg["mgmt_port"]
+
+        cmf = self._cmf_labels
+        # Tables with %drow blocks — NEVER write static instances for these.
+        # SAPRO manages their rows dynamically; static instances conflict.
+        drow_tables: set[str] = set()
+        for dr in self.dynamic_rows:
+            for col in dr.columns:
+                drow_tables.add(col.label)
+
+        def _line(label: str, instance, syntax: str, access: str, value: str) -> str:
+            key = f"{label}.{instance}"
+            padding = " " * max(1, 30 - len(key))
+            return f"{key}{padding}, {syntax:<12}, {access} , {value}"
+
+        # --- ifTable (only columns that exist in CMF) ---
+        if_columns = [
+            ("ifIndex",       "Integer",     "RO", lambda i: f"fixed({i})", None),
+            ("ifDescr",       "OctetString", "RO", None, "descr"),
+            ("ifType",        "Integer",     "RO", None, "type"),
+            ("ifMtu",         "Integer",     "RO", lambda i: "fixed(1500)", None),
+            ("ifSpeed",       "Gauge",       "RO", None, "speed"),
+            ("ifPhysAddress", "OctetString", "RO", lambda i: "fixed($$MYMAINMACADDR$$)", None),
+            ("ifAdminStatus", "Integer",     "RW", lambda i: "r_lastset(1, 3,1)", None),
+            ("ifOperStatus",  "Integer",     "RO", None, "oper"),
+        ]
+        for col_label, syntax, access, value_fn, special in if_columns:
+            if col_label not in cmf:
+                continue
+            for i in range(1, total + 1):
+                is_mgmt = i > dp
+                if value_fn:
+                    value = value_fn(i)
+                elif special == "descr":
+                    if is_mgmt:
+                        value = f"fixed({mgmt_cfg['ifDescr_prefix']}{i - dp})"
+                    else:
+                        value = f"fixed({data_cfg['ifDescr_prefix']}{i})"
+                elif special == "type":
+                    value = f"fixed({mgmt_cfg['ifType'] if is_mgmt else data_cfg['ifType']})"
+                elif special == "speed":
+                    value = f"fixed({mgmt_cfg['ifSpeed'] if is_mgmt else data_cfg['ifSpeed']})"
+                elif special == "oper":
+                    value = f"fixed({mgmt_cfg['ifOperStatus'] if is_mgmt else data_cfg['ifOperStatus']})"
+                lines.append(_line(col_label, i, syntax, access, value))
+
+        # --- ifCounters (only columns that exist in CMF) ---
+        counter_columns = _ports["if_counters"]
+        for col_name in counter_columns:
+            if col_name not in cmf:
+                continue
+            syntax = "TimeTicks" if col_name == "ifLastChange" else "Counter"
+            value = "clock(0)" if col_name == "ifLastChange" else "randomup(0, 100)"
+            for i in range(1, total + 1):
+                lines.append(_line(col_name, i, syntax, "RO", value))
+
+        # --- ifXTable counters (ifHCInOctets, ifHCOutOctets, ifAlias) ---
+        ifx_columns = _ports.get("ifx_counters", [])
+        for col_name in ifx_columns:
+            if col_name not in cmf:
+                continue
+            if col_name == "ifAlias":
+                syntax, value = "OctetString", "fixed()"
+            else:
+                syntax, value = "Counter", "randomup(0, 100)"
+            for i in range(1, total + 1):
+                lines.append(_line(col_name, i, syntax, "RO", value))
+
+        # --- rsIfTable (CC Port Configuration screen) ---
+        rs_if_cfg = _ports["rs_if_table"]["columns"]
+        for col_name, col_cfg in rs_if_cfg.items():
+            if col_name not in cmf or col_name in drow_tables:
+                continue
+            for i in range(1, total + 1):
+                is_mgmt = i > dp
+                if "value_template" in col_cfg:
+                    value = col_cfg["value_template"].format(port_num=i)
+                elif is_mgmt and "value_mgmt" in col_cfg:
+                    value = col_cfg["value_mgmt"]
+                elif not is_mgmt and "value_data" in col_cfg:
+                    value = col_cfg["value_data"]
+                else:
+                    value = col_cfg["value"]
+                lines.append(_line(col_name, i, col_cfg["syntax"], col_cfg["access"], value))
+
+        # --- Port pairs (data ports paired: 1<->2, 3<->4, etc.) ---
+        # Skip if port pair table has a %drow block (SAPRO manages dynamically)
+        num_pairs = dp // 2
+        if "rsWSDStaticSourcePort" in cmf and "rsWSDStaticSourcePort" not in drow_tables:
+            for i in range(1, dp + 1):
+                lines.append(_line("rsWSDStaticSourcePort", i, "Integer", "RO", f"fixed({i})"))
+        if "rsWSDStaticDestinationPort" in cmf and "rsWSDStaticDestinationPort" not in drow_tables:
+            for i in range(1, dp + 1):
+                paired = (i + 1 if i + 1 <= dp else i) if i % 2 == 1 else i - 1
+                lines.append(_line("rsWSDStaticDestinationPort", i, "Integer", "RW", f"lastset({paired})"))
+        # Per-pair columns
+        pair_columns = [
+            ("rsWSDStaticPortOperation", "r_lastset(1, 3,1)"),
+            ("rsWSDStaticStatus", "rowstatus(1)"),
+            ("rsWSDStaticFailureMode", "r_lastset(1, 2,1)"),
+        ]
+        for col_label, value in pair_columns:
+            if col_label not in cmf or col_label in drow_tables:
+                continue
+            for p in range(1, num_pairs + 1):
+                lines.append(_line(col_label, p, "Integer", "RW", value))
+        if "rsWSDStaticInPort" in cmf and "rsWSDStaticInPort" not in drow_tables:
+            for p in range(1, num_pairs + 1):
+                inbound = (p - 1) * 2 + 1
+                lines.append(_line("rsWSDStaticInPort", p, "Integer", "RW", f"r_lastset(1, 2,{inbound})"))
+
+        # --- Management port config (rsWSDSNMPPhysicalPort) ---
+        # One entry per mgmt port. Instance index = mgmt port's ifTable index.
+        # CC excludes these indices from scope selection.
+        mgmt_snmp = _ports["mgmt_port_snmp"]
+        for m in range(1, mp + 1):
+            mgmt_if_index = dp + m
+            for col_name, col_cfg in mgmt_snmp["columns"].items():
+                if col_name not in cmf or col_name in drow_tables:
+                    continue
+                if "value_template" in col_cfg:
+                    value = col_cfg["value_template"].format(mgmt_if_index=mgmt_if_index)
+                else:
+                    value = col_cfg["value"]
+                lines.append(_line(col_name, mgmt_if_index, col_cfg["syntax"], col_cfg["access"], value))
+
+        # rsWSDPingPhysicalPort — one entry per mgmt port
+        ping_cfg = _ports["ping_port"]
+        for m in range(1, mp + 1):
+            mgmt_if_index = dp + m
+            for col_name, col_cfg in ping_cfg["columns"].items():
+                if col_name not in cmf or col_name in drow_tables:
+                    continue
+                if "value_template" in col_cfg:
+                    value = col_cfg["value_template"].format(mgmt_if_index=mgmt_if_index)
+                else:
+                    value = col_cfg["value"]
+                lines.append(_line(col_name, mgmt_if_index, col_cfg["syntax"], col_cfg["access"], value))
+
+        # --- BWM ports (data ports only) ---
+        bwm_cfg = _ports["bwm_port"]["columns"]
+        for col_name, col_cfg in bwm_cfg.items():
+            if col_name not in cmf or col_name in drow_tables:
+                continue
+            for i in range(1, dp + 1):
+                if "value_template" in col_cfg:
+                    value = col_cfg["value_template"].format(port_num=i)
+                else:
+                    value = col_cfg["value"]
+                lines.append(_line(col_name, i, col_cfg["syntax"], col_cfg["access"], value))
+
+        # --- Port stats (all ports) ---
+        stats_cfg = _ports["port_stats"]["columns"]
+        for col_name, col_cfg in stats_cfg.items():
+            if col_name not in cmf or col_name in drow_tables:
+                continue
+            for i in range(1, total + 1):
+                if "value_template" in col_cfg:
+                    value = col_cfg["value_template"].format(port_num=i)
+                else:
+                    value = col_cfg["value"]
+                lines.append(_line(col_name, i, col_cfg["syntax"], col_cfg["access"], value))
+
+        logger.info(f"Generated {len(lines)} port instance lines ({dp} data + {mp} mgmt ports)")
         return lines
 
     def _get_value_info(self, entry: OidEntry, is_index: bool = False) -> str:
@@ -359,9 +743,7 @@ class VarGenerator:
         if syntax == "IpAddress":
             return "$$MYIPADDRESS$$"
         if syntax == "OctetString":
-            size = entry.max_range if entry.max_range else 255
-            label_trunc = f"My_{entry.label}"[:size] if size > 4 else "abc"
-            return label_trunc
+            return ""
         if syntax == "ObjectID":
             return "1.2.3"
         if entry.min_range is not None and entry.max_range is not None:
@@ -378,7 +760,7 @@ class VarGenerator:
             "Counter": "randomup(0, 100)",
             "Counter64": "randomup(0, 100)",
             "Gauge": "fixed(0)",
-            "OctetString": f"fixed(My_{label})",
+            "OctetString": "fixed()",
             "TimeTicks": "clock(0)",
             "Integer": "fixed(1)",
             "IpAddress": "fixed($$MYIPADDRESS$$)",
@@ -394,7 +776,7 @@ class VarGenerator:
             "Counter": "lastset(0)",
             "Counter64": "lastset(0)",
             "Gauge": "lastset(0)",
-            "OctetString": f"lastset(My_{label})",
+            "OctetString": "lastset()",
             "TimeTicks": "lastset(0)",
             "Integer": "lastset(1)",
             "IpAddress": "lastset($$MYIPADDRESS$$)",

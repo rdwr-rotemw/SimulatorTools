@@ -1,9 +1,12 @@
 import logging
+from pathlib import Path
 
 from backend.app.modules.sapro.oid_compiler.constants import FIXED_SIZE_TYPES, SYNTAX_MAP
 from backend.app.modules.sapro.oid_compiler.models import AccessLevel, OidEntry
 
 logger = logging.getLogger(__name__)
+
+DEFAULTS_DIR = Path(__file__).parent / "defaults"
 
 # RowStatus enum value names — used to detect RowStatus columns
 ROWSTATUS_ENUM_VALUES = {"active", "notInService", "notReady", "createAndGo", "createAndWait", "destroy"}
@@ -59,6 +62,16 @@ class CmfGenerator:
         if ev_lines:
             lines.append("")
             lines.extend(ev_lines)
+
+        # Append static CMF supplement (dot3ad LAG, snmpNotify, etc.)
+        # These MIBs fail to compile but are present on real devices.
+        supplement_path = DEFAULTS_DIR / "cmf_supplement.txt"
+        if supplement_path.exists():
+            supplement = supplement_path.read_text(encoding="utf-8").strip()
+            if supplement:
+                lines.append("")
+                lines.append("# Static CMF supplement (firmware-only MIBs)")
+                lines.append(supplement)
 
         content = "\n".join(lines) + "\n"
         logger.info(f"Generated CMF content ({len(sorted_entries)} entries)")

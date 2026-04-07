@@ -28,6 +28,7 @@
     # ---------------------------------------------------------------
 
     set myIP [SA_getmyip]
+    set ::init_time [clock seconds]
     SA_settcldebugflag 1
     SA_settcldebugfile tcl_${myIP}.dbg
     SA_puts "\n=== sim_v2.tcl init_action started for $myIP ==="
@@ -273,6 +274,25 @@
     }
 
     # -----------------------------------------------------------
+    # encode_implied_index: Convert a string to SNMP IMPLIED index
+    # format: byte1.byte2... (no length prefix).
+    # Used for tables with IMPLIED string indexes like
+    # snmpTargetAddrName, snmpTargetParamsName, snmpNotifyName.
+    # E.g., "public" -> "112.117.98.108.105.99"
+    # -----------------------------------------------------------
+    proc encode_implied_index {text} {
+        set result ""
+        for {set i 0} {$i < [string length $text]} {incr i} {
+            scan [string index $text $i] %c ascii
+            if {$result ne ""} {
+                append result "."
+            }
+            append result $ascii
+        }
+        return $result
+    }
+
+    # -----------------------------------------------------------
     # load_geo_feed_countries: Read geo feed country data from a
     # JSON file and populate rsGeoFeedCountriesTable via SA_setvar.
     # On real devices, firmware populates this table. On simulated
@@ -370,11 +390,143 @@
         SA_puts "\n  populate_software_version: created row for $image_name"
     }
 
+    # -----------------------------------------------------------
+    # populate_snmp_infrastructure: Pre-populate SNMP infrastructure
+    # tables required for CyberController discovery and trap config.
+    #
+    # Creates rows in:
+    #   - snmpTargetAddrTable (trap destinations)
+    #   - snmpTargetParamsTable (trap security params)
+    #   - snmpNotifyTable (notification config)
+    #   - snmpTargetAddrExtTable (extended addr columns)
+    #
+    # All indexes are IMPLIED OctetString — use encode_implied_index.
+    # Row creation via RowStatus createAndGo(4).
+    #
+    # Reference: DPX_10-6.var lines 49957-50139
+    # -----------------------------------------------------------
+    proc populate_snmp_infrastructure {} {
+        # Entry OIDs
+        set addr_base    "1.3.6.1.6.3.12.1.2.1"
+        set params_base  "1.3.6.1.6.3.12.1.3.1"
+        set notify_base  "1.3.6.1.6.3.13.1.1.1"
+        set addr_ext_base "1.3.6.1.6.3.18.1.2.1"
+
+        # --- snmpTargetAddrTable: "v3MngStations" entry ---
+        # RowStatus = active(1). Each SA_setvar wrapped in catch so
+        # one failure doesn't abort the rest of init_action.
+        set inst [encode_implied_index "v3MngStations"]
+        if {[catch {
+            SA_setvar [list \
+                [list "${addr_base}.2.${inst}" ObjectID "1.3.6.1.6.1.1"] \
+                [list "${addr_base}.3.${inst}" OctetString "0x0000000000a2"] \
+                [list "${addr_base}.4.${inst}" Integer 1500] \
+                [list "${addr_base}.5.${inst}" Integer 3] \
+                [list "${addr_base}.6.${inst}" OctetString "v3Traps"] \
+                [list "${addr_base}.7.${inst}" OctetString "radware-authPriv"] \
+                [list "${addr_base}.8.${inst}" Integer 3] \
+                [list "${addr_base}.9.${inst}" Integer 4] \
+                [list "${addr_base}.11.${inst}" Integer 162] \
+                [list "${addr_base}.12.${inst}" Integer 1] \
+            ]
+            SA_puts "\n  snmpTargetAddr: created v3MngStations"
+        } err]} {
+            SA_puts "\n  snmpTargetAddr: FAILED ($err)"
+        }
+
+        # Note: snmpTargetAddrExtEntry (AUGMENTS) columns live under a
+        # separate OID tree with no %drow — SAPRO can't create rows there.
+        # These columns (TMask, MMS, Security, Health, Audit) are not
+        # critical for CC discovery.
+
+        # --- snmpTargetParamsTable: 3 standard entries ---
+        foreach {name mpmodel secmodel secname seclevel} {
+            public-v1       0 1 public  1
+            public-v2       1 2 public  1
+            radware-authPriv 3 3 radware 3
+        } {
+            set inst [encode_implied_index $name]
+            if {[catch {
+                SA_setvar [list \
+                    [list "${params_base}.2.${inst}" Integer $mpmodel] \
+                    [list "${params_base}.3.${inst}" Integer $secmodel] \
+                    [list "${params_base}.4.${inst}" OctetString $secname] \
+                    [list "${params_base}.5.${inst}" Integer $seclevel] \
+                    [list "${params_base}.6.${inst}" Integer 3] \
+                    [list "${params_base}.7.${inst}" Integer 4] \
+                ]
+                SA_puts "\n  snmpTargetParams: created $name"
+            } err]} {
+                SA_puts "\n  snmpTargetParams $name: FAILED ($err)"
+            }
+        }
+
+        # --- snmpNotifyTable: "allTraps" entry ---
+        # Note: snmpNotifyEntry may not be in CMF if SNMP-NOTIFICATION-MIB
+        # was not in the MIB archive. Wrap in catch to not abort init.
+        set inst [encode_implied_index "allTraps"]
+        if {[catch {
+            SA_setvar [list \
+                [list "${notify_base}.2.${inst}" OctetString "v3Traps"] \
+                [list "${notify_base}.3.${inst}" Integer 1] \
+                [list "${notify_base}.4.${inst}" Integer 3] \
+                [list "${notify_base}.5.${inst}" Integer 4] \
+            ]
+            SA_puts "\n  snmpNotify: created allTraps"
+        } err]} {
+            SA_puts "\n  snmpNotify: SKIPPED ($err)"
+        }
+
+        SA_puts "\n  populate_snmp_infrastructure: complete"
+    }
+
     # Load geo feed countries at startup
     load_geo_feed_countries
 
     # Populate software version table
     populate_software_version
+
+    # Populate SNMP infrastructure tables (trap targets, params, notify)
+    populate_snmp_infrastructure
+
+    # Pre-populate snmpCommunityTable with "public" community entry
+    # CC reads this during discovery to map community string to security context.
+    set comm_instance "112.117.98.108.105.99"
+    set comm_base "1.3.6.1.6.3.18.1.1.1"
+    set rawmac_for_engine [SA_getmymac]
+    if {$rawmac_for_engine eq "none"} {
+        set rawmac_for_engine "010203040506"
+    }
+    set engine_id "0x8000005903${rawmac_for_engine}"
+    if {[catch {
+        SA_setvar [list \
+            [list "${comm_base}.2.${comm_instance}" OctetString "public"] \
+            [list "${comm_base}.3.${comm_instance}" OctetString "public"] \
+            [list "${comm_base}.4.${comm_instance}" OctetString $engine_id] \
+            [list "${comm_base}.5.${comm_instance}" OctetString ""] \
+            [list "${comm_base}.6.${comm_instance}" OctetString ""] \
+            [list "${comm_base}.7.${comm_instance}" Integer 3] \
+            [list "${comm_base}.8.${comm_instance}" Integer 4] \
+        ]
+        SA_puts "\n  snmpCommunity: created 'public' with engineID=$engine_id"
+    } err]} {
+        SA_puts "\n  snmpCommunity: FAILED ($err)"
+    }
+
+    # Set rsWSDSysBaseMACAddress as colon-separated string
+    # CC expects format "00:50:56:90:a3:92", not raw bytes
+    # Use full OID (1.3.6.1.4.1.89.35.1.69.5.0) — label-based SA_setvar
+    # may fail for some scalars.
+    set rawmac [SA_getmymac]
+    SA_puts "\n  raw MAC from SA_getmymac: $rawmac"
+    if {$rawmac ne "none" && [string length $rawmac] >= 12} {
+        # rawmac is like "005056a51d0c" — format with colons
+        set formatted "[string range $rawmac 0 1]:[string range $rawmac 2 3]:[string range $rawmac 4 5]:[string range $rawmac 6 7]:[string range $rawmac 8 9]:[string range $rawmac 10 11]"
+        SA_setvar [list [list "1.3.6.1.4.1.89.35.1.69.5.0" OctetString $formatted]]
+        SA_puts "\n  Set rsWSDSysBaseMACAddress.0 = $formatted (via OID)"
+    } else {
+        SA_puts "\n  WARNING: SA_getmymac returned '$rawmac' — baseMac NOT set"
+    }
 
 # ===================================================================
 # rsBWMVLANTagGroupEntry — NO TCL NEEDED
@@ -603,6 +755,18 @@
 # Default-value columns get their initial values from %dcol in the
 # VAR file. CC does not read these hidden columns.
 # ===================================================================
+
+# ===================================================================
+# Dynamic uptime — returns elapsed time since device start on every GET
+# ===================================================================
+%getvalue_action 1.3.6.1.4.1.89.35.1.69.2.0
+    set now [clock seconds]
+    set elapsed [expr {$now - $::init_time}]
+    set days [expr {$elapsed / 86400}]
+    set hours [expr {($elapsed % 86400) / 3600}]
+    set minutes [expr {($elapsed % 3600) / 60}]
+    set secs [expr {$elapsed % 60}]
+    SA_setcurvalue "$days days $hours hours $minutes minutes $secs seconds"
 
 # ===================================================================
 # Dynamic date/time — returns real current date/time on every GET

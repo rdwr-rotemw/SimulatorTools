@@ -32,6 +32,11 @@
         "ifOutDiscards",
         "ifOutErrors"
     ],
+    "ifx_counters": [
+        "ifHCInOctets",
+        "ifHCOutOctets",
+        "ifAlias"
+    ],
     "mgmt_port_snmp": {
         "_comment": "rsWSDSNMPPhysicalPort table — management port access config. Instance index is the management port's SNMP table row number (always 3 in reference).",
         "instance_index": 3,
@@ -73,6 +78,17 @@
             "rsPortStatsOutErrorsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"},
             "rsPortStatsInMbitsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"},
             "rsPortStatsOutMbitsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"}
+        }
+    },
+    "rs_if_table": {
+        "_comment": "rsIfTable — CC Port Configuration screen. One entry per data port + mgmt.",
+        "columns": {
+            "rsIfIndex": {"syntax": "Integer", "access": "RO", "value_template": "fixed({port_num})"},
+            "rsIfSpeed": {"syntax": "Integer", "access": "RW", "value_data": "r_lastset(0, 10,10)", "value_mgmt": "r_lastset(0, 10,10)"},
+            "rsIfDuplex": {"syntax": "Integer", "access": "RW", "value": "r_lastset(1, 2,2)"},
+            "rsIfAutoNegotiate": {"syntax": "Integer", "access": "RO", "value_data": "fixed(2)", "value_mgmt": "fixed(1)"},
+            "rsIfAutoNegotiateCfg": {"syntax": "Integer", "access": "RW", "value": "r_lastset(0, 2,1)"},
+            "rsIfFEC": {"syntax": "Integer", "access": "RW", "value": "r_lastset(0, 5,1)"}
         }
     },
     "port_pair": {

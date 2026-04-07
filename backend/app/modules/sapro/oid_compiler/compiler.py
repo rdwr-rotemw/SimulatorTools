@@ -31,6 +31,7 @@ class MibCompiler:
         output_name: Optional[str] = None,
         device_driver: Optional[str] = None,
         device_driver_jar_path: Optional[str] = None,
+        custom_settings: Optional[dict] = None,
     ):
         self.mib_zip_path = mib_zip_path
         self.oids_pdf_path = oids_pdf_path
@@ -39,6 +40,7 @@ class MibCompiler:
         self.output_name = output_name
         self.device_driver = device_driver
         self.device_driver_jar_path = device_driver_jar_path
+        self.custom_settings = custom_settings
         self.warnings: list[str] = []
 
     def compile(self) -> CompilationResult:
@@ -105,7 +107,10 @@ class MibCompiler:
 
             # Step 6: Generate VAR content
             logger.info("Generating VAR file...")
-            var_gen = VarGenerator(oid_entries, dynamic_rows, version, self.device_driver)
+            var_gen = VarGenerator(
+                oid_entries, dynamic_rows, version, self.device_driver,
+                custom_settings=self.custom_settings,
+            )
             var_content = var_gen.generate()
 
             # Step 7: Write files to SAPRO via SSH
