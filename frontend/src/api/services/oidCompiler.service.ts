@@ -19,7 +19,6 @@ export interface CustomSettings {
 
 export const compileMibs = async (
   mibZip: File,
-  oidsPdf: File,
   outputName?: string,
   deviceDriverName?: string,
   deviceDriverFile?: File,
@@ -27,7 +26,6 @@ export const compileMibs = async (
 ): Promise<CompilationResult> => {
   const formData = new FormData();
   formData.append('mib_zip', mibZip);
-  formData.append('oids_pdf', oidsPdf);
   if (outputName) formData.append('output_name', outputName);
   if (deviceDriverName) formData.append('device_driver_name', deviceDriverName);
   if (deviceDriverFile) formData.append('device_driver_file', deviceDriverFile);

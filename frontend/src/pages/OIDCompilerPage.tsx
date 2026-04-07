@@ -30,7 +30,6 @@ import { compileMibs, listDeviceDrivers, CompilationResult, CustomSettings } fro
 
 const OIDCompilerPage: React.FC = () => {
   const [mibZip, setMibZip] = useState<File | null>(null);
-  const [oidsPdf, setOidsPdf] = useState<File | null>(null);
   const [outputName, setOutputName] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<CompilationResult | null>(null);
@@ -59,7 +58,7 @@ const OIDCompilerPage: React.FC = () => {
   }, []);
 
   const handleCompile = async () => {
-    if (!mibZip || !oidsPdf) return;
+    if (!mibZip) return;
 
     const driverName = customDriverFile ? undefined : (selectedDriver || undefined);
     const driverFile = customDriverFile || undefined;
@@ -76,7 +75,6 @@ const OIDCompilerPage: React.FC = () => {
     try {
       const compilationResult = await compileMibs(
         mibZip,
-        oidsPdf,
         outputName || undefined,
         driverName,
         driverFile,
@@ -106,7 +104,7 @@ const OIDCompilerPage: React.FC = () => {
           MIB Compiler
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-          Compile Devices MIB files and OIDs PDF into SAPRO-compatible .cmf and .var files.
+          Compile Devices MIB files into SAPRO-compatible .cmf and .var files.
         </Typography>
 
         <Paper sx={{ p: 3, mb: 3 }}>
@@ -114,7 +112,7 @@ const OIDCompilerPage: React.FC = () => {
             Upload Files
           </Typography>
           <Box sx={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-            <Box sx={{ flex: '1 1 45%', minWidth: 250 }}>
+            <Box sx={{ flex: '1 1 100%', minWidth: 250 }}>
               <Button
                 variant="outlined"
                 component="label"
@@ -128,23 +126,6 @@ const OIDCompilerPage: React.FC = () => {
                   hidden
                   accept=".rar,.zip"
                   onChange={(e) => setMibZip(e.target.files?.[0] || null)}
-                />
-              </Button>
-            </Box>
-            <Box sx={{ flex: '1 1 45%', minWidth: 250 }}>
-              <Button
-                variant="outlined"
-                component="label"
-                fullWidth
-                startIcon={<CloudUploadIcon />}
-                sx={{ py: 2 }}
-              >
-                {oidsPdf ? oidsPdf.name : 'Select OIDs PDF File'}
-                <input
-                  type="file"
-                  hidden
-                  accept=".pdf"
-                  onChange={(e) => setOidsPdf(e.target.files?.[0] || null)}
                 />
               </Button>
             </Box>
@@ -296,7 +277,7 @@ const OIDCompilerPage: React.FC = () => {
             onChange={(e) => setOutputName(e.target.value)}
             fullWidth
             size="small"
-            helperText="Auto-detected from PDF if empty (e.g. DP_10_12_01)"
+            helperText="Auto-detected from MIB archive if empty (e.g. DP_10_12_01)"
           />
 
           <Box sx={{ mt: 3, display: 'flex', justifyContent: 'center' }}>
@@ -304,7 +285,7 @@ const OIDCompilerPage: React.FC = () => {
               variant="contained"
               size="large"
               onClick={handleCompile}
-              disabled={!mibZip || !oidsPdf || (!selectedDriver && !customDriverFile) || loading}
+              disabled={!mibZip || (!selectedDriver && !customDriverFile) || loading}
               startIcon={loading ? <CircularProgress size={20} /> : <BuildIcon />}
             >
               {loading ? 'Compiling...' : 'Compile'}

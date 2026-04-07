@@ -47,24 +47,6 @@ class OidEntry(BaseModel):
     enum_flag: str = "d"
 
 
-class PdfColumnInfo(BaseModel):
-    """A single column within a table, as extracted from the OIDs PDF."""
-    oid: str
-    label: str
-    syntax: str
-    table_name: str
-    index_name: str
-    access: str
-    description: str
-
-
-class PdfTableInfo(BaseModel):
-    """Table structure info extracted from the OIDs PDF."""
-    table_name: str
-    entry_name: str
-    columns: list[PdfColumnInfo]
-    index_columns: list[str]
-
 
 class DynamicColumnConfig(BaseModel):
     """A single %dcol line's configuration."""

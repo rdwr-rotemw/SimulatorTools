@@ -29,7 +29,6 @@ def _get_output_dirs(workspace: str) -> tuple[str, str]:
 @router.post("/compile", response_model=CompilationResult)
 async def compile_mibs(
     mib_zip: UploadFile = File(..., description="MIB archive file (.rar or .zip) from Radware portal"),
-    oids_pdf: UploadFile = File(..., description="OIDs PDF document"),
     output_name: str = Form(None, description="Output filename base (auto-detected if empty)"),
     device_driver_name: str = Form(None, description="Existing device driver filename"),
     device_driver_file: Optional[UploadFile] = File(None, description="New device driver JAR to upload"),
@@ -40,7 +39,7 @@ async def compile_mibs(
     current_user: User = Depends(require_sapro_access),
 ):
     """
-    Compile MIB files and OIDs PDF into SAPRO .cmf and .var files.
+    Compile MIB files into SAPRO .cmf and .var files.
 
     Optionally accepts a device driver (existing name or new upload) to set
     the rndVisionDriverActiveName scalar in the .var file.
@@ -62,12 +61,9 @@ async def compile_mibs(
     tmp_dir = tempfile.mkdtemp(prefix="mib_compiler_")
     try:
         zip_path = os.path.join(tmp_dir, mib_zip.filename)
-        pdf_path = os.path.join(tmp_dir, oids_pdf.filename)
 
         with open(zip_path, "wb") as f:
             shutil.copyfileobj(mib_zip.file, f)
-        with open(pdf_path, "wb") as f:
-            shutil.copyfileobj(oids_pdf.file, f)
 
         # Resolve JAR path for CC column parsing
         jar_path = None
@@ -85,7 +81,6 @@ async def compile_mibs(
 
         compiler = MibCompiler(
             mib_zip_path=zip_path,
-            oids_pdf_path=pdf_path,
             output_dir=cmf_output_dir,
             var_output_dir=var_output_dir,
             output_name=output_name or None,
