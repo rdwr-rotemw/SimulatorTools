@@ -2,7 +2,7 @@ from proxy.handlers.base import BaseHandler
 
 
 class ConnectivityHandler(BaseHandler):
-    """GET / — CC connectivity check. Must return HTML body like real DP."""
+    """GET / — CC connectivity check. Real DP returns 200 empty body."""
 
     def routes(self):
         return [("GET", "/")]
@@ -11,6 +11,5 @@ class ConnectivityHandler(BaseHandler):
         return 200, {
             "Pragma": "no-cache",
             "Cache-Control": "no-cache",
-            "Content-Type": "text/html",
             "Server": "Radware-web-server",
-        }, b"<html><body>No Content</body></html>"
+        }, b""

@@ -28,5 +28,7 @@ class Dispatcher:
             if route_method == method.upper() and route_path == match_path:
                 return handler.handle(method, path, headers, body)
 
-        logger.warning("No handler for %s %s", method, path)
-        return 404, {}, b""
+        # Unhandled paths return 200 empty — mimics real DP behavior for unsupported endpoints.
+        # CC expects this; returning 404 causes HTTPS communication errors.
+        logger.info("Unhandled request %s %s — returning 200 empty", method, path)
+        return 200, {"Server": "Radware-web-server"}, b""
