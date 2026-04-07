@@ -1,0 +1,116 @@
+1.2.840.10006.300.43.1.1.1.1.1 dot3adAggIndex          Integer      NA  C1  (0,2147483647)
+1.2.840.10006.300.43.1.1.1.1.2 dot3adAggMACAddress     OctetString  RO  C2  (6,6) p
+1.2.840.10006.300.43.1.1.1.1.3 dot3adAggActorSystemPriority Integer      RW  C3  (0,65535)
+1.2.840.10006.300.43.1.1.1.1.4 dot3adAggActorSystemID  OctetString  RO  C4  (6,6) p
+1.2.840.10006.300.43.1.1.1.1.5 dot3adAggAggregateOrIndividual Integer      RO  C5  (1,2) e
+1.2.840.10006.300.43.1.1.1.1.6 dot3adAggActorAdminKey  Integer      RW  C6  (0,65535)
+1.2.840.10006.300.43.1.1.1.1.7 dot3adAggActorOperKey   Integer      RO  C7  (0,65535)
+1.2.840.10006.300.43.1.1.1.1.8 dot3adAggPartnerSystemID OctetString  RO  C8  (6,6) p
+1.2.840.10006.300.43.1.1.1.1.9 dot3adAggPartnerSystemPriority Integer      RO  C9  (0,65535)
+1.2.840.10006.300.43.1.1.1.1.10 dot3adAggPartnerOperKey Integer      RO  C10 (0,65535)
+1.2.840.10006.300.43.1.1.1.1.11 dot3adAggCollectorMaxDelay Integer      RW  C11 (0,65535)
+1.2.840.10006.300.43.1.2.1.1.1 dot3adAggPortIndex      Integer      NA  C1  (0,2147483647)
+1.2.840.10006.300.43.1.2.1.1.2 dot3adAggPortActorSystemPriority Integer      RW  C2  (0,255)
+1.2.840.10006.300.43.1.2.1.1.3 dot3adAggPortActorSystemID OctetString  RO  C3  (6,6) p
+1.2.840.10006.300.43.1.2.1.1.4 dot3adAggPortActorAdminKey Integer      RW  C4  (0,65535)
+1.2.840.10006.300.43.1.2.1.1.5 dot3adAggPortActorOperKey Integer      RW  C5  (0,65535)
+1.2.840.10006.300.43.1.2.1.1.6 dot3adAggPortPartnerAdminSystemPriority Integer      RW  C6  (0,255)
+1.2.840.10006.300.43.1.2.1.1.7 dot3adAggPortPartnerOperSystemPriority Integer      RO  C7  (0,255)
+1.2.840.10006.300.43.1.2.1.1.8 dot3adAggPortPartnerAdminSystemID OctetString  RW  C8  (6,6) p
+1.2.840.10006.300.43.1.2.1.1.9 dot3adAggPortPartnerOperSystemID OctetString  RO  C9  (6,6) p
+1.2.840.10006.300.43.1.2.1.1.10 dot3adAggPortPartnerAdminKey Integer      RW  C10 (0,65535)
+1.2.840.10006.300.43.1.2.1.1.11 dot3adAggPortPartnerOperKey Integer      RO  C11 (0,65535)
+1.2.840.10006.300.43.1.2.1.1.12 dot3adAggPortSelectedAggID Integer      RO  C12 (0,2147483647)
+1.2.840.10006.300.43.1.2.1.1.13 dot3adAggPortAttachedAggID Integer      RO  C13 (0,2147483647)
+1.2.840.10006.300.43.1.2.1.1.14 dot3adAggPortActorPort  Integer      RO  C14 (0,65535)
+1.2.840.10006.300.43.1.2.1.1.15 dot3adAggPortActorPortPriority Integer      RW  C15 (0,255)
+1.2.840.10006.300.43.1.2.1.1.16 dot3adAggPortPartnerAdminPort Integer      RW  C16 (0,65535)
+1.2.840.10006.300.43.1.2.1.1.17 dot3adAggPortPartnerOperPort Integer      RO  C17 (0,65535)
+1.2.840.10006.300.43.1.2.1.1.18 dot3adAggPortPartnerAdminPortPriority Integer      RW  C18 (0,255)
+1.2.840.10006.300.43.1.2.1.1.19 dot3adAggPortPartnerOperPortPriority Integer      RO  C19 (0,255)
+1.2.840.10006.300.43.1.2.1.1.20 dot3adAggPortActorAdminState Bits         RW  C20 (0,7) e
+1.2.840.10006.300.43.1.2.1.1.21 dot3adAggPortActorOperState Bits         RO  C21 (0,7) e
+1.2.840.10006.300.43.1.2.1.1.22 dot3adAggPortPartnerAdminState Bits         RW  C22 (0,7) e
+1.2.840.10006.300.43.1.2.1.1.23 dot3adAggPortPartnerOperState Bits         RO  C23 (0,7) e
+1.2.840.10006.300.43.1.2.1.1.24 dot3adAggPortAggregateOrIndividual Integer      RO  C24 (1,2) e
+%en          0.0                                      zeroDotZero
+%en          0.0                                      nullSpecific
+%en          1.2                                      member-body
+%en          1.2.840                                  us
+%en          1.2.840.10006                            dot3
+%en          1.2.840.10006.300                        snmpmibs
+%en          1.2.840.10006.300.43                     lagMIB
+%en          1.2.840.10006.300.43.1                   lagMIBObjects
+%en          1.2.840.10006.300.43.1.1                 dot3adAgg
+%en          1.2.840.10006.300.43.1.1.1               dot3adAggTable
+%en          1.2.840.10006.300.43.1.1.1.1             dot3adAggEntry
+%en          1.2.840.10006.300.43.1.2                 dot3adAggPort
+%en          1.2.840.10006.300.43.1.2.1               dot3adAggPortTable
+%en          1.2.840.10006.300.43.1.2.1.1             dot3adAggPortEntry
+%en          1.2.840.10006.300.43.2                   dot3adAggConformance
+%en          1.2.840.10006.300.43.2.1                 dot3adAggGroups
+%en          1.2.840.10006.300.43.2.2                 dot3adAggCompliances
+%ei   1.2.840.10006.300.43.1.1.1.1 "dot3adAggIndex"
+%ei   1.2.840.10006.300.43.1.2.1.1 "dot3adAggPortIndex"
+%ev                  dot3adAggAggregateOrIndividual false           2
+%ev                  dot3adAggAggregateOrIndividual true            1
+%ev                  dot3adAggPortActorAdminState aggregation     2
+%ev                  dot3adAggPortActorAdminState collecting      4
+%ev                  dot3adAggPortActorAdminState defaulted       6
+%ev                  dot3adAggPortActorAdminState distributing    5
+%ev                  dot3adAggPortActorAdminState expired         7
+%ev                  dot3adAggPortActorAdminState lacpActivity    0
+%ev                  dot3adAggPortActorAdminState lacpTimeout     1
+%ev                  dot3adAggPortActorAdminState synchronization 3
+%ev                  dot3adAggPortActorOperState aggregation     2
+%ev                  dot3adAggPortActorOperState collecting      4
+%ev                  dot3adAggPortActorOperState defaulted       6
+%ev                  dot3adAggPortActorOperState distributing    5
+%ev                  dot3adAggPortActorOperState expired         7
+%ev                  dot3adAggPortActorOperState lacpActivity    0
+%ev                  dot3adAggPortActorOperState lacpTimeout     1
+%ev                  dot3adAggPortActorOperState synchronization 3
+%ev                  dot3adAggPortAggregateOrIndividual false           2
+%ev                  dot3adAggPortAggregateOrIndividual true            1
+%ev                  dot3adAggPortPartnerAdminState aggregation     2
+%ev                  dot3adAggPortPartnerAdminState collecting      4
+%ev                  dot3adAggPortPartnerAdminState defaulted       6
+%ev                  dot3adAggPortPartnerAdminState distributing    5
+%ev                  dot3adAggPortPartnerAdminState expired         7
+%ev                  dot3adAggPortPartnerAdminState lacpActivity    0
+%ev                  dot3adAggPortPartnerAdminState lacpTimeout     1
+%ev                  dot3adAggPortPartnerAdminState synchronization 3
+%ev                  dot3adAggPortPartnerOperState aggregation     2
+%ev                  dot3adAggPortPartnerOperState collecting      4
+%ev                  dot3adAggPortPartnerOperState defaulted       6
+%ev                  dot3adAggPortPartnerOperState distributing    5
+%ev                  dot3adAggPortPartnerOperState expired         7
+%ev                  dot3adAggPortPartnerOperState lacpActivity    0
+%ev                  dot3adAggPortPartnerOperState lacpTimeout     1
+%ev                  dot3adAggPortPartnerOperState synchronization 3
+%en          1.3.6.1.2.1.100                          transportAddressMIB
+%en          1.3.6.1.2.1.100.1                        transportDomains
+%en          1.3.6.1.2.1.100.1.1                      transportDomainUdpIpv4
+%en          1.3.6.1.2.1.100.1.2                      transportDomainUdpIpv6
+%en          1.3.6.1.2.1.100.1.3                      transportDomainUdpIpv4z
+%en          1.3.6.1.2.1.100.1.4                      transportDomainUdpIpv6z
+%en          1.3.6.1.2.1.100.1.5                      transportDomainTcpIpv4
+%en          1.3.6.1.2.1.100.1.6                      transportDomainTcpIpv6
+%en          1.3.6.1.2.1.100.1.7                      transportDomainTcpIpv4z
+%en          1.3.6.1.2.1.100.1.8                      transportDomainTcpIpv6z
+%en          1.3.6.1.2.1.100.1.9                      transportDomainSctpIpv4
+%en          1.3.6.1.2.1.100.1.10                     transportDomainSctpIpv6
+%en          1.3.6.1.2.1.100.1.11                     transportDomainSctpIpv4z
+%en          1.3.6.1.2.1.100.1.12                     transportDomainSctpIpv6z
+%en          1.3.6.1.2.1.100.1.13                     transportDomainLocal
+%en          1.3.6.1.2.1.100.1.14                     transportDomainUdpDns
+%en          1.3.6.1.2.1.100.1.15                     transportDomainTcpDns
+%en          1.3.6.1.2.1.100.1.16                     transportDomainSctpDns
+%en          1.3.6.1.4.1.89.0                         rndV2
+%en          1.3.6.1.4.1.89.35.1.0                    rsServerDispatcherV2
+%en          1.3.6.1.4.1.89.35.1.60.0                 rsBWMV2
+%en          1.3.6.1.4.1.89.35.1.65.0                 rsIDSV2
+%en          1.3.6.1.4.1.89.35.1.65.107.0             rsIDSEventTrapsV2
+%en          1.3.6.1.4.1.89.35.1.104.0                rsSESSIONV2
+%en          1.3.6.1.4.1.89.35.1.116.0                rdwrDPV2
+%en          1.3.6.1.4.1.89.35.1.116.22.5.0           rdwrBgpTrapsV2
