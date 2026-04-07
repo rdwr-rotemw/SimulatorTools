@@ -144,6 +144,18 @@ def main():
     ssl_context.load_cert_chain(cert_file, key_file)
     server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
 
+    # Proper TLS shutdown — without this, clients get "unexpected eof" errors
+    _original_shutdown = server.shutdown_request
+
+    def _tls_shutdown(request):
+        try:
+            request.unwrap()
+        except (ssl.SSLError, OSError):
+            pass
+        _original_shutdown(request)
+
+    server.shutdown_request = _tls_shutdown
+
     logger.info("SAPRO proxy listening on https://127.0.0.1:%d", args.port)
     logger.info("Driver dir: %s", args.driver_dir)
 
