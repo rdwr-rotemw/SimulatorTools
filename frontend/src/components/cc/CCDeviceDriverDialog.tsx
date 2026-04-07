@@ -16,7 +16,7 @@ import {
 } from '@mui/material';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import InstallDesktopIcon from '@mui/icons-material/InstallDesktop';
-import { deviceDriverService, DeviceDriver, DeploymentSummary, DeployJobStatus } from '../../api/services/deviceDriver.service';
+import { deviceDriverService, DeployJobStatus } from '../../api/services/deviceDriver.service';
 import { CCDevice } from '../../types/cc.types';
 
 interface CCDeviceDriverDialogProps {
@@ -46,7 +46,7 @@ export const CCDeviceDriverDialog: React.FC<CCDeviceDriverDialogProps> = ({
   const [isDeploying, setIsDeploying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deploymentResult, setDeploymentResult] = useState<DeployJobStatus | null>(null);
-  const [jobId, setJobId] = useState<string | null>(null);
+  const [, setJobId] = useState<string | null>(null);
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Extract unique device type/version combinations from devices

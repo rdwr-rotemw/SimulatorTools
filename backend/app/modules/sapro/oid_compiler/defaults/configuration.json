@@ -1,0 +1,33 @@
+{
+    "scalar_overrides": {
+        "sysDescr": "fixed(DefensePro)",
+        "sysObjectID": "fixed(1.3.6.1.4.1.89.1.1.62.16)",
+        "sysUpTime": "clock(377152854)",
+        "sysContact": "r_lastset(0, 255,)",
+        "sysName": "r_lastset(0, 255,DefensePro_$$MYIPADDRESS$$)",
+        "sysLocation": "r_lastset(0, 255,)",
+        "sysServices": "fixed(3)",
+        "rdwrUpdatePoliciesRequired": "fixed(0)",
+        "rsUpdatePoliciesInProgress": "fixed(0)",
+        "rsAsnFeedOperStatus": "fixed(0)",
+        "rsWSDNTPTimeZone": "r_lastset(1, 6,00:00)",
+        "rsWSDNTPPort": "lastset(123)",
+        "rsWSDNTPInterval": "lastset(86400)",
+        "rsWSDNTPStatus": "r_lastset(1, 2,2)",
+        "rsWSDNTPServerUrl": "r_lastset(0, 64,)",
+        "rsWSDNTPServerTime": "fixed(0x2030)",
+        "rsWSDNTPOffset": "fixed(0x2030)",
+        "rdwrDayLightSavingBegins": "r_lastset(0, 255,01/01:2)",
+        "rdwrDayLightSavingEnds": "r_lastset(0, 255,31/12:2)",
+        "rdwrDayLightSavingTimeDesignations": "fixed(1)",
+        "rdwrDayLightSavingAdminStatus": "r_lastset(1, 2,2)"
+    },
+    "myip_labels": ["ipAdEntAddr", "rsIpAdEntAddr"],
+    "mac_labels": [
+        "ifPhysAddress", "dot1dBaseBridgeAddress", "dot3adAggMACAddress",
+        "dot3adAggActorSystemID", "dot3adAggPartnerSystemID",
+        "dot3adAggPortActorSystemID", "dot3adAggPortPartnerAdminSystemID",
+        "dot3adAggPortPartnerOperSystemID", "ipNetToMediaPhysAddress",
+        "ip6NetToMediaPhysAddress"
+    ]
+}

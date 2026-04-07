@@ -44,6 +44,9 @@ docker/nginx/ssl/*.pem
 docker/nginx/ssl/*.key
 docker/nginx/ssl/*.crt
 
+# Documentation (local only, not tracked)
+docs/*.md
+
 # Temporary files
 tmp/
 *.tmp

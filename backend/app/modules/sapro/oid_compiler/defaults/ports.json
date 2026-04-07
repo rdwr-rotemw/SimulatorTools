@@ -1,0 +1,92 @@
+{
+    "_comment": "Port configuration for DefensePro simulator. data_ports: number of data/network ports, mgmt_ports: number of management ports. Management port ifTable index = data_ports + 1.",
+    "default_data_ports": 2,
+    "default_mgmt_ports": 1,
+    "ifTable": {
+        "data_port": {
+            "ifDescr_prefix": "Port-",
+            "ifType": 6,
+            "ifMtu": 1500,
+            "ifSpeed": 1000,
+            "ifOperStatus": 2
+        },
+        "mgmt_port": {
+            "ifDescr_prefix": "MNG-",
+            "ifType": 1,
+            "ifMtu": 1500,
+            "ifSpeed": 1000,
+            "ifOperStatus": 1
+        }
+    },
+    "if_counters": [
+        "ifLastChange",
+        "ifInOctets",
+        "ifInUcastPkts",
+        "ifInNUcastPkts",
+        "ifInDiscards",
+        "ifInErrors",
+        "ifInUnknownProtos",
+        "ifOutOctets",
+        "ifOutUcastPkts",
+        "ifOutNUcastPkts",
+        "ifOutDiscards",
+        "ifOutErrors"
+    ],
+    "mgmt_port_snmp": {
+        "_comment": "rsWSDSNMPPhysicalPort table — management port access config. Instance index is the management port's SNMP table row number (always 3 in reference).",
+        "instance_index": 3,
+        "columns": {
+            "rsWSDSNMPPhysicalPortNumber": {"syntax": "Integer", "access": "RO", "value_template": "fixed({mgmt_if_index})"},
+            "rsWSDSNMPPhysicalPortState": {"syntax": "Integer", "access": "RW", "value": "r_lastset(1, 2,1)"},
+            "rsWSDSNMPPhysicalPortTelnetState": {"syntax": "Integer", "access": "RW", "value": "r_lastset(1, 2,1)"},
+            "rsWSDSNMPPhysicalPortSSHState": {"syntax": "Integer", "access": "RW", "value": "r_lastset(1, 2,1)"},
+            "rsWSDSNMPPhysicalPortWebState": {"syntax": "Integer", "access": "RW", "value": "r_lastset(1, 2,2)"},
+            "rsWSDSNMPPhysicalPortSSLState": {"syntax": "Integer", "access": "RW", "value": "r_lastset(1, 2,1)"}
+        }
+    },
+    "ping_port": {
+        "_comment": "rsWSDPingPhysicalPort table — same instance as mgmt SNMP port",
+        "columns": {
+            "rsWSDPingPhysicalPortNumber": {"syntax": "Integer", "access": "RO", "value_template": "fixed({mgmt_if_index})"},
+            "rsWSDPingPhysicalPortState": {"syntax": "Integer", "access": "RW", "value": "r_lastset(1, 2,1)"}
+        }
+    },
+    "bwm_port": {
+        "_comment": "rsBWMPort table — one entry per data port",
+        "columns": {
+            "rsBWMPortIndex": {"syntax": "Integer", "access": "RO", "value_template": "fixed({port_num})"},
+            "rsBWMPortBandwidth": {"syntax": "Integer", "access": "RW", "value": "r_lastset(-2147483648, 2147483647,10485760)"},
+            "rsBwmPortUsedBandwidth": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"}
+        }
+    },
+    "port_stats": {
+        "_comment": "rsPortStats table — one entry per data port + mgmt. rsPortStatsTotalInMbitsPerSec is a scalar (.0).",
+        "columns": {
+            "rsPortStatsPortNumber": {"syntax": "Integer", "access": "RO", "value_template": "fixed({port_num})"},
+            "rsPortStatsInOctetsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"},
+            "rsPortStatsInPktsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"},
+            "rsPortStatsInDiscardsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"},
+            "rsPortStatsInErrorsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"},
+            "rsPortStatsOutOctetsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"},
+            "rsPortStatsOutPktsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"},
+            "rsPortStatsOutDiscardsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"},
+            "rsPortStatsOutErrorsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"},
+            "rsPortStatsInMbitsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"},
+            "rsPortStatsOutMbitsPerSec": {"syntax": "Integer", "access": "RO", "value": "fixed(0)"}
+        }
+    },
+    "port_pair": {
+        "_comment": "rsWSDStatic* tables — port pair configuration. Data ports are paired sequentially: 1<->2, 3<->4, etc.",
+        "pair_columns": {
+            "rsWSDStaticPortOperation": {"syntax": "Integer", "access": "RW", "value": "r_lastset(1, 3,1)"},
+            "rsWSDStaticStatus": {"syntax": "Integer", "access": "RW", "value": "rowstatus(1)"},
+            "rsWSDStaticFailureMode": {"syntax": "Integer", "access": "RW", "value": "r_lastset(1, 2,1)"},
+            "rsWSDStaticInPort": {"syntax": "Integer", "access": "RW", "value_template": "r_lastset(1, 2,{inbound_port})"}
+        }
+    },
+    "scalar_overrides": {
+        "_comment": "These are template strings with {data_ports}, {mgmt_ports}, {total_ports}, {ports_config_string}",
+        "ifNumber": "fixed({total_ports})",
+        "rdwrDevicePortsConfig": "fixed({ports_config_string})"
+    }
+}
