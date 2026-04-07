@@ -1,14 +1,19 @@
 """
-SAPRO HTTP Proxy — general-purpose HTTP server for requests forwarded by SAPRO's
+SAPRO HTTP Proxy — general-purpose HTTPS server for requests forwarded by SAPRO's
 SA_xml_request_forwarder. Handles binary responses and complex routing that SAPRO's
 XMF/TCL engine cannot do natively.
 
 Usage:
     python -m proxy.server [--port 8888] [--driver-dir /path/to/drivers]
+
+On first run, generates a self-signed SSL certificate at /app/certs/ (or --cert-dir).
 """
 
 import argparse
 import logging
+import os
+import ssl
+import subprocess
 import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -19,6 +24,8 @@ from proxy.handlers.device_driver import DeviceDriverHandler
 from proxy.handlers.health import HealthHandler
 
 logger = logging.getLogger("sapro-proxy")
+
+DEFAULT_CERT_DIR = "/app/certs"
 
 
 class ProxyRequestHandler(BaseHTTPRequestHandler):
@@ -68,6 +75,32 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         logger.info("[%s] %s", self.client_address[0], format % args)
 
 
+def ensure_ssl_cert(cert_dir):
+    """Generate a self-signed SSL certificate if one doesn't exist."""
+    cert_file = os.path.join(cert_dir, "server.pem")
+    key_file = os.path.join(cert_dir, "server.key")
+
+    if os.path.exists(cert_file) and os.path.exists(key_file):
+        logger.info("Using existing SSL cert: %s", cert_file)
+        return cert_file, key_file
+
+    os.makedirs(cert_dir, exist_ok=True)
+
+    logger.info("Generating self-signed SSL certificate in %s", cert_dir)
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048",
+            "-keyout", key_file, "-out", cert_file,
+            "-days", "3650", "-nodes",
+            "-subj", "/CN=Radware-web-server",
+        ],
+        check=True, capture_output=True,
+    )
+    logger.info("SSL certificate generated: %s", cert_file)
+
+    return cert_file, key_file
+
+
 def build_dispatcher(config, driver_dir):
     """Create dispatcher and register all handlers."""
     dispatcher = Dispatcher()
@@ -83,6 +116,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="SAPRO HTTP Proxy")
     parser.add_argument("--port", type=int, default=8888, help="Port to listen on (default: 8888)")
     parser.add_argument("--driver-dir", required=True, help="Directory containing device driver JAR files")
+    parser.add_argument("--cert-dir", default=DEFAULT_CERT_DIR, help="Directory for SSL certificates")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
     return parser.parse_args()
 
@@ -101,8 +135,15 @@ def main():
 
     ProxyRequestHandler.dispatcher = dispatcher
 
+    cert_file, key_file = ensure_ssl_cert(args.cert_dir)
+
     server = HTTPServer(("127.0.0.1", args.port), ProxyRequestHandler)
-    logger.info("SAPRO proxy listening on 127.0.0.1:%d", args.port)
+
+    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_context.load_cert_chain(cert_file, key_file)
+    server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
+
+    logger.info("SAPRO proxy listening on https://127.0.0.1:%d", args.port)
     logger.info("Driver dir: %s", args.driver_dir)
 
     try:
