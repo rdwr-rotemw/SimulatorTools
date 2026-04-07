@@ -64,6 +64,7 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         )
 
         self.send_response(status)
+        self.send_header("Connection", "close")
         for key, value in response_headers.items():
             self.send_header(key, value)
         self.end_headers()
