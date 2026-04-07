@@ -21,8 +21,12 @@ class Dispatcher:
         Returns:
             tuple: (status_code, headers_dict, body_bytes)
         """
+        # Strip query string for route matching
+        match_path = path.split("?")[0]
+
         for route_method, route_path, handler in self._routes:
-            if route_method == method.upper() and route_path == path:
+            if route_method == method.upper() and route_path == match_path:
                 return handler.handle(method, path, headers, body)
 
+        logger.warning("No handler for %s %s", method, path)
         return 404, {}, b""

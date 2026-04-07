@@ -1,5 +1,7 @@
+import ipaddress
 import logging
 import os
+import re
 import subprocess
 
 from proxy.handlers.base import BaseHandler
@@ -10,6 +12,18 @@ logger = logging.getLogger("sapro-proxy")
 DRIVER_OID = ".1.3.6.1.4.1.89.35.2.9.1.0"
 SNMP_COMMUNITY = "public"
 SNMP_TIMEOUT_SECONDS = 5
+
+# Valid JAR filename pattern: DeviceType-Version-DD-DDVersion.jar
+JAR_FILENAME_PATTERN = re.compile(r'^[\w\-]+\.jar$')
+
+
+def validate_ip(ip_string):
+    """Validate that a string is a valid IPv4 or IPv6 address."""
+    try:
+        ipaddress.ip_address(ip_string)
+        return True
+    except ValueError:
+        return False
 
 
 def snmpget_driver_filename(device_ip):
@@ -60,12 +74,27 @@ class DeviceDriverHandler(BaseHandler):
         host = headers.get("Host", "")
         device_ip = host.split(":")[0]
 
+        logger.debug("Request headers: %s", dict(headers))
+
+        if not device_ip or not validate_ip(device_ip):
+            logger.warning("Invalid or missing device IP from Host header: '%s'", host)
+            return 404, {}, b""
+
         jar_name = snmpget_driver_filename(device_ip)
         if not jar_name:
             logger.warning("Could not resolve driver filename for device %s", device_ip)
             return 404, {}, b""
 
+        if not JAR_FILENAME_PATTERN.match(jar_name):
+            logger.error("Invalid JAR filename from SNMP: '%s'", jar_name)
+            return 404, {}, b""
+
         jar_path = os.path.join(self.driver_dir, jar_name)
+        real_path = os.path.realpath(jar_path)
+        if not real_path.startswith(os.path.realpath(self.driver_dir) + os.sep):
+            logger.error("Path traversal blocked: '%s'", jar_name)
+            return 404, {}, b""
+
         if not os.path.exists(jar_path):
             logger.error("JAR file not found: %s", jar_path)
             return 404, {}, b""
