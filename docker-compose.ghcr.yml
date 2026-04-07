@@ -90,8 +90,8 @@ services:
       retries: 3
 
   # SAPRO HTTP Proxy
-  # Handles binary responses (device driver JARs, etc.) that SAPRO's XMF cannot serve natively.
-  # SAPRO's SA_xml_request_forwarder forwards requests to 127.0.0.1:8888.
+  # Port 8888 (HTTPS): forwarded CC requests via SA_xml_request_forwarder
+  # Port 8889 (HTTP):  device registration from XMF init_action TCL
   sapro-proxy:
     image: ghcr.io/${GITHUB_REPO_OWNER}/simtools-sapro-proxy:${IMAGE_TAG:-latest}
     container_name: simtools-sapro-proxy
@@ -99,7 +99,7 @@ services:
     network_mode: host
     volumes:
       - ./backend/app/resources/device_drivers:/app/device_drivers:ro
-    command: ["python", "-m", "proxy.server", "--port", "8888", "--driver-dir", "/app/device_drivers"]
+    command: ["python", "-m", "proxy.server", "--port", "8888", "--register-port", "8889", "--driver-dir", "/app/device_drivers"]
     healthcheck:
       test: ["CMD", "curl", "-fk", "https://localhost:8888/_health"]
       interval: 30s

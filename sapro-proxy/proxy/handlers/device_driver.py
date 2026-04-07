@@ -1,31 +1,59 @@
 import logging
 import os
 import re
+import subprocess
 
 from proxy.handlers.base import BaseHandler
 
 logger = logging.getLogger("sapro-proxy")
 
-DRIVER_MAP_FILENAME = "driver_map.json"
+# rndVisionDriverActiveName — the OID that holds the device driver JAR filename
+DRIVER_OID = ".1.3.6.1.4.1.89.35.2.9.1.0"
+SNMP_COMMUNITY = "public"
+SNMP_TIMEOUT_SECONDS = 5
 
 # Valid JAR filename pattern: DeviceType-Version-DD-DDVersion.jar
 JAR_FILENAME_PATTERN = re.compile(r'^[\w\-]+\.jar$')
 
 
+def snmpget_driver_filename(device_ip):
+    """Query the simulated device via SNMP to get its device driver JAR filename."""
+    try:
+        result = subprocess.run(
+            ["snmpget", "-v", "2c", "-c", SNMP_COMMUNITY, "-Oqv",
+             "-t", str(SNMP_TIMEOUT_SECONDS), device_ip, DRIVER_OID],
+            capture_output=True, text=True, timeout=SNMP_TIMEOUT_SECONDS + 2,
+        )
+        if result.returncode != 0:
+            logger.error("snmpget failed for %s: %s", device_ip, result.stderr.strip())
+            return None
+
+        value = result.stdout.strip().strip('"')
+        if not value or value.startswith("No Such"):
+            logger.warning("OID %s not found on device %s", DRIVER_OID, device_ip)
+            return None
+
+        return value
+
+    except subprocess.TimeoutExpired:
+        logger.error("snmpget timed out for %s", device_ip)
+        return None
+    except FileNotFoundError:
+        logger.error("snmpget command not found — install net-snmp")
+        return None
+
+
 class DeviceDriverHandler(BaseHandler):
     """POST /dynamic/hidden/VisionDriver/ReceivefromDevice — serve device driver JAR.
 
-    Since SAPRO's SA_xml_request_forwarder replaces the Host header with 127.0.0.1,
-    we cannot identify the device from the request. Instead, driver_map.json maps
-    device IPs to JAR filenames. The backend updates this file when compiling or
-    uploading device drivers.
+    Flow:
+    1. XMF init_action registers device IP via /_register on port 8889
+    2. SA_xml_request_forwarder forwards CC's request here on port 8888
+    3. Handler consumes the registered IP from the device registry
+    4. SNMP query to the device gets the JAR filename (rndVisionDriverActiveName)
+    5. Serve the JAR binary with exact real DefensePro response headers
 
-    For requests from the forwarder (Host: 127.0.0.1), we look up all entries in
-    driver_map.json. When only one device is mapped, we serve that JAR directly.
-    When multiple devices exist, we use the source port from the Soap section
-    to disambiguate (future enhancement).
-
-    Response matches real DefensePro behavior captured from DP 172.17.22.54 (8.34.1.0):
+    Response captured from real DP 172.17.22.54 (8.34.1.0):
     - Status: 200
     - Content-Type: application/octet-stream
     - Content-Disposition: attachment;filename=<jar_name>
@@ -36,31 +64,21 @@ class DeviceDriverHandler(BaseHandler):
         return [("POST", "/dynamic/hidden/VisionDriver/ReceivefromDevice")]
 
     def handle(self, method, path, headers, body):
-        host = headers.get("Host", "")
-        device_ip = host.split(":")[0]
+        device_ip = self.registry.consume()
 
-        config_path = os.path.join(self.driver_dir, DRIVER_MAP_FILENAME)
-        driver_map = self.config.get(config_path)
-
-        if not driver_map:
-            logger.error("driver_map.json is empty or missing at %s", config_path)
+        if not device_ip:
+            logger.warning("No device registered — request arrived without prior /_register")
             return 404, {}, b""
 
-        # SAPRO's forwarder sets Host to 127.0.0.1 — can't identify device from it.
-        # If only one device is mapped, serve that. Otherwise log which are available.
-        jar_name = driver_map.get(device_ip)
-        if not jar_name and len(driver_map) == 1:
-            only_ip, jar_name = next(iter(driver_map.items()))
-            logger.info("Single device in driver_map, serving %s (mapped to %s)", jar_name, only_ip)
-        elif not jar_name:
-            logger.warning(
-                "Cannot identify device from Host '%s'. driver_map has %d entries: %s",
-                host, len(driver_map), list(driver_map.keys()),
-            )
+        logger.info("Serving driver request for registered device %s", device_ip)
+
+        jar_name = snmpget_driver_filename(device_ip)
+        if not jar_name:
+            logger.warning("Could not resolve driver filename for device %s", device_ip)
             return 404, {}, b""
 
         if not JAR_FILENAME_PATTERN.match(jar_name):
-            logger.error("Invalid JAR filename in driver_map: '%s'", jar_name)
+            logger.error("Invalid JAR filename from SNMP: '%s'", jar_name)
             return 404, {}, b""
 
         jar_path = os.path.join(self.driver_dir, jar_name)
