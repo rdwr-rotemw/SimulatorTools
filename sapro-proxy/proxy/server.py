@@ -165,23 +165,30 @@ def build_management_dispatcher(config):
     return dispatcher
 
 
-def bind_to_interface(server, interface_name):
-    """Restrict a server socket to a specific network interface using SO_BINDTODEVICE."""
-    server.socket.setsockopt(
-        socket.SOL_SOCKET,
-        socket.SO_BINDTODEVICE,
-        interface_name.encode(),
-    )
-    logger.info("Socket bound to interface: %s", interface_name)
+class InterfaceBoundHTTPServer(HTTPServer):
+    """HTTPServer that sets SO_BINDTODEVICE before binding the socket."""
+
+    interface = None
+
+    def server_bind(self):
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.setsockopt(
+            socket.SOL_SOCKET,
+            socket.SO_BINDTODEVICE,
+            self.interface.encode(),
+        )
+        logger.info("Socket restricted to interface: %s", self.interface)
+        super().server_bind()
 
 
 def create_listeners(interface, ports, handler_class, ssl_context):
     """Create one HTTPS server per port, bound to the specified interface."""
     servers = []
 
+    InterfaceBoundHTTPServer.interface = interface
+
     for port in ports:
-        server = HTTPServer(("0.0.0.0", port), handler_class)
-        bind_to_interface(server, interface)
+        server = InterfaceBoundHTTPServer(("0.0.0.0", port), handler_class)
         server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
 
         original_shutdown = server.shutdown_request
