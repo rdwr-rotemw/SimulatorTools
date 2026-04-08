@@ -336,42 +336,32 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
       device_map: {}
     };
 
-    // Add device_map level fields
-    Object.entries(fields).forEach(([path, state]) => {
-      if (!state.enabled) return;
-
+    // Add ALL device_map level fields (SAPRO requires all attributes, even empty)
+    Object.entries(defaultFieldValues).forEach(([path]) => {
       const parts = path.split('.');
       if (parts[0] === 'device_map' && parts.length === 2) {
-        template.device_map[parts[1]] = state.value;
+        const state = fields[path];
+        template.device_map[parts[1]] = state?.value ?? defaultFieldValues[path] ?? '';
       }
     });
 
-    // Initialize device object if needed
-    const hasDeviceFields = Object.entries(fields).some(([path, state]) =>
-      state.enabled && ['general', 'snmp', 'soap', 'ssh'].includes(path.split('.')[0])
-    );
+    template.device_map.device = {};
 
-    if (hasDeviceFields) {
-      template.device_map.device = {};
+    // Add device sub-sections — include ALL fields for active sections
+    // SAPRO requires every attribute present, even with empty values
+    ['general', 'snmp', 'soap', 'ssh'].forEach(section => {
+      // Skip optional sections that are toggled off
+      if (section in sectionEnabled && !sectionEnabled[section]) return;
 
-      // Add device sub-sections (skip sections that are toggled off)
-      ['general', 'snmp', 'soap', 'ssh'].forEach(section => {
-        // Skip optional sections that are toggled off
-        if (section in sectionEnabled && !sectionEnabled[section]) return;
-
-        const sectionFields = Object.entries(fields).filter(([path, state]) =>
-          state.enabled && path.startsWith(`${section}.`)
-        );
-
-        if (sectionFields.length > 0) {
-          template.device_map.device[section] = {};
-          sectionFields.forEach(([path, state]) => {
-            const fieldName = path.split('.')[1];
-            template.device_map.device[section][fieldName] = state.value;
-          });
+      template.device_map.device[section] = {};
+      Object.entries(defaultFieldValues).forEach(([path]) => {
+        if (path.startsWith(`${section}.`)) {
+          const fieldName = path.split('.')[1];
+          const state = fields[path];
+          template.device_map.device[section][fieldName] = state?.value ?? defaultFieldValues[path] ?? '';
         }
       });
-    }
+    });
 
     return template;
   };
