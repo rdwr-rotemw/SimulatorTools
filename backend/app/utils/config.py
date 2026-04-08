@@ -68,8 +68,8 @@ class Settings(BaseSettings):
     SAPRO_SSH_PASSWORD: str = Field(default="")
 
     # Sapro proxy settings (used by sapro-proxy Docker service, declared here to avoid validation errors)
-    SAPRO_PROXY_INTERFACE: str = Field(default="0.0.0.0", description="Network interface for sapro-proxy listener")
-    SAPRO_PROXY_PORTS: str = Field(default="80,443", description="Comma-separated ports for sapro-proxy listener")
+    SAPRO_PROXY_INTERFACE: Optional[str] = Field(default=None, description="Network interface name for sapro-proxy listener (e.g. eth1)")
+    SAPRO_PROXY_PORTS: Optional[str] = Field(default=None, description="Comma-separated ports for sapro-proxy listener")
 
     # Download path for IRP/IdsDataFormat files (used by CC SSH download helpers)
     DOWNLOAD_PATH: str = Field(default="/tmp/irp_files")

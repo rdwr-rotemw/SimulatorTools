@@ -4,19 +4,24 @@ serving CC requests (device driver downloads, connectivity checks, etc.)
 without any SAPRO XMF/forwarder involvement.
 
 Architecture:
-    Binds to 0.0.0.0 on each configured port (from SAPRO_PROXY_PORTS env var).
+    Binds to 0.0.0.0 on each configured port with SO_BINDTODEVICE restricting
+    traffic to the simulator interface (SAPRO_PROXY_INTERFACE env var, e.g. eth1).
     When CC connects to a simulated device IP, getsockname() on the accepted
     socket returns that device's IP — no registration mechanism needed.
+
+    A separate management listener on 127.0.0.1:8888 (plain HTTP) serves
+    health checks without SO_BINDTODEVICE restriction.
 
     SAPRO handles SNMP only. All HTTP/HTTPS traffic goes through this proxy.
 
 Usage:
-    python -m proxy.server --driver-dir /path/to/drivers [--ports 80,443] [--cert-dir /path]
+    python -m proxy.server --driver-dir /path/to/drivers [--interface eth1] [--ports 80,443]
 """
 
 import argparse
 import logging
 import os
+import socket
 import ssl
 import subprocess
 import sys
@@ -32,6 +37,7 @@ from proxy.handlers.health import HealthHandler
 logger = logging.getLogger("sapro-proxy")
 
 DEFAULT_CERT_DIR = "/app/certs"
+MANAGEMENT_PORT = 8888
 
 
 class ProxyRequestHandler(BaseHTTPRequestHandler):
@@ -84,6 +90,39 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
         logger.info("[%s] %s", self.client_address[0], format % args)
 
 
+class ManagementRequestHandler(BaseHTTPRequestHandler):
+    """Handles management requests (health, reload) on the localhost listener."""
+
+    dispatcher = None
+
+    def do_GET(self):
+        self._handle("GET")
+
+    def do_POST(self):
+        self._handle("POST")
+
+    def _handle(self, method):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length > 0 else b""
+        headers = {key: self.headers[key] for key in self.headers}
+
+        status, response_headers, response_body = self.dispatcher.dispatch(
+            method, self.path, headers, body, device_ip="127.0.0.1"
+        )
+
+        self.send_response(status)
+        self.send_header("Connection", "close")
+        for key, value in response_headers.items():
+            self.send_header(key, value)
+        self.end_headers()
+
+        if response_body:
+            self.wfile.write(response_body)
+
+    def log_message(self, format, *args):
+        logger.debug("[mgmt] %s", format % args)
+
+
 def ensure_ssl_cert(cert_dir):
     """Generate a self-signed SSL certificate if one doesn't exist."""
     cert_file = os.path.join(cert_dir, "server.pem")
@@ -110,8 +149,8 @@ def ensure_ssl_cert(cert_dir):
     return cert_file, key_file
 
 
-def build_dispatcher(config, driver_dir):
-    """Build the shared request dispatcher with all handlers."""
+def build_main_dispatcher(config, driver_dir):
+    """Build the dispatcher for CC-facing traffic (connectivity, driver serving)."""
     dispatcher = Dispatcher()
     dispatcher.register(HealthHandler(config))
     dispatcher.register(ConnectivityHandler(config))
@@ -119,12 +158,30 @@ def build_dispatcher(config, driver_dir):
     return dispatcher
 
 
+def build_management_dispatcher(config):
+    """Build the dispatcher for the management listener (health only)."""
+    dispatcher = Dispatcher()
+    dispatcher.register(HealthHandler(config))
+    return dispatcher
+
+
+def bind_to_interface(server, interface_name):
+    """Restrict a server socket to a specific network interface using SO_BINDTODEVICE."""
+    server.socket.setsockopt(
+        socket.SOL_SOCKET,
+        socket.SO_BINDTODEVICE,
+        interface_name.encode(),
+    )
+    logger.info("Socket bound to interface: %s", interface_name)
+
+
 def create_listeners(interface, ports, handler_class, ssl_context):
-    """Create one HTTPS server per port, all sharing the same handler class."""
+    """Create one HTTPS server per port, bound to the specified interface."""
     servers = []
 
     for port in ports:
-        server = HTTPServer((interface, port), handler_class)
+        server = HTTPServer(("0.0.0.0", port), handler_class)
+        bind_to_interface(server, interface)
         server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
 
         original_shutdown = server.shutdown_request
@@ -150,13 +207,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description="SAPRO HTTP Proxy")
     parser.add_argument(
         "--interface",
-        default=os.environ.get("SAPRO_PROXY_INTERFACE", "0.0.0.0"),
-        help="Network interface to bind to (default: SAPRO_PROXY_INTERFACE env or 0.0.0.0)",
+        default=os.environ.get("SAPRO_PROXY_INTERFACE"),
+        help="Network interface name to bind to (e.g. eth1)",
     )
     parser.add_argument(
         "--ports",
-        default=os.environ.get("SAPRO_PROXY_PORTS", "80,443"),
-        help="Comma-separated list of ports to listen on (default: SAPRO_PROXY_PORTS env or 80,443)",
+        default=os.environ.get("SAPRO_PROXY_PORTS"),
+        help="Comma-separated list of ports to listen on (e.g. 80,443)",
     )
     parser.add_argument("--driver-dir", required=True, help="Directory containing device driver JAR files")
     parser.add_argument("--cert-dir", default=DEFAULT_CERT_DIR, help="Directory for SSL certificates")
@@ -167,6 +224,14 @@ def parse_args():
 def main():
     args = parse_args()
 
+    if not args.interface:
+        logger.error("SAPRO_PROXY_INTERFACE must be set (network interface name, e.g. eth1)")
+        sys.exit(1)
+
+    if not args.ports:
+        logger.error("SAPRO_PROXY_PORTS must be set (comma-separated ports, e.g. 80,443)")
+        sys.exit(1)
+
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -176,22 +241,34 @@ def main():
     config = ConfigManager()
     ports = [int(p.strip()) for p in args.ports.split(",")]
 
-    dispatcher = build_dispatcher(config, args.driver_dir)
-    ProxyRequestHandler.dispatcher = dispatcher
+    # CC-facing dispatcher (all handlers)
+    main_dispatcher = build_main_dispatcher(config, args.driver_dir)
+    ProxyRequestHandler.dispatcher = main_dispatcher
+
+    # Management dispatcher (health only, localhost)
+    mgmt_dispatcher = build_management_dispatcher(config)
+    ManagementRequestHandler.dispatcher = mgmt_dispatcher
 
     cert_file, key_file = ensure_ssl_cert(args.cert_dir)
     ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ssl_context.load_cert_chain(cert_file, key_file)
 
+    # CC-facing listeners on the simulator interface
     servers = create_listeners(args.interface, ports, ProxyRequestHandler, ssl_context)
 
+    # Management listener on localhost (plain HTTP, no SO_BINDTODEVICE)
+    mgmt_server = HTTPServer(("127.0.0.1", MANAGEMENT_PORT), ManagementRequestHandler)
+    servers.append(mgmt_server)
+    logger.info("Management listener on 127.0.0.1:%d (HTTP)", MANAGEMENT_PORT)
+
+    # Start all servers in background threads except the last one
     for server in servers[:-1]:
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
 
     logger.info(
-        "SAPRO proxy listening on %s ports %s",
-        args.interface, ports,
+        "SAPRO proxy listening on %s ports %s (management on 127.0.0.1:%d)",
+        args.interface, ports, MANAGEMENT_PORT,
     )
     logger.info("Driver dir: %s", args.driver_dir)
 

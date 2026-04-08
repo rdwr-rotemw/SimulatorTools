@@ -99,12 +99,12 @@ services:
     network_mode: host
     environment:
       - SAPRO_PROXY_INTERFACE=${SAPRO_PROXY_INTERFACE}
-      - SAPRO_PROXY_PORTS=${SAPRO_PROXY_PORTS:-80,443}
+      - SAPRO_PROXY_PORTS=${SAPRO_PROXY_PORTS}
     volumes:
       - ./backend/app/resources:/app/backend/app/resources:ro
     command: ["python", "-m", "proxy.server", "--driver-dir", "/app/backend/app/resources/device_drivers"]
     healthcheck:
-      test: ["CMD", "curl", "-fk", "https://${SAPRO_PROXY_INTERFACE}:443/_health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8888/_health"]
       interval: 30s
       timeout: 10s
       retries: 3
