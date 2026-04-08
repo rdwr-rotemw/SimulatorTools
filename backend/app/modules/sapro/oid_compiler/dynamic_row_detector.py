@@ -138,9 +138,15 @@ class DynamicRowDetector:
         detection_warning = None
 
         if row_type == DynamicRowType.NEWINSTANCE:
-            setaction_col, setaction_type, setaction_value, is_fully_detected, detection_warning = (
-                self._detect_newinstance_delete_action(table_name, mib_columns)
-            )
+            # AUGMENTS tables don't need their own delete action — the base
+            # table's RowStatus handles row lifecycle. Always fully detected.
+            entry_obj = self._entry_by_name.get(entry_name)
+            if entry_obj and entry_obj.augments_entry:
+                is_fully_detected = True
+            else:
+                setaction_col, setaction_type, setaction_value, is_fully_detected, detection_warning = (
+                    self._detect_newinstance_delete_action(table_name, mib_columns)
+                )
 
         for col in mib_columns:
             is_index = col.label in index_labels
