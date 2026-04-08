@@ -99,8 +99,11 @@ services:
     network_mode: host
     environment:
       - SAPRO_PROXY_PORTS=${SAPRO_PROXY_PORTS}
-      - MONGO_URI=${MONGO_URI}
+      - MONGO_HOST=${MONGO_HOST}
+      - MONGO_PORT=${MONGO_PORT}
       - MONGO_DB=${MONGO_DB}
+      - MONGO_USER=${MONGO_USER}
+      - MONGO_PASSWORD=${MONGO_PASSWORD}
     volumes:
       - ./backend/app/resources:/app/backend/app/resources:ro
     command: ["python", "-m", "proxy.server", "--driver-dir", "/app/backend/app/resources/device_drivers"]

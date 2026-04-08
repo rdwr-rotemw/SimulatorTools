@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import quote_plus
 
 from proxy.config import ConfigManager
 from proxy.dispatcher import Dispatcher
@@ -193,8 +194,23 @@ def main():
 
     mongo_uri = os.environ.get("MONGO_URI")
     mongo_db = os.environ.get("MONGO_DB")
-    if not mongo_uri or not mongo_db:
-        logger.error("MONGO_URI and MONGO_DB must be set")
+
+    # Build URI from parts if MONGO_URI not set (same logic as backend)
+    if not mongo_uri:
+        mongo_host = os.environ.get("MONGO_HOST")
+        mongo_port = os.environ.get("MONGO_PORT")
+        mongo_user = os.environ.get("MONGO_USER")
+        mongo_password = os.environ.get("MONGO_PASSWORD")
+        if not mongo_host or not mongo_port:
+            logger.error("MONGO_URI or MONGO_HOST+MONGO_PORT must be set")
+            sys.exit(1)
+        if mongo_user and mongo_password:
+            mongo_uri = f"mongodb://{quote_plus(mongo_user)}:{quote_plus(mongo_password)}@{mongo_host}:{mongo_port}/{mongo_db or ''}?authSource=admin"
+        else:
+            mongo_uri = f"mongodb://{mongo_host}:{mongo_port}/{mongo_db or ''}"
+
+    if not mongo_db:
+        logger.error("MONGO_DB must be set")
         sys.exit(1)
 
     config = ConfigManager()
