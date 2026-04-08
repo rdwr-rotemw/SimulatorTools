@@ -50,6 +50,7 @@ from backend.app.utils.auth import require_sapro_access, require_admin
 from backend.app.utils.database import get_db, get_mongo_db
 from backend.app.utils.logger import logger
 from backend.app.utils.map_lock import get_map_lock_manager
+from backend.app.utils.proxy_listeners import register_proxy_listener, unregister_proxy_listener, template_has_soap
 from backend.app.utils.sapro_ssh import get_sapro_ssh_client
 from backend.utils.ip_utils import parse_ip_range
 
@@ -342,6 +343,10 @@ def _create_simulator_locked(ip_list, payload, db, current_user, sapro_handler, 
                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                                     detail=f"Failed to save simulator to DB and cleanup Sapro device: {cleanup_exc}")
 
+        # Register proxy listener if device has no SOAP section
+        if not template_has_soap(tpl_doc.get("template", {})):
+            register_proxy_listener(ip)
+
         # Fetch real type/version from sapro and update DB
         device_type, device_version = _fetch_device_info(ip, map_path, sapro_handler)
         if device_type or device_version:
@@ -397,6 +402,8 @@ def _create_simulator_locked(ip_list, payload, db, current_user, sapro_handler, 
                 if success_flag:
                     successful += 1
                     successful_ips.append(ip)
+                    if not template_has_soap(tpl_doc.get("template", {})):
+                        register_proxy_listener(ip)
                     results.append(SaproSimulatorAddResult(
                         ip_address=ip,
                         success=True
@@ -547,6 +554,8 @@ async def create_simulator_stream(
                         if success_flag:
                             successful += 1
                             successful_ips.append(ip)
+                            if not template_has_soap(tpl_doc.get("template", {})):
+                                register_proxy_listener(ip)
                             progress_event = {
                                 "type": "progress",
                                 "current": index,
@@ -869,6 +878,12 @@ def update_simulator(
                 detail=f"Device updated on Sapro but failed to update DB: {str(exc)}"
             )
 
+        # Update proxy listener based on new template's SOAP section
+        if template_has_soap(tpl_doc.get("template", {})):
+            unregister_proxy_listener(simulator_ip)
+        else:
+            register_proxy_listener(simulator_ip)
+
         logger.info(f"Simulator {simulator_ip} updated successfully")
         return SaproSimulatorResponse.model_validate(sim)
 
@@ -930,6 +945,7 @@ def delete_simulator(
             try:
                 db.delete(sim)
                 db.commit()
+                unregister_proxy_listener(ip)
                 results.append(BulkActionResult(ip_address=ip, success=True, message="Deleted successfully"))
             except SQLAlchemyError as exc:
                 db.rollback()

@@ -1,27 +1,26 @@
 """
-SAPRO HTTP Proxy — listens directly on the simulator network interface,
-serving CC requests (device driver downloads, connectivity checks, etc.)
-without any SAPRO XMF/forwarder involvement.
+SAPRO HTTP Proxy — listens on specific simulated device IPs, serving CC
+requests (device driver downloads, connectivity checks, etc.) without any
+SAPRO XMF/forwarder involvement.
 
 Architecture:
-    Binds to 0.0.0.0 on each configured port with SO_BINDTODEVICE restricting
-    traffic to the simulator interface (SAPRO_PROXY_INTERFACE env var, e.g. eth1).
-    When CC connects to a simulated device IP, getsockname() on the accepted
-    socket returns that device's IP — no registration mechanism needed.
+    The proxy polls MongoDB (proxy_listeners collection) for device IPs that
+    need HTTP/HTTPS service. For each IP, it binds to {ip}:{port} for every
+    port in SAPRO_PROXY_PORTS. When CC connects, getsockname() returns the
+    device IP — no registration mechanism needed.
 
-    A separate management listener on 127.0.0.1:8888 (plain HTTP) serves
-    health checks without SO_BINDTODEVICE restriction.
+    A management listener on 127.0.0.1:8888 (plain HTTP) serves health checks.
 
-    SAPRO handles SNMP only. All HTTP/HTTPS traffic goes through this proxy.
+    SAPRO handles SNMP only. HTTP/HTTPS for soap-less devices goes through
+    this proxy.
 
 Usage:
-    python -m proxy.server --driver-dir /path/to/drivers [--interface eth1] [--ports 80,443]
+    python -m proxy.server --driver-dir /path/to/drivers [--ports 80,443]
 """
 
 import argparse
 import logging
 import os
-import socket
 import ssl
 import subprocess
 import sys
@@ -33,6 +32,7 @@ from proxy.dispatcher import Dispatcher
 from proxy.handlers.connectivity import ConnectivityHandler
 from proxy.handlers.device_driver import DeviceDriverHandler
 from proxy.handlers.health import HealthHandler
+from proxy.listener_manager import ListenerManager
 
 logger = logging.getLogger("sapro-proxy")
 
@@ -150,7 +150,7 @@ def ensure_ssl_cert(cert_dir):
 
 
 def build_main_dispatcher(config, driver_dir):
-    """Build the dispatcher for CC-facing traffic (connectivity, driver serving)."""
+    """Build the dispatcher for CC-facing traffic."""
     dispatcher = Dispatcher()
     dispatcher.register(HealthHandler(config))
     dispatcher.register(ConnectivityHandler(config))
@@ -165,58 +165,8 @@ def build_management_dispatcher(config):
     return dispatcher
 
 
-class InterfaceBoundHTTPServer(HTTPServer):
-    """HTTPServer that sets SO_BINDTODEVICE before binding the socket."""
-
-    interface = None
-
-    def server_bind(self):
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.socket.setsockopt(
-            socket.SOL_SOCKET,
-            socket.SO_BINDTODEVICE,
-            self.interface.encode(),
-        )
-        logger.info("Socket restricted to interface: %s", self.interface)
-        super().server_bind()
-
-
-def create_listeners(interface, ports, handler_class, ssl_context):
-    """Create one HTTPS server per port, bound to the specified interface."""
-    servers = []
-
-    InterfaceBoundHTTPServer.interface = interface
-
-    for port in ports:
-        server = InterfaceBoundHTTPServer(("0.0.0.0", port), handler_class)
-        server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
-
-        original_shutdown = server.shutdown_request
-
-        def make_tls_shutdown(orig):
-            def _tls_shutdown(request):
-                try:
-                    request.unwrap()
-                except (ssl.SSLError, OSError):
-                    pass
-                orig(request)
-            return _tls_shutdown
-
-        server.shutdown_request = make_tls_shutdown(original_shutdown)
-
-        servers.append(server)
-        logger.info("Listener on %s:%d (HTTPS)", interface, port)
-
-    return servers
-
-
 def parse_args():
     parser = argparse.ArgumentParser(description="SAPRO HTTP Proxy")
-    parser.add_argument(
-        "--interface",
-        default=os.environ.get("SAPRO_PROXY_INTERFACE"),
-        help="Network interface name to bind to (e.g. eth1)",
-    )
     parser.add_argument(
         "--ports",
         default=os.environ.get("SAPRO_PROXY_PORTS"),
@@ -231,19 +181,21 @@ def parse_args():
 def main():
     args = parse_args()
 
-    if not args.interface:
-        logger.error("SAPRO_PROXY_INTERFACE must be set (network interface name, e.g. eth1)")
-        sys.exit(1)
-
-    if not args.ports:
-        logger.error("SAPRO_PROXY_PORTS must be set (comma-separated ports, e.g. 80,443)")
-        sys.exit(1)
-
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         stream=sys.stderr,
     )
+
+    if not args.ports:
+        logger.error("SAPRO_PROXY_PORTS must be set (comma-separated ports, e.g. 80,443)")
+        sys.exit(1)
+
+    mongo_uri = os.environ.get("MONGO_URI")
+    mongo_db = os.environ.get("MONGO_DB")
+    if not mongo_uri or not mongo_db:
+        logger.error("MONGO_URI and MONGO_DB must be set")
+        sys.exit(1)
 
     config = ConfigManager()
     ports = [int(p.strip()) for p in args.ports.split(",")]
@@ -260,32 +212,32 @@ def main():
     ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ssl_context.load_cert_chain(cert_file, key_file)
 
-    # CC-facing listeners on the simulator interface
-    servers = create_listeners(args.interface, ports, ProxyRequestHandler, ssl_context)
-
-    # Management listener on localhost (plain HTTP, no SO_BINDTODEVICE)
+    # Management listener on localhost (plain HTTP)
     mgmt_server = HTTPServer(("127.0.0.1", MANAGEMENT_PORT), ManagementRequestHandler)
-    servers.append(mgmt_server)
+    mgmt_thread = threading.Thread(target=mgmt_server.serve_forever, daemon=True)
+    mgmt_thread.start()
     logger.info("Management listener on 127.0.0.1:%d (HTTP)", MANAGEMENT_PORT)
 
-    # Start all servers in background threads except the last one
-    for server in servers[:-1]:
-        t = threading.Thread(target=server.serve_forever, daemon=True)
-        t.start()
-
-    logger.info(
-        "SAPRO proxy listening on %s ports %s (management on 127.0.0.1:%d)",
-        args.interface, ports, MANAGEMENT_PORT,
+    # Dynamic listener manager (polls MongoDB)
+    manager = ListenerManager(
+        ports=ports,
+        handler_class=ProxyRequestHandler,
+        ssl_context=ssl_context,
+        mongo_uri=mongo_uri,
+        mongo_db=mongo_db,
     )
+
+    logger.info("SAPRO proxy started (ports %s, management on 127.0.0.1:%d)", ports, MANAGEMENT_PORT)
     logger.info("Driver dir: %s", args.driver_dir)
 
     try:
-        servers[-1].serve_forever()
+        manager.sync()
+        manager.run_poll_loop(interval=5)
     except KeyboardInterrupt:
         logger.info("Shutting down")
-        for server in servers:
-            server.shutdown()
-            server.server_close()
+        manager.shutdown_all()
+        mgmt_server.shutdown()
+        mgmt_server.server_close()
 
 
 if __name__ == "__main__":

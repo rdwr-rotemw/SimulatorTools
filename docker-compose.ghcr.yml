@@ -90,16 +90,17 @@ services:
       retries: 3
 
   # SAPRO HTTP Proxy
-  # Binds directly to simulator interface, listens on CC-facing ports
-  # Device IP determined from socket getsockname() — no SAPRO XMF involvement
+  # Polls MongoDB for device IPs that need HTTP/HTTPS proxy service
+  # Dynamically binds per-IP listeners — no SAPRO XMF involvement
   sapro-proxy:
     image: ghcr.io/${GITHUB_REPO_OWNER}/simtools-sapro-proxy:${IMAGE_TAG:-latest}
     container_name: simtools-sapro-proxy
     restart: unless-stopped
     network_mode: host
     environment:
-      - SAPRO_PROXY_INTERFACE=${SAPRO_PROXY_INTERFACE}
       - SAPRO_PROXY_PORTS=${SAPRO_PROXY_PORTS}
+      - MONGO_URI=${MONGO_URI}
+      - MONGO_DB=${MONGO_DB}
     volumes:
       - ./backend/app/resources:/app/backend/app/resources:ro
     command: ["python", "-m", "proxy.server", "--driver-dir", "/app/backend/app/resources/device_drivers"]
