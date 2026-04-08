@@ -1,20 +1,17 @@
 """
-SAPRO HTTP Proxy — general-purpose HTTPS server for requests forwarded by SAPRO's
-SA_xml_request_forwarder. Handles binary responses and complex routing that SAPRO's
-XMF/TCL engine cannot do natively.
+SAPRO HTTP Proxy — listens directly on the simulator network interface,
+serving CC requests (device driver downloads, connectivity checks, etc.)
+without any SAPRO XMF/forwarder involvement.
 
 Architecture:
-    Port 8888 (HTTPS) — receives forwarded CC requests via SA_xml_request_forwarder
-    Port 8889 (HTTP)  — receives device registration from XMF init_action TCL
+    Binds to 0.0.0.0 on each configured port (from SAPRO_PROXY_PORTS env var).
+    When CC connects to a simulated device IP, getsockname() on the accepted
+    socket returns that device's IP — no registration mechanism needed.
 
-Flow per device request:
-    1. XMF init_action sends POST /_register with device IP to port 8889
-    2. XMF sets up SA_xml_request_forwarder to port 8888
-    3. CC request arrives on 8888, proxy uses registered IP to identify device
-    4. SNMP query gets JAR filename, proxy serves the binary
+    SAPRO handles SNMP only. All HTTP/HTTPS traffic goes through this proxy.
 
 Usage:
-    python -m proxy.server [--port 8888] [--register-port 8889] [--driver-dir /path]
+    python -m proxy.server --driver-dir /path/to/drivers [--ports 80,443] [--cert-dir /path]
 """
 
 import argparse
@@ -27,12 +24,10 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from proxy.config import ConfigManager
-from proxy.device_registry import DeviceRegistry
 from proxy.dispatcher import Dispatcher
 from proxy.handlers.connectivity import ConnectivityHandler
 from proxy.handlers.device_driver import DeviceDriverHandler
 from proxy.handlers.health import HealthHandler
-from proxy.handlers.register import RegisterHandler
 
 logger = logging.getLogger("sapro-proxy")
 
@@ -40,7 +35,7 @@ DEFAULT_CERT_DIR = "/app/certs"
 
 
 class ProxyRequestHandler(BaseHTTPRequestHandler):
-    """Delegates all requests to the dispatcher."""
+    """Delegates all requests to the dispatcher, passing device_ip from getsockname()."""
 
     dispatcher = None
 
@@ -65,13 +60,15 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
         headers = {key: self.headers[key] for key in self.headers}
 
+        device_ip, local_port = self.request.getsockname()[:2]
+
         logger.debug(
-            ">>> %s %s\n    Headers: %s\n    Body (%d bytes): %s",
-            method, self.path, dict(headers), len(body), body,
+            ">>> %s %s (device=%s:%d)\n    Headers: %s\n    Body (%d bytes): %s",
+            method, self.path, device_ip, local_port, dict(headers), len(body), body,
         )
 
         status, response_headers, response_body = self.dispatcher.dispatch(
-            method, self.path, headers, body
+            method, self.path, headers, body, device_ip=device_ip
         )
 
         self.send_response(status)
@@ -85,49 +82,6 @@ class ProxyRequestHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         logger.info("[%s] %s", self.client_address[0], format % args)
-
-
-class RegisterRequestHandler(BaseHTTPRequestHandler):
-    """Handles device registration on the plain HTTP port.
-
-    The XMF TCL closes the socket immediately after sending (fire-and-forget),
-    so BrokenPipeError on the response write is expected and silenced.
-    """
-
-    dispatcher = None
-
-    def do_POST(self):
-        self._handle("POST")
-
-    def _handle(self, method):
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length) if content_length > 0 else b""
-
-        headers = {key: self.headers[key] for key in self.headers}
-
-        logger.debug(
-            ">>> [register] %s %s\n    Body: %s",
-            method, self.path, body,
-        )
-
-        status, response_headers, response_body = self.dispatcher.dispatch(
-            method, self.path, headers, body
-        )
-
-        try:
-            self.send_response(status)
-            self.send_header("Connection", "close")
-            for key, value in response_headers.items():
-                self.send_header(key, value)
-            self.end_headers()
-
-            if response_body:
-                self.wfile.write(response_body)
-        except BrokenPipeError:
-            pass
-
-    def log_message(self, format, *args):
-        logger.debug("[register][%s] %s", self.client_address[0], format % args)
 
 
 def ensure_ssl_cert(cert_dir):
@@ -156,26 +110,54 @@ def ensure_ssl_cert(cert_dir):
     return cert_file, key_file
 
 
-def build_main_dispatcher(config, driver_dir, registry):
-    """Dispatcher for the main HTTPS server (port 8888)."""
+def build_dispatcher(config, driver_dir):
+    """Build the shared request dispatcher with all handlers."""
     dispatcher = Dispatcher()
     dispatcher.register(HealthHandler(config))
     dispatcher.register(ConnectivityHandler(config))
-    dispatcher.register(DeviceDriverHandler(config, driver_dir=driver_dir, registry=registry))
+    dispatcher.register(DeviceDriverHandler(config, driver_dir=driver_dir))
     return dispatcher
 
 
-def build_register_dispatcher(config, registry):
-    """Dispatcher for the registration HTTP server (port 8889)."""
-    dispatcher = Dispatcher()
-    dispatcher.register(RegisterHandler(config, registry=registry))
-    return dispatcher
+def create_listeners(interface, ports, handler_class, ssl_context):
+    """Create one HTTPS server per port, all sharing the same handler class."""
+    servers = []
+
+    for port in ports:
+        server = HTTPServer((interface, port), handler_class)
+        server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
+
+        original_shutdown = server.shutdown_request
+
+        def make_tls_shutdown(orig):
+            def _tls_shutdown(request):
+                try:
+                    request.unwrap()
+                except (ssl.SSLError, OSError):
+                    pass
+                orig(request)
+            return _tls_shutdown
+
+        server.shutdown_request = make_tls_shutdown(original_shutdown)
+
+        servers.append(server)
+        logger.info("Listener on %s:%d (HTTPS)", interface, port)
+
+    return servers
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="SAPRO HTTP Proxy")
-    parser.add_argument("--port", type=int, default=8888, help="HTTPS port for forwarded requests (default: 8888)")
-    parser.add_argument("--register-port", type=int, default=8889, help="HTTP port for device registration (default: 8889)")
+    parser.add_argument(
+        "--interface",
+        default=os.environ.get("SAPRO_PROXY_INTERFACE", "0.0.0.0"),
+        help="Network interface to bind to (default: SAPRO_PROXY_INTERFACE env or 0.0.0.0)",
+    )
+    parser.add_argument(
+        "--ports",
+        default=os.environ.get("SAPRO_PROXY_PORTS", "80,443"),
+        help="Comma-separated list of ports to listen on (default: SAPRO_PROXY_PORTS env or 80,443)",
+    )
     parser.add_argument("--driver-dir", required=True, help="Directory containing device driver JAR files")
     parser.add_argument("--cert-dir", default=DEFAULT_CERT_DIR, help="Directory for SSL certificates")
     parser.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"])
@@ -192,50 +174,34 @@ def main():
     )
 
     config = ConfigManager()
-    registry = DeviceRegistry()
+    ports = [int(p.strip()) for p in args.ports.split(",")]
 
-    # Main HTTPS server for forwarded CC requests
-    main_dispatcher = build_main_dispatcher(config, args.driver_dir, registry)
-    ProxyRequestHandler.dispatcher = main_dispatcher
+    dispatcher = build_dispatcher(config, args.driver_dir)
+    ProxyRequestHandler.dispatcher = dispatcher
 
     cert_file, key_file = ensure_ssl_cert(args.cert_dir)
-
-    main_server = HTTPServer(("127.0.0.1", args.port), ProxyRequestHandler)
     ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ssl_context.load_cert_chain(cert_file, key_file)
-    main_server.socket = ssl_context.wrap_socket(main_server.socket, server_side=True)
 
-    _original_shutdown = main_server.shutdown_request
+    servers = create_listeners(args.interface, ports, ProxyRequestHandler, ssl_context)
 
-    def _tls_shutdown(request):
-        try:
-            request.unwrap()
-        except (ssl.SSLError, OSError):
-            pass
-        _original_shutdown(request)
+    for server in servers[:-1]:
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
 
-    main_server.shutdown_request = _tls_shutdown
-
-    # Registration HTTP server for XMF init_action calls
-    register_dispatcher = build_register_dispatcher(config, registry)
-    RegisterRequestHandler.dispatcher = register_dispatcher
-
-    register_server = HTTPServer(("127.0.0.1", args.register_port), RegisterRequestHandler)
-
-    # Run registration server in a background thread
-    register_thread = threading.Thread(target=register_server.serve_forever, daemon=True)
-    register_thread.start()
-
-    logger.info("SAPRO proxy listening on https://127.0.0.1:%d (forwarded requests)", args.port)
-    logger.info("Registration server on http://127.0.0.1:%d (XMF init_action)", args.register_port)
+    logger.info(
+        "SAPRO proxy listening on %s ports %s",
+        args.interface, ports,
+    )
     logger.info("Driver dir: %s", args.driver_dir)
 
     try:
-        main_server.serve_forever()
+        servers[-1].serve_forever()
     except KeyboardInterrupt:
         logger.info("Shutting down")
-        register_server.shutdown()
-        main_server.server_close()
+        for server in servers:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

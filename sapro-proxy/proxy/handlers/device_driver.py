@@ -47,13 +47,12 @@ class DeviceDriverHandler(BaseHandler):
     """POST /dynamic/hidden/VisionDriver/ReceivefromDevice — serve device driver JAR.
 
     Flow:
-    1. XMF init_action registers device IP via /_register on port 8889
-    2. SA_xml_request_forwarder forwards CC's request here on port 8888
-    3. Handler consumes the registered IP from the device registry
-    4. SNMP query to the device gets the JAR filename (rndVisionDriverActiveName)
-    5. Serve the JAR binary with exact real DefensePro response headers
+    1. CC connects to simulated device IP on port 443
+    2. Proxy accepts the connection, getsockname() returns the device IP
+    3. SNMP query to the device gets the JAR filename (rndVisionDriverActiveName)
+    4. Serve the JAR binary with exact real DefensePro response headers
 
-    Response captured from real DP 172.17.22.54 (8.34.1.0):
+    Response matches real DP 172.17.22.54 (8.34.1.0):
     - Status: 200
     - Content-Type: application/octet-stream
     - Content-Disposition: attachment;filename=<jar_name>
@@ -63,14 +62,12 @@ class DeviceDriverHandler(BaseHandler):
     def routes(self):
         return [("POST", "/dynamic/hidden/VisionDriver/ReceivefromDevice")]
 
-    def handle(self, method, path, headers, body):
-        device_ip = self.registry.consume()
-
+    def handle(self, method, path, headers, body, *, device_ip):
         if not device_ip:
-            logger.warning("No device registered — request arrived without prior /_register")
+            logger.warning("No device IP from socket — cannot serve driver")
             return 404, {}, b""
 
-        logger.info("Serving driver request for registered device %s", device_ip)
+        logger.info("Serving driver request for device %s", device_ip)
 
         jar_name = snmpget_driver_filename(device_ip)
         if not jar_name:

@@ -7,8 +7,6 @@ WORKDIR /app
 
 COPY proxy/ /app/proxy/
 
-RUN mkdir -p /app/certs /app/device_drivers
+RUN mkdir -p /app/certs
 
-EXPOSE 8888 8889
-
-CMD ["python", "-m", "proxy.server", "--port", "8888", "--register-port", "8889", "--driver-dir", "/app/device_drivers"]
+CMD ["python", "-m", "proxy.server", "--driver-dir", "/app/backend/app/resources/device_drivers"]

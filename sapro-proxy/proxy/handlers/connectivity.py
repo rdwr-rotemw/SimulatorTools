@@ -7,7 +7,7 @@ class ConnectivityHandler(BaseHandler):
     def routes(self):
         return [("GET", "/")]
 
-    def handle(self, method, path, headers, body):
+    def handle(self, method, path, headers, body, *, device_ip):
         return 200, {
             "Pragma": "no-cache",
             "Cache-Control": "no-cache",

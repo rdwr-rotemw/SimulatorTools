@@ -10,8 +10,11 @@ class BaseHandler(ABC):
             setattr(self, key, value)
 
     @abstractmethod
-    def handle(self, method, path, headers, body):
+    def handle(self, method, path, headers, body, *, device_ip):
         """Handle an HTTP request.
+
+        Args:
+            device_ip: Target device IP from socket getsockname().
 
         Returns:
             tuple: (status_code: int, headers: dict, body: bytes)

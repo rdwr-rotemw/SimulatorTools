@@ -15,7 +15,7 @@ class HealthHandler(BaseHandler):
             ("POST", "/_reload"),
         ]
 
-    def handle(self, method, path, headers, body):
+    def handle(self, method, path, headers, body, *, device_ip):
         if path == "/_health":
             return self._health()
         if path == "/_reload":
