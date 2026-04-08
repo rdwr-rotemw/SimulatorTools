@@ -330,7 +330,7 @@ class VarGenerator:
 
     def _write_dynamic_rows(self, config: DynamicRowConfig) -> list[str]:
         lines: list[str] = []
-        prefix = "#" if not config.is_fully_detected else ""
+        prefix = ""
 
         # Use OID path for entry — SAPRO needs it to look up index info from CMF
         entry_oid = self._entry_oid_map.get(config.entry_name, config.entry_name)
