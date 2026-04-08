@@ -412,54 +412,8 @@
         set notify_base  "1.3.6.1.6.3.13.1.1.1"
         set addr_ext_base "1.3.6.1.6.3.18.1.2.1"
 
-        # --- snmpTargetAddrTable: "v3MngStations" entry ---
-        # RowStatus = active(1). Each SA_setvar wrapped in catch so
-        # one failure doesn't abort the rest of init_action.
-        set inst [encode_implied_index "v3MngStations"]
-        if {[catch {
-            SA_setvar [list \
-                [list "${addr_base}.2.${inst}" ObjectID "1.3.6.1.6.1.1"] \
-                [list "${addr_base}.3.${inst}" OctetString "0x0000000000a2"] \
-                [list "${addr_base}.4.${inst}" Integer 1500] \
-                [list "${addr_base}.5.${inst}" Integer 3] \
-                [list "${addr_base}.6.${inst}" OctetString "v3Traps"] \
-                [list "${addr_base}.7.${inst}" OctetString "radware-authPriv"] \
-                [list "${addr_base}.8.${inst}" Integer 3] \
-                [list "${addr_base}.9.${inst}" Integer 4] \
-                [list "${addr_base}.11.${inst}" Integer 162] \
-                [list "${addr_base}.12.${inst}" Integer 1] \
-            ]
-            SA_puts "\n  snmpTargetAddr: created v3MngStations"
-        } err]} {
-            SA_puts "\n  snmpTargetAddr: FAILED ($err)"
-        }
-
-        # Note: snmpTargetAddrExtEntry (AUGMENTS) columns live under a
-        # separate OID tree with no %drow — SAPRO can't create rows there.
-        # These columns (TMask, MMS, Security, Health, Audit) are not
-        # critical for CC discovery.
-
-        # --- snmpTargetParamsTable: 3 standard entries ---
-        foreach {name mpmodel secmodel secname seclevel} {
-            public-v1       0 1 public  1
-            public-v2       1 2 public  1
-            radware-authPriv 3 3 radware 3
-        } {
-            set inst [encode_implied_index $name]
-            if {[catch {
-                SA_setvar [list \
-                    [list "${params_base}.2.${inst}" Integer $mpmodel] \
-                    [list "${params_base}.3.${inst}" Integer $secmodel] \
-                    [list "${params_base}.4.${inst}" OctetString $secname] \
-                    [list "${params_base}.5.${inst}" Integer $seclevel] \
-                    [list "${params_base}.6.${inst}" Integer 3] \
-                    [list "${params_base}.7.${inst}" Integer 4] \
-                ]
-                SA_puts "\n  snmpTargetParams: created $name"
-            } err]} {
-                SA_puts "\n  snmpTargetParams $name: FAILED ($err)"
-            }
-        }
+        # Note: snmpTargetAddrTable and snmpTargetParamsTable are NOT
+        # pre-populated — CC creates its own entries during sync.
 
         # --- snmpNotifyTable: "allTraps" entry ---
         # Note: snmpNotifyEntry may not be in CMF if SNMP-NOTIFICATION-MIB
@@ -507,8 +461,9 @@
         # Index: groupName(len-prefixed) . contextPrefix(len-prefixed) . securityModel(Int) . securityLevel(Int)
         # securityLevel: 1=noAuthNoPriv, 2=authNoPriv, 3=authPriv
         set access_base "1.3.6.1.6.3.16.1.4.1"
+        # Note: initial/1/1 is NOT pre-populated — CC creates it during sync.
+        # Pre-populating it causes inconsistentValue when CC sends createAndGo.
         foreach {groupname secmodel seclevel readview writeview notifyview} {
-            initial          1  1  iso           iso   iso
             initial          2  1  iso           iso   iso
             initial          3  3  iso           iso   iso
             InitialReadOnly  1  1  ReadOnlyView  None  None

@@ -42,9 +42,12 @@ class DynamicRowDetector:
         self._cc_columns = cc_columns or {}
         self._mib_by_label: dict[str, OidEntry] = {e.label: e for e in mib_entries}
         self._mib_by_table: dict[str, list[OidEntry]] = {}
+        self._entry_by_name: dict[str, OidEntry] = {}
         for e in mib_entries:
             if e.is_table_column and e.table_name:
                 self._mib_by_table.setdefault(e.table_name, []).append(e)
+            if e.is_table_entry:
+                self._entry_by_name[e.label] = e
 
     def detect_all(self) -> list[DynamicRowConfig]:
         configs: list[DynamicRowConfig] = []
@@ -82,6 +85,19 @@ class DynamicRowDetector:
         if row_type is None:
             if self._has_newinstance_evidence(mib_columns):
                 row_type = DynamicRowType.NEWINSTANCE
+
+        # No RowStatus/EntryStatus/newinstance — check if this is an AUGMENTS
+        # table. AUGMENTS tables inherit row management from their base table
+        # and need a newinstance %drow so SAPRO can accept Sets on their columns.
+        if row_type is None:
+            entry_name = table_name.replace("Table", "Entry")
+            entry_obj = self._entry_by_name.get(entry_name)
+            if entry_obj and entry_obj.augments_entry:
+                row_type = DynamicRowType.NEWINSTANCE
+                logger.info(
+                    "AUGMENTS: %s detected as newinstance (augments %s)",
+                    table_name, entry_obj.augments_entry,
+                )
 
         if row_type is None:
             return None
