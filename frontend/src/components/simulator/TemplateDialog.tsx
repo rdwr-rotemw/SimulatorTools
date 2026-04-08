@@ -113,6 +113,11 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
     modeling: [],
   });
 
+  const [sectionEnabled, setSectionEnabled] = useState<Record<string, boolean>>({
+    soap: true,
+    ssh: true,
+  });
+
   const isEditMode = !!template;
 
   // Helper function to extract filename from full path
@@ -130,6 +135,7 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
       // Create mode: reset form with all default fields pre-enabled
       setName('');
       setDescription('');
+      setSectionEnabled({ soap: true, ssh: true });
       const initialFields: FieldStates = {};
       Object.entries(defaultFieldValues).forEach(([path, value]) => {
         initialFields[path] = { enabled: true, value };
@@ -152,6 +158,12 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
 
       setName(template.name);
       setDescription(template.description || '');
+
+      const device = template.template?.device_map?.device;
+      setSectionEnabled({
+        soap: !!device?.soap && Object.keys(device.soap).length > 0,
+        ssh: !!device?.ssh && Object.keys(device.ssh).length > 0,
+      });
 
       const newFields: FieldStates = {};
       const deviceMap = template.template?.device_map;
@@ -280,6 +292,23 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
     }
   };
 
+  const handleSectionToggle = (section: string) => {
+    setSectionEnabled(prev => {
+      const nowEnabled = !prev[section];
+      // Disable/enable all fields in this section
+      setFields(prevFields => {
+        const updated = { ...prevFields };
+        Object.keys(updated).forEach(path => {
+          if (path.startsWith(`${section}.`)) {
+            updated[path] = { ...updated[path], enabled: nowEnabled };
+          }
+        });
+        return updated;
+      });
+      return { ...prev, [section]: nowEnabled };
+    });
+  };
+
   const handleFieldToggle = (fieldPath: string) => {
     setFields(prev => {
       const isCurrentlyEnabled = prev[fieldPath]?.enabled || false;
@@ -326,8 +355,11 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
     if (hasDeviceFields) {
       template.device_map.device = {};
 
-      // Add device sub-sections
+      // Add device sub-sections (skip sections that are toggled off)
       ['general', 'snmp', 'soap', 'ssh'].forEach(section => {
+        // Skip optional sections that are toggled off
+        if (section in sectionEnabled && !sectionEnabled[section]) return;
+
         const sectionFields = Object.entries(fields).filter(([path, state]) =>
           state.enabled && path.startsWith(`${section}.`)
         );
@@ -638,9 +670,28 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
         </Accordion>
 
         {/* SOAP */}
-        <Accordion>
+        <Accordion disabled={!sectionEnabled.soap}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Typography variant="subtitle1" fontWeight="medium">SOAP</Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={sectionEnabled.soap}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      handleSectionToggle('soap');
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    size="small"
+                  />
+                }
+                label=""
+                sx={{ m: 0, mr: 1 }}
+              />
+              <Typography variant="subtitle1" fontWeight="medium">
+                SOAP {!sectionEnabled.soap && '(disabled)'}
+              </Typography>
+            </Box>
           </AccordionSummary>
           <AccordionDetails>
             {renderField('SOAP HTTP Port', 'soap.soap_http_port', 'e.g., 80')}
@@ -652,9 +703,28 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
         </Accordion>
 
         {/* SSH */}
-        <Accordion>
+        <Accordion disabled={!sectionEnabled.ssh}>
           <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-            <Typography variant="subtitle1" fontWeight="medium">SSH</Typography>
+            <Box sx={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={sectionEnabled.ssh}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      handleSectionToggle('ssh');
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    size="small"
+                  />
+                }
+                label=""
+                sx={{ m: 0, mr: 1 }}
+              />
+              <Typography variant="subtitle1" fontWeight="medium">
+                SSH {!sectionEnabled.ssh && '(disabled)'}
+              </Typography>
+            </Box>
           </AccordionSummary>
           <AccordionDetails>
             {renderField('SSH User Name', 'ssh.ssh_user_name', 'Default: radware')}
