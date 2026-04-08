@@ -159,15 +159,14 @@ export const TemplateDialog: React.FC<TemplateDialogProps> = ({ open, template, 
       setName(template.name);
       setDescription(template.description || '');
 
-      const device = template.template?.device_map?.device;
+      const deviceMap = template.template?.device_map;
+      const device = deviceMap?.device;
       setSectionEnabled({
         soap: !!device?.soap && Object.keys(device.soap).length > 0,
         ssh: !!device?.ssh && Object.keys(device.ssh).length > 0,
       });
 
       const newFields: FieldStates = {};
-      const deviceMap = template.template?.device_map;
-      const device = deviceMap?.device;
 
       // Helper to add field if it exists
       const addField = (path: string, value: any) => {
