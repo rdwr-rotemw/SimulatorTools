@@ -477,6 +477,105 @@
             SA_puts "\n  snmpNotify: SKIPPED ($err)"
         }
 
+        # --- VACM: vacmSecurityToGroupTable ---
+        # Index: securityModel(Integer) . securityName(IMPLIED OctetString)
+        # From real DP defaults (excluding User Based entries)
+        set group_base "1.3.6.1.6.3.16.1.2.1"
+        foreach {secmodel secname groupname} {
+            1  public            initial
+            1  ReadOnlySecurity  InitialReadOnly
+            2  public            initial
+            2  ReadOnlySecurity  InitialReadOnly
+        } {
+            set name_len [string length $secname]
+            set inst "${secmodel}.${name_len}.[encode_implied_index $secname]"
+            if {[catch {
+                SA_setvar [list \
+                    [list "${group_base}.1.${inst}" Integer $secmodel] \
+                    [list "${group_base}.2.${inst}" OctetString $secname] \
+                    [list "${group_base}.3.${inst}" OctetString $groupname] \
+                    [list "${group_base}.4.${inst}" Integer 3] \
+                    [list "${group_base}.5.${inst}" Integer 4] \
+                ]
+                SA_puts "\n  vacmGroup: ${secmodel}/${secname} -> ${groupname}"
+            } err]} {
+                SA_puts "\n  vacmGroup ${secmodel}/${secname}: FAILED ($err)"
+            }
+        }
+
+        # --- VACM: vacmAccessTable ---
+        # Index: groupName(len-prefixed) . contextPrefix(len-prefixed) . securityModel(Int) . securityLevel(Int)
+        # securityLevel: 1=noAuthNoPriv, 2=authNoPriv, 3=authPriv
+        set access_base "1.3.6.1.6.3.16.1.4.1"
+        foreach {groupname secmodel seclevel readview writeview notifyview} {
+            initial          1  1  iso           iso   iso
+            initial          2  1  iso           iso   iso
+            initial          3  3  iso           iso   iso
+            InitialReadOnly  1  1  ReadOnlyView  None  None
+            InitialReadOnly  2  1  ReadOnlyView  None  None
+            InitialReadOnly  3  3  ReadOnlyView  None  None
+        } {
+            # groupName is length-prefixed OctetString index
+            set gname_len [string length $groupname]
+            set gname_idx "${gname_len}.[encode_implied_index $groupname]"
+            # contextPrefix is empty string: length 0, no bytes
+            set ctx_idx "0"
+            set inst "${gname_idx}.${ctx_idx}.${secmodel}.${seclevel}"
+            if {[catch {
+                SA_setvar [list \
+                    [list "${access_base}.4.${inst}" Integer 1] \
+                    [list "${access_base}.5.${inst}" OctetString $readview] \
+                    [list "${access_base}.6.${inst}" OctetString $writeview] \
+                    [list "${access_base}.7.${inst}" OctetString $notifyview] \
+                    [list "${access_base}.8.${inst}" Integer 3] \
+                    [list "${access_base}.9.${inst}" Integer 4] \
+                ]
+                # .4=contextMatch(exact=1), .5=readView, .6=writeView,
+                # .7=notifyView, .8=storageType(3), .9=rowStatus(createAndGo=4)
+                SA_puts "\n  vacmAccess: ${groupname}/${secmodel}/${seclevel}"
+            } err]} {
+                SA_puts "\n  vacmAccess ${groupname}/${secmodel}/${seclevel}: FAILED ($err)"
+            }
+        }
+
+        # --- VACM: vacmViewTreeFamilyTable ---
+        # Index: viewName(len-prefixed) . subtree(len-prefixed OID)
+        # type: 1=included, 2=excluded
+        set view_base "1.3.6.1.6.3.16.1.5.2.1"
+        foreach {viewname subtree type} {
+            iso           1                        1
+            None          1                        2
+            ReadOnlyView  1                        1
+            ReadOnlyView  1.3.6.1.6.3.16.1.2      2
+            ReadOnlyView  1.3.6.1.6.3.16.1.4      2
+            ReadOnlyView  1.3.6.1.6.3.16.1.5      2
+            ReadOnlyView  1.3.6.1.6.3.18.1.1      2
+            ReadOnlyView  1.3.6.1.4.1.89.2.7.2    2
+            ReadOnlyView  1.3.6.1.4.1.89.35.1.61  2
+            ReadOnlyView  1.3.6.1.6.3.15.1.2.2    2
+        } {
+            # viewName is length-prefixed
+            set vname_len [string length $viewname]
+            set vname_idx "${vname_len}.[encode_implied_index $viewname]"
+            # subtree is length-prefixed OID (number of sub-identifiers . oid)
+            set oid_parts [split $subtree "."]
+            set oid_len [llength $oid_parts]
+            set subtree_idx "${oid_len}.${subtree}"
+            set inst "${vname_idx}.${subtree_idx}"
+            if {[catch {
+                SA_setvar [list \
+                    [list "${view_base}.3.${inst}" OctetString ""] \
+                    [list "${view_base}.4.${inst}" Integer $type] \
+                    [list "${view_base}.5.${inst}" Integer 3] \
+                    [list "${view_base}.6.${inst}" Integer 4] \
+                ]
+                # .3=mask(empty), .4=type, .5=storageType(3), .6=rowStatus(createAndGo=4)
+                SA_puts "\n  vacmView: ${viewname}/${subtree} type=${type}"
+            } err]} {
+                SA_puts "\n  vacmView ${viewname}/${subtree}: FAILED ($err)"
+            }
+        }
+
         SA_puts "\n  populate_snmp_infrastructure: complete"
     }
 
