@@ -869,4 +869,14 @@
 #
 # Needs investigation (may need TCL after Phase 3 analysis):
 #   (none)
+
 # ===================================================================
+# Test: does %check_set_action fire for ext table OIDs?
+# If SAPRO's internal validation rejects before calling TCL, this
+# won't appear in the debug log.
+# ===================================================================
+# TEMPORARY DEBUG — remove after investigation
+%after_set_action 1.3.6.1.6.3.12.1.2.1.9
+    SA_puts "\n  AFTER_SET_HIT targetAddr rowStatus"
+    SA_puts "\n    vb: [SA_getreqvb]"
+    SA_puts "\n    all: [SA_getreqvars]"
